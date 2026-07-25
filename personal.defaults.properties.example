@@ -1,0 +1,13 @@
+# Copy to personal.defaults.properties and fill in your values.
+# That file is gitignored. Clean/distributable builds ignore these entirely.
+DEFAULT_TRAKT_CLIENT_ID=
+DEFAULT_TMDB_API_KEY=
+DEFAULT_TMDB_READ_TOKEN=
+DEFAULT_NAS_HOST=
+DEFAULT_NAS_USER=
+DEFAULT_HA_WEBHOOK=
+DEFAULT_TRAKT_USERNAME=
+DEFAULT_BACKGROUND_FOLDER=
+DEFAULT_IPTV_M3U=
+DEFAULT_IPTV_EPG=
+DEFAULT_MUSIC_PATH=/music

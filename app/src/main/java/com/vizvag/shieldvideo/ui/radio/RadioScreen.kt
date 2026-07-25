@@ -1,0 +1,1729 @@
+package com.vizvag.shieldvideo.ui.radio
+import android.content.Context
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Brightness2
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import coil.compose.AsyncImage
+import com.vizvag.shieldvideo.ShieldVideoApp
+import com.vizvag.shieldvideo.data.radio.BbcRadioMetadataRepository
+import com.vizvag.shieldvideo.data.radio.CustomRadioStationConfig
+import com.vizvag.shieldvideo.data.radio.RadioNowPlaying
+import com.vizvag.shieldvideo.data.radio.RadioStation
+import com.vizvag.shieldvideo.data.radio.RadioStations
+import com.vizvag.shieldvideo.data.radio.RadioTrackHistory
+import com.vizvag.shieldvideo.data.settings.SettingsRepository
+import com.vizvag.shieldvideo.playback.RadioRecordingService
+import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
+import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.components.SleepTimerButton
+import com.vizvag.shieldvideo.ui.browser.AppWithNavRail
+import com.vizvag.shieldvideo.ui.browser.RailDestination
+import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
+import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
+import com.vizvag.shieldvideo.ui.theme.Accent
+import com.vizvag.shieldvideo.ui.theme.AudioAccent
+import com.vizvag.shieldvideo.ui.theme.AudioBackground
+import com.vizvag.shieldvideo.ui.theme.AppBackground
+import com.vizvag.shieldvideo.ui.theme.AudioScreenTheme
+import com.vizvag.shieldvideo.ui.theme.AudioSurface
+import com.vizvag.shieldvideo.ui.theme.AudioText
+import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
+import com.vizvag.shieldvideo.ui.theme.CardSurface
+import com.vizvag.shieldvideo.ui.theme.FocusRing
+import com.vizvag.shieldvideo.ui.theme.Motion
+import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
+import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
+import com.vizvag.shieldvideo.ui.theme.staggeredEntrance
+import com.vizvag.shieldvideo.ui.music.MusicNavRequests
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.random.Random
+private const val RADIO_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+private const val PREFS = "radio_player"
+private const val KEY_LAST_STATION = "last_station_id"
+private const val METADATA_POLL_MS = 30_000L
+private val GlassRowShape = RoundedCornerShape(14.dp)
+private val LeftPanePad = 14.dp
+private val StationPaneWidth = 240.dp
+private val HeroArtSize = 220.dp
+@Composable
+fun RadioScreen(
+    settingsRepository: SettingsRepository,
+    onBack: () -> Unit,
+    onOpenBrowser: () -> Unit = onBack,
+    onSelectShare: (String) -> Unit = {},
+    onOpenLiveTv: () -> Unit = {},
+    onOpenMusic: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+) {
+    AudioScreenTheme {
+        RadioScreenBody(
+            settingsRepository = settingsRepository,
+            onBack = onBack,
+            onOpenBrowser = onOpenBrowser,
+            onSelectShare = onSelectShare,
+            onOpenLiveTv = onOpenLiveTv,
+            onOpenMusic = onOpenMusic,
+            onOpenSettings = onOpenSettings,
+        )
+    }
+}
+@Composable
+private fun RadioScreenBody(
+    settingsRepository: SettingsRepository,
+    onBack: () -> Unit,
+    onOpenBrowser: () -> Unit,
+    onSelectShare: (String) -> Unit,
+    onOpenLiveTv: () -> Unit,
+    onOpenMusic: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    var customStations by remember { mutableStateOf(emptyList<CustomRadioStationConfig>()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, settingsRepository) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                customStations = settingsRepository.load().customRadioStations
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(settingsRepository) {
+        customStations = settingsRepository.load().customRadioStations
+    }
+    val stations = remember(customStations) { RadioStations.all(customStations) }
+    var selectedStationId by remember(stations) {
+        mutableStateOf(prefs.getString(KEY_LAST_STATION, null))
+    }
+    LaunchedEffect(stations) {
+        if (stations.none { it.id == selectedStationId }) {
+            selectedStationId = stations.firstOrNull()?.id
+        }
+    }
+    val station = stations.firstOrNull { it.id == selectedStationId } ?: stations.firstOrNull()
+    val appSettings = remember(customStations) { settingsRepository.load() }
+    val railShares = rememberOrderedShares(appSettings)
+    val recordingFolder = remember(appSettings) { recordingFolderForRail(appSettings) }
+    val appForRail = LocalContext.current.applicationContext as ShieldVideoApp
+    val sleepForEmpty by appForRail.sleepTimer.state.collectAsState()
+    if (station == null) {
+        AppWithNavRail(
+            destination = RailDestination.Radio,
+            shares = railShares,
+            selectedShare = appSettings.defaultShare,
+            onSelectShare = onSelectShare,
+            recordingFolder = recordingFolder,
+            onLiveTv = onOpenLiveTv,
+            onRadio = {},
+            onMusic = onOpenMusic,
+            sleepTimerActive = sleepForEmpty.active,
+            sleepTimerLabel = sleepForEmpty.label,
+            onCycleSleepTimer = appForRail.sleepTimer::cycle,
+            onSettings = onOpenSettings,
+        ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(AppBackground)
+        ) {
+            AmbientBackdrop(intensity = 0.55f)
+            SoftVignette()
+            Column(modifier = Modifier.fillMaxSize()) {
+                RadioTopBar(onBack = onBack)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 64.dp)
+                    ) {
+                        Text(
+                            "No stations yet",
+                            color = AudioText,
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            letterSpacing = (-0.5).sp,
+                            fontFamily = PallasFontFamily,
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        Text(
+                            "Open Settings → Radio to add a stream,\nor tap Add BBC defaults.",
+                            color = AudioTextMuted,
+                            fontSize = 16.sp,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 24.sp,
+                            fontFamily = PallasFontFamily,
+                        )
+                    }
+                }
+            }
+        }
+        }
+        BackHandler(onBack = onBack)
+        return
+    }
+    var playing by remember { mutableStateOf(true) }
+    var buffering by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var level by remember { mutableFloatStateOf(0.35f) }
+    var streamAttempt by remember(station.id) { mutableIntStateOf(0) }
+    var nowPlaying by remember(station.id) { mutableStateOf<RadioNowPlaying>(RadioNowPlaying.Unavailable) }
+    var metadataLoading by remember(station.id) { mutableStateOf(true) }
+    var screenBlack by remember { mutableStateOf(false) }
+    var showStopAfterDialog by remember { mutableStateOf(false) }
+    val player = rememberRadioPlayer()
+    val metadataRepo = remember { BbcRadioMetadataRepository() }
+    val hostView = LocalView.current
+    val playFocus = remember { FocusRequester() }
+    val blackFocus = remember { FocusRequester() }
+    val app = LocalContext.current.applicationContext as ShieldVideoApp
+    val sleepState by app.sleepTimer.state.collectAsState()
+    val recordState by RadioRecordingService.state.collectAsState()
+    DisposableEffect(player) {
+        app.sleepTimer.bindPlayback(
+            onVolume = { player.volume = it },
+            onStop = {
+                screenBlack = false
+                player.pause()
+                if (RadioRecordingService.state.value.recording) {
+                    RadioRecordingService.finish(context)
+                }
+            }
+        )
+        onDispose {
+            app.sleepTimer.unbindPlayback()
+            // Keep recording in the background (timed stop / explicit stop); only
+            // auto-finish when no timed stop is scheduled.
+            val rec = RadioRecordingService.state.value
+            if (rec.recording && rec.finishAtMs <= 0L) {
+                RadioRecordingService.finish(context)
+            }
+        }
+    }
+    val streamUrls = station.streamFallbackUrls
+    val activeStreamUrl = streamUrls.getOrElse(streamAttempt) { streamUrls.last() }
+    DisposableEffect(hostView) {
+        hostView.keepScreenOn = true
+        onDispose { hostView.keepScreenOn = false }
+    }
+    DisposableEffect(lifecycleOwner, player) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> player.pause()
+                Lifecycle.Event.ON_RESUME -> if (playing) player.play()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    DisposableEffect(player, station.id) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                buffering = playbackState == Player.STATE_BUFFERING ||
+                    playbackState == Player.STATE_IDLE
+                if (playbackState == Player.STATE_READY) {
+                    error = null
+                }
+            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                playing = isPlaying
+            }
+            override fun onPlayerError(e: PlaybackException) {
+                buffering = false
+                if (streamAttempt < streamUrls.lastIndex) {
+                    streamAttempt++
+                    error = geoFriendlyMessage(streamAttempt, streamUrls.size)
+                } else {
+                    error = "Stream unavailable — BBC may block this station outside the UK"
+                }
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
+    LaunchedEffect(station.id, streamAttempt, activeStreamUrl) {
+        prefs.edit().putString(KEY_LAST_STATION, station.id).apply()
+        if (streamAttempt == 0) error = null
+        buffering = true
+        val factory = DefaultHttpDataSource.Factory()
+            .setUserAgent(RADIO_USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(12_000)
+            .setReadTimeoutMs(12_000)
+        val item = MediaItem.fromUri(activeStreamUrl)
+        val source = if (activeStreamUrl.contains(".m3u8", ignoreCase = true)) {
+            HlsMediaSource.Factory(factory).createMediaSource(item)
+        } else {
+            ProgressiveMediaSource.Factory(factory).createMediaSource(item)
+        }
+        player.setMediaSource(source)
+        player.prepare()
+        player.playWhenReady = true
+        player.volume = 1f
+    }
+    DisposableEffect(station.id) {
+        onDispose {
+            if (RadioRecordingService.state.value.recording) {
+                RadioRecordingService.finish(context)
+            }
+        }
+    }
+    LaunchedEffect(station.bbcServiceId) {
+        if (station.bbcServiceId.isBlank()) {
+            nowPlaying = RadioNowPlaying.Unavailable
+            metadataLoading = false
+            return@LaunchedEffect
+        }
+        metadataLoading = true
+        nowPlaying = metadataRepo.fetchNowPlaying(station.bbcServiceId)
+        metadataLoading = false
+        while (true) {
+            delay(METADATA_POLL_MS)
+            nowPlaying = metadataRepo.fetchNowPlaying(station.bbcServiceId)
+            metadataLoading = false
+        }
+    }
+    LaunchedEffect(playing, buffering) {
+        while (true) {
+            level = when {
+                !playing -> 0.12f
+                buffering -> 0.2f + Random.nextFloat() * 0.15f
+                else -> 0.35f + Random.nextFloat() * 0.65f
+            }
+            delay(90)
+        }
+    }
+    BackHandler {
+        if (screenBlack) {
+            screenBlack = false
+        } else {
+            onBack()
+        }
+    }
+    val bgTop by animateColorAsState(station.accentDeep, label = "bgTop")
+    val bgAccent by animateColorAsState(station.accent.copy(alpha = 0.38f), label = "bgAccent")
+    val artworkUrl = when (val np = nowPlaying) {
+        is RadioNowPlaying.Music -> np.imageUrl
+        is RadioNowPlaying.Show -> np.imageUrl
+        RadioNowPlaying.Unavailable -> null
+    }
+    val recentTracks = (nowPlaying as? RadioNowPlaying.Music)?.recent.orEmpty()
+    AppWithNavRail(
+        destination = RailDestination.Radio,
+        shares = railShares,
+        selectedShare = appSettings.defaultShare,
+        onSelectShare = onSelectShare,
+        recordingFolder = recordingFolder,
+        onLiveTv = onOpenLiveTv,
+        onRadio = {},
+        onMusic = onOpenMusic,
+        sleepTimerActive = sleepState.active,
+        sleepTimerLabel = sleepState.label,
+        onCycleSleepTimer = app.sleepTimer::cycle,
+        onSettings = onOpenSettings,
+        showRail = !screenBlack,
+    ) {
+    Box(modifier = Modifier.fillMaxSize().background(AppBackground)) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            // LEFT — glass station list
+            Column(
+                modifier = Modifier
+                    .width(StationPaneWidth)
+                    .fillMaxHeight()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                AudioSurface.copy(alpha = 0.98f),
+                                AppBackground.copy(alpha = 0.96f),
+                            ),
+                        ),
+                    )
+                    .border(
+                        width = 1.dp,
+                        brush = Brush.horizontalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.08f),
+                                AudioAccent.copy(alpha = 0.12f),
+                                Color.Transparent,
+                            ),
+                        ),
+                        shape = RoundedCornerShape(0.dp),
+                    ),
+            ) {
+                RadioTopBar(
+                    onBack = onBack,
+                    sleepLabel = sleepState.label,
+                    sleepActive = sleepState.active,
+                    onCycleSleep = app.sleepTimer::cycle,
+                    onBlackScreen = { screenBlack = true },
+                    compact = true,
+                )
+                StationListPane(
+                    stations = stations,
+                    selected = station,
+                    onSelect = {
+                        selectedStationId = it.id
+                        streamAttempt = 0
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = LeftPanePad, vertical = 8.dp),
+                )
+            }
+            // RIGHT — cinematic stage
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(AppBackground),
+            ) {
+                // BBC artwork as full-bleed atmosphere
+                if (!artworkUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = artworkUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = 0.42f }
+                            .then(
+                                if (android.os.Build.VERSION.SDK_INT >= 31) {
+                                    Modifier.blur(32.dp)
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(bgTop, AudioBackground, Color.Black),
+                                ),
+                            ),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.radialGradient(
+                                    colors = listOf(bgAccent, Color.Transparent),
+                                    center = Offset(0.55f, 0.35f),
+                                    radius = 1200f,
+                                ),
+                            ),
+                    )
+                }
+                GraphicEqualizerBackdrop(
+                    accent = station.accent,
+                    level = level,
+                    playing = playing && !buffering,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.55f)
+                        .align(Alignment.BottomCenter),
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colorStops = arrayOf(
+                                    0.0f to AppBackground.copy(alpha = 0.55f),
+                                    0.35f to AppBackground.copy(alpha = 0.28f),
+                                    0.75f to AppBackground.copy(alpha = 0.55f),
+                                    1.0f to AppBackground.copy(alpha = 0.88f),
+                                ),
+                            ),
+                        ),
+                )
+                SoftVignette()
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 36.dp, vertical = 24.dp),
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(28.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // Sharp hero art from BBC metadata
+                        Box(
+                            modifier = Modifier
+                                .size(HeroArtSize)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(Color.Black.copy(alpha = 0.45f))
+                                .border(
+                                    1.dp,
+                                    station.accent.copy(alpha = 0.55f),
+                                    RoundedCornerShape(18.dp),
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (!artworkUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = artworkUrl,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else {
+                                Text(
+                                    text = station.shortName.take(3),
+                                    color = station.accent,
+                                    fontSize = 42.sp,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 2.sp,
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            NowPlayingPanel(
+                                station = station,
+                                nowPlaying = nowPlaying,
+                                loading = metadataLoading,
+                                onArtistClick = { artist ->
+                                    MusicNavRequests.requestArtist(artist)
+                                    onOpenMusic()
+                                },
+                                onTrackClick = { track ->
+                                    MusicNavRequests.requestTrack(track)
+                                    onOpenMusic()
+                                },
+                            )
+                            StatusPill(
+                                station = station,
+                                playing = playing,
+                                buffering = buffering,
+                                error = error,
+                                streamHint = streamQualityLabel(activeStreamUrl),
+                                recording = recordState.recording,
+                                finishAtMs = recordState.finishAtMs,
+                                recordMessage = recordState.message,
+                                trailing = {
+                                    PlayPauseButton(
+                                        playing = playing && !buffering,
+                                        accent = station.accent,
+                                        focusRequester = playFocus,
+                                        onClick = {
+                                            if (player.isPlaying) {
+                                                player.pause()
+                                            } else {
+                                                player.volume = 1f
+                                                player.play()
+                                            }
+                                        },
+                                    )
+                                    RecordButton(
+                                        recording = recordState.recording,
+                                        saving = recordState.saving,
+                                        accent = station.accent,
+                                        onClick = {
+                                            if (recordState.recording || recordState.saving) {
+                                                RadioRecordingService.finish(context)
+                                            } else {
+                                                RadioRecordingService.start(
+                                                    context = context,
+                                                    streamUrl = activeStreamUrl,
+                                                    stationName = station.name,
+                                                    programme = programmeTitle(nowPlaying),
+                                                )
+                                            }
+                                        },
+                                        onLongClick = {
+                                            if (recordState.recording && !recordState.saving) {
+                                                showStopAfterDialog = true
+                                            }
+                                        },
+                                    )
+                                },
+                            )
+                        }
+                    }
+                    if (recentTracks.isNotEmpty()) {
+                        RecentTracksRow(
+                            tracks = recentTracks,
+                            accent = station.accent,
+                            onArtistClick = { artist ->
+                                MusicNavRequests.requestArtist(artist)
+                                onOpenMusic()
+                            },
+                            onTrackClick = { track ->
+                                MusicNavRequests.requestTrack(track)
+                                onOpenMusic()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 22.dp),
+                        )
+                    }
+                }
+            }
+        }
+        if (showStopAfterDialog && recordState.recording) {
+            StopRecordingAfterDialog(
+                finishAtMs = recordState.finishAtMs,
+                onStopAfter = { minutes ->
+                    RadioRecordingService.scheduleFinish(context, minutes)
+                    showStopAfterDialog = false
+                },
+                onStopNow = {
+                    RadioRecordingService.finish(context)
+                    showStopAfterDialog = false
+                },
+                onCancelTimer = {
+                    RadioRecordingService.cancelScheduledFinish(context)
+                    showStopAfterDialog = false
+                },
+                onDismiss = { showStopAfterDialog = false },
+            )
+        }
+        if (screenBlack) {
+            BlackScreenOverlay(
+                focusRequester = blackFocus,
+                onWake = { screenBlack = false },
+            )
+        }
+    }
+    }
+    LaunchedEffect(screenBlack) {
+        if (screenBlack) {
+            delay(80)
+            runCatching { blackFocus.requestFocus() }
+        } else {
+            delay(80)
+            runCatching { playFocus.requestFocus() }
+        }
+    }
+    LaunchedEffect(Unit) {
+        delay(120)
+        runCatching { playFocus.requestFocus() }
+    }
+}
+@Composable
+private fun SoftVignette() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.radialGradient(
+                    colorStops = arrayOf(
+                        0.0f to Color.Transparent,
+                        0.58f to Color.Transparent,
+                        0.85f to Color.Black.copy(alpha = 0.28f),
+                        1.0f to Color.Black.copy(alpha = 0.55f)
+                    ),
+                    center = Offset(0.5f, 0.45f),
+                    radius = 1400f
+                )
+            )
+    )
+}
+private fun streamQualityLabel(url: String): String? = when {
+    "320000" in url -> "320 kbps"
+    "96000" in url -> "96 kbps (international)"
+    "48000" in url -> "48 kbps (international)"
+    else -> null
+}
+private fun geoFriendlyMessage(attempt: Int, total: Int): String =
+    "UK stream blocked — trying alternative $attempt/${total - 1}…"
+@Composable
+private fun BlackScreenOverlay(
+    focusRequester: FocusRequester,
+    onWake: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(10f)
+            .background(Color.Black)
+            .focusRequester(focusRequester)
+            .focusable()
+            .clickable(role = Role.Button, onClick = onWake),
+    )
+}
+@Composable
+private fun NowPlayingPanel(
+    station: RadioStation,
+    nowPlaying: RadioNowPlaying,
+    loading: Boolean,
+    onArtistClick: (String) -> Unit = {},
+    onTrackClick: (String) -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        when (nowPlaying) {
+            is RadioNowPlaying.Music -> {
+                val eyebrow = when {
+                    !nowPlaying.showTitle.isNullOrBlank() -> nowPlaying.showTitle
+                    else -> "NOW PLAYING"
+                }
+                Text(
+                    text = eyebrow.uppercase(),
+                    color = station.accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.6.sp,
+                    softWrap = true,
+                )
+                if (!nowPlaying.showEpisode.isNullOrBlank()) {
+                    Text(
+                        text = nowPlaying.showEpisode,
+                        color = AudioTextMuted,
+                        fontSize = 15.sp,
+                        softWrap = true,
+                        lineHeight = 20.sp,
+                    )
+                }
+                RadioMetaLink(
+                    text = nowPlaying.artist,
+                    color = AudioText,
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.4).sp,
+                    lineHeight = 40.sp,
+                    enabled = nowPlaying.artist.isNotBlank(),
+                    onClick = { onArtistClick(nowPlaying.artist) },
+                )
+                RadioMetaLink(
+                    text = nowPlaying.track,
+                    color = AudioText.copy(alpha = 0.9f),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.sp,
+                    lineHeight = 28.sp,
+                    enabled = nowPlaying.track.isNotBlank(),
+                    onClick = { onTrackClick(nowPlaying.track) },
+                )
+            }
+            is RadioNowPlaying.Show -> {
+                Text(
+                    text = "ON AIR",
+                    color = station.accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.6.sp,
+                )
+                Text(
+                    text = nowPlaying.title,
+                    color = AudioText,
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.4).sp,
+                    softWrap = true,
+                    lineHeight = 42.sp,
+                )
+                if (!nowPlaying.episode.isNullOrBlank()) {
+                    Text(
+                        text = nowPlaying.episode,
+                        color = AudioText.copy(alpha = 0.9f),
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Medium,
+                        softWrap = true,
+                        lineHeight = 26.sp,
+                    )
+                }
+                if (!nowPlaying.synopsis.isNullOrBlank()) {
+                    Text(
+                        text = nowPlaying.synopsis,
+                        color = AudioTextMuted,
+                        fontSize = 15.sp,
+                        softWrap = true,
+                        lineHeight = 22.sp,
+                    )
+                }
+                val startMs = nowPlaying.startMs
+                val endMs = nowPlaying.endMs
+                if (startMs != null && endMs != null && endMs > startMs) {
+                    val now = System.currentTimeMillis()
+                    val progress = ((now - startMs).toFloat() / (endMs - startMs).toFloat()).coerceIn(0f, 1f)
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = station.accent,
+                        trackColor = Color.White.copy(alpha = 0.12f),
+                    )
+                }
+            }
+            RadioNowPlaying.Unavailable -> {
+                Text(
+                    text = station.name.uppercase(),
+                    color = station.accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.6.sp,
+                )
+                Text(
+                    text = if (loading) "Loading programme…" else station.tagline.ifBlank { station.name },
+                    color = AudioText,
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.4).sp,
+                    softWrap = true,
+                    lineHeight = 40.sp,
+                )
+                if (!loading && station.tagline.isNotBlank()) {
+                    Text(
+                        text = "Live radio",
+                        color = AudioTextMuted,
+                        fontSize = 16.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+@Composable
+private fun RadioMetaLink(
+    text: String,
+    color: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    fontWeight: FontWeight,
+    letterSpacing: androidx.compose.ui.unit.TextUnit,
+    lineHeight: androidx.compose.ui.unit.TextUnit,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val feedback = rememberTvFeedback()
+    Text(
+        text = text,
+        color = color,
+        fontSize = fontSize,
+        fontWeight = fontWeight,
+        letterSpacing = letterSpacing,
+        softWrap = true,
+        lineHeight = lineHeight,
+        fontFamily = PallasFontFamily,
+        overflow = TextOverflow.Ellipsis,
+        maxLines = 3,
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(
+                when {
+                    !enabled -> Color.Transparent
+                    focused -> Color.White.copy(alpha = 0.10f)
+                    else -> Color.Transparent
+                },
+            )
+            .border(
+                width = if (focused && enabled) 2.dp else 0.dp,
+                color = if (focused && enabled) FocusRing else Color.Transparent,
+                shape = RoundedCornerShape(4.dp),
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { event ->
+                if (!enabled) return@onPreviewKeyEvent false
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                if (isSelect && event.type == KeyEventType.KeyUp) {
+                    feedback.click()
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(enabled = enabled, interactionSource = interaction)
+            .clickable(enabled = enabled, role = Role.Button, onClick = {
+                feedback.click()
+                onClick()
+            }),
+    )
+}
+@Composable
+private fun RecentTracksRow(
+    tracks: List<RadioTrackHistory>,
+    accent: Color,
+    onArtistClick: (String) -> Unit = {},
+    onTrackClick: (String) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = "RECENTLY PLAYED",
+            color = accent.copy(alpha = 0.85f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        tracks.forEach { track ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                if (track.artist.isNotBlank()) {
+                    RadioMetaLink(
+                        text = track.artist,
+                        color = AudioText,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.sp,
+                        lineHeight = 18.sp,
+                        enabled = true,
+                        onClick = { onArtistClick(track.artist) },
+                    )
+                }
+                if (track.track.isNotBlank()) {
+                    RadioMetaLink(
+                        text = track.track,
+                        color = AudioTextMuted,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Normal,
+                        letterSpacing = 0.sp,
+                        lineHeight = 16.sp,
+                        enabled = true,
+                        onClick = { onTrackClick(track.track) },
+                    )
+                }
+                if (track.status.isNotBlank()) {
+                    Text(
+                        text = track.status,
+                        color = AudioTextMuted.copy(alpha = 0.7f),
+                        fontSize = 11.sp,
+                        softWrap = true,
+                    )
+                }
+            }
+        }
+    }
+}
+@Composable
+private fun rememberRadioPlayer(): ExoPlayer {
+    val context = LocalContext.current.applicationContext
+    val player = remember {
+        ExoPlayer.Builder(context).build().apply {
+            volume = 1f
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(player) {
+        onDispose {
+            player.stop()
+            player.release()
+        }
+    }
+    return player
+}
+@Composable
+private fun RadioTopBar(
+    onBack: () -> Unit,
+    sleepLabel: String? = null,
+    sleepActive: Boolean = false,
+    onCycleSleep: (() -> Unit)? = null,
+    onBlackScreen: (() -> Unit)? = null,
+    compact: Boolean = false,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = if (compact) LeftPanePad else 28.dp,
+                vertical = if (compact) 14.dp else 18.dp,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        IconActionButton(selected = false, onClick = onBack) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back",
+                tint = Color.White,
+                modifier = Modifier.size(if (compact) 22.dp else 26.dp),
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Radio",
+                color = AudioText,
+                fontSize = if (compact) 24.sp else 34.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.6).sp,
+                fontFamily = PallasFontFamily,
+            )
+            if (compact) {
+                Box(
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .width(56.dp)
+                        .height(2.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    AudioAccent.copy(alpha = 0.15f),
+                                    AudioAccent,
+                                    AudioAccent.copy(alpha = 0.15f),
+                                ),
+                            ),
+                            RoundedCornerShape(1.dp),
+                        ),
+                )
+            }
+        }
+        if (onCycleSleep != null) {
+            SleepTimerButton(
+                active = sleepActive,
+                label = sleepLabel,
+                onCycle = onCycleSleep,
+            )
+        }
+        if (onBlackScreen != null) {
+            IconActionButton(selected = false, onClick = onBlackScreen) {
+                Icon(
+                    imageVector = Icons.Filled.Brightness2,
+                    contentDescription = "Black screen",
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+    }
+}
+@Composable
+private fun StatusPill(
+    station: RadioStation,
+    playing: Boolean,
+    buffering: Boolean,
+    error: String?,
+    streamHint: String?,
+    recording: Boolean = false,
+    finishAtMs: Long = 0L,
+    recordMessage: String? = null,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
+) {
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(recording, finishAtMs) {
+        if (!recording || finishAtMs <= 0L) return@LaunchedEffect
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+    val remainingLabel = if (recording && finishAtMs > nowMs) {
+        val mins = ((finishAtMs - nowMs + 59_999L) / 60_000L).toInt().coerceAtLeast(1)
+        "REC · ${formatRemainingMinutes(mins)}"
+    } else null
+    val label = when {
+        error != null -> "OFF AIR"
+        remainingLabel != null -> remainingLabel
+        recording -> "REC"
+        buffering -> "TUNING"
+        playing -> "ON AIR"
+        else -> "PAUSED"
+    }
+    val pillColor = when {
+        error != null -> Color(0xFFFF6E6E)
+        recording -> Color(0xFFFF5252)
+        buffering -> AudioTextMuted
+        playing -> station.accent
+        else -> AudioTextMuted
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(100.dp))
+                    .background(pillColor.copy(alpha = 0.16f))
+                    .border(
+                        width = 1.dp,
+                        color = pillColor.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(100.dp)
+                    )
+                    .padding(horizontal = 14.dp, vertical = 7.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(pillColor)
+                    )
+                    Text(
+                        text = label,
+                        color = pillColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.6.sp
+                    )
+                }
+            }
+            if (!streamHint.isNullOrBlank() && error == null) {
+                Text(
+                    text = streamHint,
+                    color = AudioTextMuted,
+                    fontSize = 12.sp
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            if (trailing != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = trailing,
+                )
+            }
+        }
+        if (error != null) {
+            Text(
+                text = error,
+                color = AudioTextMuted,
+                fontSize = 12.sp,
+                softWrap = true,
+            )
+        } else if (!recordMessage.isNullOrBlank() && recordMessage.startsWith("Saved")) {
+            Text(
+                text = recordMessage,
+                color = AudioTextMuted,
+                fontSize = 12.sp,
+                softWrap = true,
+            )
+        }
+    }
+}
+@Composable
+private fun PlayPauseButton(
+    playing: Boolean,
+    accent: Color,
+    focusRequester: FocusRequester,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.08f else 1f,
+        animationSpec = Motion.focusSpring(),
+        label = "playScale"
+    )
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .scale(scale)
+            .clip(CircleShape)
+            .background(
+                if (focused) accent.copy(alpha = 0.28f)
+                else Color.White.copy(alpha = 0.08f)
+            )
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = if (focused) Accent else Color.White.copy(alpha = 0.22f),
+                shape = CircleShape
+            )
+            .focusRequester(focusRequester)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+            contentDescription = if (playing) "Pause" else "Play",
+            tint = if (focused) Accent else Color.White.copy(alpha = 0.85f),
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RecordButton(
+    recording: Boolean,
+    saving: Boolean,
+    accent: Color,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
+) {
+    var focused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.08f else 1f,
+        animationSpec = Motion.focusSpring(),
+        label = "recScale",
+    )
+    val active = recording || saving
+    val ring = when {
+        focused -> Accent
+        active -> Color(0xFFFF5252)
+        else -> Color.White.copy(alpha = 0.22f)
+    }
+    val infinite = rememberInfiniteTransition(label = "recPulse")
+    val pulse by infinite.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.85f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "recPulseAlpha",
+    )
+    val scope = rememberCoroutineScope()
+    var longPressJob by remember { mutableStateOf<Job?>(null) }
+    var longPressFired by remember { mutableStateOf(false) }
+    val longPressTimeout = 450L
+    val longClickEnabled = recording && !saving
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .scale(scale)
+            .drawBehind {
+                if (active) {
+                    drawCircle(
+                        color = Color(0xFFFF5252).copy(alpha = pulse * 0.35f),
+                        radius = size.minDimension * 0.68f,
+                    )
+                }
+            }
+            .clip(CircleShape)
+            .background(
+                when {
+                    active -> Color(0xFFFF5252).copy(alpha = 0.88f)
+                    focused -> accent.copy(alpha = 0.22f)
+                    else -> Color.White.copy(alpha = 0.08f)
+                },
+            )
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = ring,
+                shape = CircleShape,
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { event ->
+                if (saving) return@onPreviewKeyEvent false
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                when {
+                    longClickEnabled && event.key == Key.Menu && event.type == KeyEventType.KeyUp -> {
+                        onLongClick()
+                        true
+                    }
+                    longClickEnabled && isSelect && event.type == KeyEventType.KeyDown -> {
+                        if (longPressJob == null) {
+                            longPressFired = false
+                            longPressJob = scope.launch {
+                                delay(longPressTimeout)
+                                longPressFired = true
+                            }
+                        }
+                        true
+                    }
+                    isSelect && event.type == KeyEventType.KeyUp -> {
+                        val wasLongPress = longClickEnabled && longPressFired
+                        longPressJob?.cancel()
+                        longPressJob = null
+                        longPressFired = false
+                        if (wasLongPress) onLongClick() else onClick()
+                        true
+                    }
+                    isSelect && event.type == KeyEventType.KeyDown -> true
+                    else -> false
+                }
+            }
+            .focusable()
+            .combinedClickable(
+                enabled = !saving,
+                role = Role.Button,
+                onClick = onClick,
+                onLongClick = if (longClickEnabled) onLongClick else null,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (active) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
+            contentDescription = when {
+                saving -> "Saving recording"
+                recording -> "Stop recording"
+                else -> "Record"
+            },
+            tint = when {
+                active -> Color.White
+                focused -> Accent
+                else -> Color(0xFFFF8A80)
+            },
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+@Composable
+private fun StopRecordingAfterDialog(
+    finishAtMs: Long,
+    onStopAfter: (Int) -> Unit,
+    onStopNow: () -> Unit,
+    onCancelTimer: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // Hold-OK release must not immediately activate the first option.
+    var armed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        armed = false
+        delay(280)
+        armed = true
+    }
+    fun run(action: () -> Unit) {
+        if (armed) action()
+    }
+    val hasTimer = finishAtMs > System.currentTimeMillis()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Stop recording", color = Color.White, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "Stop after",
+                    color = AudioTextMuted,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+                RadioRecordingService.STOP_AFTER_MINUTES.forEach { minutes ->
+                    Text(
+                        text = RadioRecordingService.formatMinutesLabel(minutes),
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { run { onStopAfter(minutes) } }
+                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                    )
+                }
+                Text(
+                    text = "Stop now",
+                    color = Color(0xFFFF6E6E),
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { run(onStopNow) }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                )
+                if (hasTimer) {
+                    Text(
+                        text = "Cancel timed stop",
+                        color = AudioTextMuted,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { run(onCancelTimer) }
+                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { run(onDismiss) }) {
+                Text("Close", color = AudioAccent)
+            }
+        },
+        containerColor = CardSurface,
+    )
+}
+private fun formatRemainingMinutes(mins: Int): String = when {
+    mins >= 60 -> {
+        val h = mins / 60
+        val m = mins % 60
+        if (m == 0) "${h}h" else "${h}h ${m}m"
+    }
+    else -> "${mins}m"
+}
+private fun programmeTitle(nowPlaying: RadioNowPlaying): String? = when (nowPlaying) {
+    is RadioNowPlaying.Music -> {
+        nowPlaying.showTitle?.takeIf { it.isNotBlank() }
+            ?: listOf(nowPlaying.artist, nowPlaying.track)
+                .filter { it.isNotBlank() }
+                .joinToString(" — ")
+                .ifBlank { null }
+    }
+    is RadioNowPlaying.Show -> {
+        listOfNotNull(
+            nowPlaying.title.takeIf { it.isNotBlank() },
+            nowPlaying.episode?.takeIf { it.isNotBlank() },
+        ).joinToString(" — ").ifBlank { null }
+    }
+    RadioNowPlaying.Unavailable -> null
+}
+@Composable
+private fun StationListPane(
+    stations: List<RadioStation>,
+    selected: RadioStation,
+    onSelect: (RadioStation) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val listState = rememberLazyListState()
+    val selectedIndex = stations.indexOfFirst { it.id == selected.id }.coerceAtLeast(0)
+    LaunchedEffect(selected.id) {
+        listState.animateScrollToItem(selectedIndex)
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(bottom = 16.dp),
+    ) {
+        itemsIndexed(stations, key = { _, s -> s.id }) { index, s ->
+            StationListRow(
+                station = s,
+                selected = s.id == selected.id,
+                onClick = { onSelect(s) },
+                index = index,
+            )
+        }
+    }
+}
+@Composable
+private fun StationListRow(
+    station: RadioStation,
+    selected: Boolean,
+    onClick: () -> Unit,
+    index: Int,
+) {
+    val feedback = rememberTvFeedback()
+    var focused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = when {
+            focused -> 1.02f
+            selected -> 1.01f
+            else -> 1f
+        },
+        animationSpec = Motion.focusSpring(),
+        label = "stationRowScale",
+    )
+    val borderWidth by animateDpAsState(
+        targetValue = when {
+            focused -> 3.dp
+            selected -> 2.dp
+            else -> 1.dp
+        },
+        animationSpec = Motion.focusSpring(),
+        label = "stationRowBorder",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = when {
+            focused -> Color.White
+            selected -> station.accent
+            else -> station.accent.copy(alpha = 0.42f)
+        },
+        animationSpec = Motion.focusSpring(),
+        label = "stationRowBorderColor",
+    )
+    val bgTop by animateColorAsState(
+        targetValue = when {
+            focused -> station.accent.copy(alpha = 0.42f)
+            selected -> station.accent.copy(alpha = 0.36f)
+            else -> station.accent.copy(alpha = 0.22f)
+        },
+        animationSpec = Motion.focusSpring(),
+        label = "stationRowBg",
+    )
+    val bgBottom by animateColorAsState(
+        targetValue = when {
+            focused -> station.accentDeep.copy(alpha = 0.92f)
+            selected -> station.accentDeep.copy(alpha = 0.88f)
+            else -> station.accentDeep.copy(alpha = 0.72f)
+        },
+        animationSpec = Motion.focusSpring(),
+        label = "stationRowBgBottom",
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .staggeredEntrance(visible = true, index = index)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(GlassRowShape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(bgTop, bgBottom),
+                ),
+            )
+            .border(borderWidth, borderColor, GlassRowShape)
+            .onFocusChanged {
+                val gained = it.isFocused && !focused
+                focused = it.isFocused
+                if (gained) feedback.focus()
+            }
+            .focusable()
+            .clickable {
+                feedback.click()
+                onClick()
+            }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        val logoRes = station.logoRes
+        if (logoRes != null) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(logoRes),
+                    contentDescription = station.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(4.dp),
+                )
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(station.accentDeep.copy(alpha = 0.85f))
+                    .border(1.dp, station.accent.copy(alpha = 0.45f), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = station.shortName.take(3),
+                    color = station.accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Black,
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = station.name,
+                color = AudioText,
+                fontSize = 14.sp,
+                fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.SemiBold,
+                softWrap = true,
+                maxLines = 2,
+                lineHeight = 17.sp,
+            )
+            Text(
+                text = station.tagline.ifBlank { station.shortName },
+                color = AudioTextMuted,
+                fontSize = 12.sp,
+                softWrap = true,
+                maxLines = 2,
+                lineHeight = 15.sp,
+            )
+        }
+        if (selected) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(100.dp))
+                    .background(station.accent.copy(alpha = 0.2f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = "ON",
+                    color = station.accent,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.2.sp,
+                )
+            }
+        }
+    }
+}
+@Composable
+private fun GraphicEqualizerBackdrop(
+    accent: Color,
+    level: Float,
+    playing: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val infinite = rememberInfiniteTransition(label = "eq")
+    val phase by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (playing) 2400 else 9000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "eqPhase",
+    )
+    val pulse by animateFloatAsState(
+        targetValue = level,
+        animationSpec = tween(90),
+        label = "eqPulse",
+    )
+    val barCount = 56
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val gap = w / (barCount * 2.4f)
+        val barW = ((w - gap * (barCount + 1)) / barCount).coerceAtLeast(2f)
+        val baseline = h * 0.92f
+        for (i in 0 until barCount) {
+            val t = i / (barCount - 1f)
+            val wave = (
+                sin(phase + t * 9.5f) * 0.38f +
+                    sin(phase * 1.7f + t * 4.2f) * 0.28f +
+                    sin(phase * 0.55f + t * 17f) * 0.18f +
+                    0.5f
+                ).coerceIn(0.08f, 1f)
+            val energy = if (playing) (0.22f + pulse * 0.78f) else 0.12f
+            val barH = h * 0.78f * wave * energy
+            val x = gap + i * (barW + gap)
+            val top = baseline - barH
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        accent.copy(alpha = 0.08f + energy * 0.22f),
+                        accent.copy(alpha = 0.35f + energy * 0.45f),
+                        accent.copy(alpha = 0.75f),
+                    ),
+                    startY = top,
+                    endY = baseline,
+                ),
+                topLeft = Offset(x, top),
+                size = Size(barW, barH),
+                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+            )
+        }
+    }
+}
