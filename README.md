@@ -2,16 +2,13 @@
 
 Android TV app for NVIDIA Shield that browses Synology SMB3 shares and plays files in VLC, with Trakt metadata and TMDB fanart cards styled like the Home Assistant *UPCOMING TV* rows. Also includes **Live TV (IPTV)** with M3U playlists and XMLTV EPG.
 
-## Stack (read this first — agents)
+## Stack
 
 | | |
 |--|--|
 | **Platform** | Native **Android TV** (NVIDIA Shield, Google TV / Chromecast) |
 | **Language / UI** | **Kotlin** + **Jetpack Compose** under `app/src/main/java/…` |
 | **Build** | Gradle (`.\gradlew.bat :app:assembleDebug`) → APK, install via **ADB** |
-| **Not this repo** | **Not** Svelte, SvelteKit, React, web, or Node. There are no `.svelte` files and no frontend npm app. |
-
-If Cursor injects Svelte MCP tools, Svelte skills, or “always apply” Svelte rules from a plugin, **ignore them for this workspace**. Do not load Svelte docs, run `@sveltejs/mcp`, or treat UI work as a web component task. Edit Compose screens (e.g. `ui/radio/RadioScreen.kt`) instead.
 
 ## Download (end users)
 
