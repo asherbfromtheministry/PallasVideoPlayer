@@ -1,5 +1,6 @@
 package com.vizvag.shieldvideo.music.data.metadata
 
+import com.vizvag.shieldvideo.music.data.albumRootFolder
 import com.vizvag.shieldvideo.music.data.local.AlbumEntity
 import com.vizvag.shieldvideo.music.data.local.ArtistEntity
 import com.vizvag.shieldvideo.music.data.local.TrackEntity
@@ -8,6 +9,14 @@ import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
 import java.io.File
 import java.security.MessageDigest
+
+private val DiscFolderNumber =
+    Regex("""(?i)(?:cd|disc|disk|dvd)\s*[-_.]?\s*(\d+)\b""")
+
+private fun discNumberFromFolder(folderPath: String): Int? {
+    val name = folderPath.replace('\\', '/').trimEnd('/').substringAfterLast('/')
+    return DiscFolderNumber.find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+}
 
 data class ParsedTrack(
     val track: TrackEntity,
@@ -119,7 +128,7 @@ data class TrackTagInfo(
         channels = rich.channels ?: channels,
         codec = rich.codec?.takeIf { it.isNotBlank() } ?: codec,
         bitsPerSample = rich.bitsPerSample ?: bitsPerSample,
-        durationMs = rich.durationMs.takeIf { it > 0 } ?: durationMs,
+        durationMs = durationMs.takeIf { it > 0 } ?: rich.durationMs.takeIf { it > 0 } ?: 0L,
         artistId = artistId ?: rich.artistId,
         albumId = albumId ?: rich.albumId,
     )
@@ -201,12 +210,20 @@ object MetadataResolver {
         val genre = tags?.genre?.takeIf { it.isNotBlank() } ?: pathGenre
         val trackNumber = tags?.trackNumber ?: fileParsed?.first
 
+        val folderPath = entry.path.replace('\\', '/').substringBeforeLast('/')
         val artistId = hashId("artist", albumArtist)
-        val albumId = hashId("album", albumArtist, albumTitle)
+        // Physical album = title under album-root folder (CD1/CD2 collapse).
+        // Never key by track artist — that creates one album per VA track.
+        val albumId = hashId(
+            "album",
+            albumRootFolder(folderPath).lowercase(),
+            albumTitle.lowercase(),
+        )
         val trackId = hashId("track", entry.path)
 
-        val folderPath = entry.path.replace('\\', '/').substringBeforeLast('/')
         val coverPath = "$folderPath/folder.jpg"
+        val discNumber = tags?.discNumber?.takeIf { it > 0 }
+            ?: discNumberFromFolder(folderPath)
 
         val artist = ArtistEntity(
             id = artistId,
@@ -231,7 +248,7 @@ object MetadataResolver {
             albumTitle = albumTitle,
             albumArtist = albumArtist,
             trackNumber = trackNumber,
-            discNumber = tags?.discNumber,
+            discNumber = discNumber,
             year = year,
             genre = genre,
             composer = tags?.composer,
@@ -323,13 +340,17 @@ object MetadataResolver {
         val albumTitle = fixTagText(tag?.album?.takeIf { it.isNotBlank() } ?: pathAlbum)
         val year = tag?.year?.takeIf { it > 0 }
         val genre = tag?.genre?.takeIf { it.isNotBlank() } ?: pathGenre
-        val discNumber = tag?.disc?.takeIf { it > 0 }
+        val folderPath = path.substringBeforeLast('/')
+        val discNumber = tag?.disc?.takeIf { it > 0 } ?: discNumberFromFolder(folderPath)
 
         val artistId = hashId("artist", albumArtist)
-        val albumId = hashId("album", albumArtist, albumTitle)
+        val albumId = hashId(
+            "album",
+            albumRootFolder(folderPath).lowercase(),
+            albumTitle.lowercase(),
+        )
         val trackId = hashId("track", path)
 
-        val folderPath = path.substringBeforeLast('/')
         val coverPath = "$folderPath/folder.jpg"
         val bitrateKbps = audio?.bitrate?.takeIf { it > 0 }?.let { bps ->
             if (bps >= 1000) bps / 1000 else bps
@@ -390,7 +411,11 @@ object MetadataResolver {
         val artistGuess = compiled?.second ?: artistFolder
         val titleGuess = compiled?.third ?: stem
         val artistId = "path-artist:${artistGuess.lowercase()}"
-        val albumId = "path-album:${artistGuess.lowercase()}|${albumGuess.lowercase()}"
+        val albumId = hashId(
+            "album",
+            albumRootFolder(parent).lowercase(),
+            albumGuess.lowercase(),
+        )
         return TrackEntity(
             id = "path-track:$path",
             albumId = albumId,

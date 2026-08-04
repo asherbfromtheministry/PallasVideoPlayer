@@ -42,6 +42,8 @@ import androidx.media3.common.Player
 import android.os.SystemClock
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -49,8 +51,10 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.video.VideoFrameMetadataListener
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import android.content.Context
 import com.vizvag.shieldvideo.R
 import com.vizvag.shieldvideo.data.iptv.IptvChannel
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
@@ -63,35 +67,64 @@ import kotlinx.coroutines.delay
 private const val IPTV_USER_AGENT =
     "VLC/3.0.20 LibVLC/3.0.20 Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36"
 
+/** Keep Live TV buffers small so zapping many channels does not balloon native memory. */
+private const val IPTV_MIN_BUFFER_MS = 2_500
+private const val IPTV_MAX_BUFFER_MS = 10_000
+private const val IPTV_PLAYBACK_BUFFER_MS = 750
+private const val IPTV_REBUFFER_MS = 1_500
+private const val IPTV_TARGET_BUFFER_BYTES = 8 * 1024 * 1024
+
 /**
- * Owns a single ExoPlayer for Live TV preview / fullscreen so channel zaps reuse one instance.
- * Pauses/stops on background so audio does not leak after Home / app close.
+ * ExoPlayer for Live TV with FFmpeg audio fallback so AC-3 / E-AC-3 streams still play
+ * when the device MediaCodec path does not support them.
  */
-@Composable
-fun rememberIptvExoPlayer(): ExoPlayer {
-    val context = LocalContext.current.applicationContext
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val player = remember {
-        ExoPlayer.Builder(context).build().apply {
+@OptIn(UnstableApi::class)
+fun buildIptvExoPlayer(context: Context): ExoPlayer {
+    val renderersFactory = DefaultRenderersFactory(context.applicationContext)
+        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+        .setEnableDecoderFallback(true)
+    val loadControl = DefaultLoadControl.Builder()
+        .setBufferDurationsMs(
+            IPTV_MIN_BUFFER_MS,
+            IPTV_MAX_BUFFER_MS,
+            IPTV_PLAYBACK_BUFFER_MS,
+            IPTV_REBUFFER_MS
+        )
+        .setTargetBufferBytes(IPTV_TARGET_BUFFER_BYTES)
+        .setPrioritizeTimeOverSizeThresholds(true)
+        .build()
+    return ExoPlayer.Builder(context.applicationContext, renderersFactory)
+        .setLoadControl(loadControl)
+        .build()
+        .apply {
             repeatMode = Player.REPEAT_MODE_OFF
             playWhenReady = true
             volume = 1f
         }
-    }
+}
+
+/**
+ * Owns a single ExoPlayer for Live TV preview / fullscreen so channel zaps reuse one instance.
+ * Pauses/stops on background so audio does not leak after Home / app close.
+ * Recreates the player periodically so MediaCodec / FFmpeg / AudioTrack native memory
+ * from long zap sessions is released.
+ */
+private const val IPTV_PLAYER_RECYCLE_AFTER_ZAPS = 20
+
+@Composable
+fun rememberIptvExoPlayer(): ExoPlayer {
+    val app = com.vizvag.shieldvideo.ShieldVideoApp.instance
+    val player = app.iptvPlayback.player
+    val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(player, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE,
                 Lifecycle.Event.ON_STOP -> {
-                    player.playWhenReady = false
-                    player.pause()
-                    player.stop()
-                }
-                Lifecycle.Event.ON_RESUME -> {
-                    if (player.mediaItemCount > 0) {
-                        player.prepare()
-                        player.playWhenReady = true
-                        player.play()
+                    app.iptvPlayback.pause()
+                    // Hard stop on leave — Quit = silence
+                    if (event == Lifecycle.Event.ON_STOP) {
+                        app.iptvPlayback.stop()
                     }
                 }
                 else -> Unit
@@ -100,13 +133,24 @@ fun rememberIptvExoPlayer(): ExoPlayer {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            player.playWhenReady = false
-            player.stop()
-            player.clearMediaItems()
-            player.release()
+            // App-scoped player — do not release here
         }
     }
     return player
+}
+
+private object IptvZapRecycle {
+    @Volatile private var hook: (() -> Boolean)? = null
+    @Volatile private var boundPlayer: ExoPlayer? = null
+    fun bind(player: ExoPlayer, onZap: () -> Boolean) {
+        boundPlayer = player
+        hook = onZap
+    }
+    /** @return true if the player is being replaced — caller must not use it further. */
+    fun noteZap(player: ExoPlayer): Boolean {
+        if (player !== boundPlayer) return false
+        return hook?.invoke() == true
+    }
 }
 
 data class AudioTrackDetail(
@@ -249,6 +293,8 @@ fun BindIptvStream(player: ExoPlayer, channel: IptvChannel?, onError: (String?) 
                 val url = channel?.streamUrl?.trim().orEmpty()
                 val next = attempt.incrementAndGet()
                 if (url.isNotBlank() && next <= 3) {
+                    player.stop()
+                    player.clearMediaItems()
                     player.setMediaSource(mediaSourceFor(httpFactory, url, next), true)
                     player.prepare()
                     player.playWhenReady = true
@@ -267,12 +313,21 @@ fun BindIptvStream(player: ExoPlayer, channel: IptvChannel?, onError: (String?) 
         onDispose { player.removeListener(listener) }
     }
 
-    LaunchedEffect(channel?.id, channel?.streamUrl) {
+    LaunchedEffect(player, channel?.id, channel?.streamUrl) {
         attempt.set(0)
+        iptvStreamBytes.set(0L)
+        // Fully tear down the previous stream so codecs / AudioTrack / FFmpeg native
+        // buffers are released before the next channel attaches.
+        player.playWhenReady = false
+        player.stop()
+        player.clearMediaItems()
+        delay(40)
         if (channel == null || channel.streamUrl.isBlank()) {
             onError(null)
-            player.stop()
-            player.clearMediaItems()
+            return@LaunchedEffect
+        }
+        // May recreate ExoPlayer after many zaps (releases native codec / AudioTrack memory).
+        if (IptvZapRecycle.noteZap(player)) {
             return@LaunchedEffect
         }
         onError(null)
@@ -280,6 +335,11 @@ fun BindIptvStream(player: ExoPlayer, channel: IptvChannel?, onError: (String?) 
         player.setMediaSource(mediaSourceFor(httpFactory, url, 0), true)
         player.prepare()
         player.playWhenReady = true
+        com.vizvag.shieldvideo.ShieldVideoApp.instance.iptvPlayback.notePlaying(
+            channel.id,
+            channel.name,
+            url,
+        )
     }
 }
 

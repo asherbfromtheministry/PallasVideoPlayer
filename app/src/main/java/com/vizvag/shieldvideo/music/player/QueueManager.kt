@@ -58,6 +58,16 @@ class QueueManager constructor(
         _currentIndex.value = startIndex.coerceIn(0, (tracks.size - 1).coerceAtLeast(0))
     }
 
+    /** Replace queue rows in place (same order/count) — e.g. refresh metadata from library. */
+    fun replaceAll(tracks: List<TrackEntity>) {
+        _queue.value = tracks
+        if (tracks.isEmpty()) {
+            _currentIndex.value = -1
+        } else if (_currentIndex.value !in tracks.indices) {
+            _currentIndex.value = _currentIndex.value.coerceIn(0, tracks.lastIndex)
+        }
+    }
+
     fun playNext(track: TrackEntity) {
         val list = _queue.value.toMutableList()
         val insertAt = (_currentIndex.value + 1).coerceAtMost(list.size)

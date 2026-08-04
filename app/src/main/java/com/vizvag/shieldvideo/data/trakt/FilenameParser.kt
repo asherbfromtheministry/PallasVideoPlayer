@@ -182,9 +182,33 @@ object FilenameParser {
         }
     }
 
+    /**
+     * Nearest parent folder that looks like a show/movie title — not S01 or Season 1.
+     * Download packs are often ShowName/Season 01/episode files; using the season folder
+     * as the title makes Trakt/TMDB miss and leaves download tiles blank.
+     */
     private fun parentFolderName(fullPath: String): String? {
         val parts = fullPath.replace('\\', '/').split('/').filter { it.isNotBlank() }
-        return if (parts.size >= 2) parts[parts.lastIndex - 1] else null
+        if (parts.size < 2) return null
+        // Walk from immediate parent upward; skip the file name at the end.
+        for (i in parts.lastIndex - 1 downTo 0) {
+            val candidate = parts[i]
+            if (!isSeasonOrJunkFolderName(candidate)) return candidate
+        }
+        return parts[parts.lastIndex - 1]
+    }
+
+    /** True for folders that only encode season / disc / extras — not a searchable title. */
+    internal fun isSeasonOrJunkFolderName(name: String): Boolean {
+        val cleaned = name.replace('.', ' ').replace('_', ' ').trim()
+        if (cleaned.isBlank()) return true
+        if (Regex("""(?i)^S\d{1,2}(?:\s*[-–]\s*S\d{1,2})?$""").matches(cleaned)) return true
+        if (Regex("""(?i)^Season\s*\d{1,2}(?:\s*[-–]\s*\d{1,2})?$""").matches(cleaned)) return true
+        if (Regex("""(?i)^(?:Disc|Disk|CD|DVD)\s*\d{1,2}$""").matches(cleaned)) return true
+        if (Regex("""(?i)^(?:Extras?|Specials?|Featurettes?|Bonus|Samples?)$""").matches(cleaned)) {
+            return true
+        }
+        return false
     }
 
     private fun stripYears(raw: String): String =

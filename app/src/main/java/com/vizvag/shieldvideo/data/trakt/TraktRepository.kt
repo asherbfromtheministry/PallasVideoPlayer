@@ -61,14 +61,42 @@ class TraktRepository {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    /** Avoid stampeding Trakt when enriching a whole /download folder listing. */
+    private val requestLock = Any()
+    private var lastRequestAtMs = 0L
+    private val searchCache = object : LinkedHashMap<String, List<JSONObject>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<JSONObject>>?): Boolean =
+            size > 128
+    }
+    private val lookupCache = object : LinkedHashMap<String, TraktMatch?>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, TraktMatch?>?): Boolean =
+            size > 128
+    }
+
     suspend fun lookup(clientId: String, query: ParsedMediaQuery): TraktMatch? =
         withContext(Dispatchers.IO) {
             if (clientId.isBlank() || query.searchQuery.isBlank()) return@withContext null
-            when (query.kind) {
+            val cacheKey = listOf(
+                clientId,
+                query.kind.name,
+                query.searchQuery.lowercase(),
+                query.year?.toString().orEmpty(),
+                query.season?.toString().orEmpty(),
+                query.episode?.toString().orEmpty(),
+            ).joinToString("|")
+            synchronized(lookupCache) {
+                if (lookupCache.containsKey(cacheKey)) return@withContext lookupCache[cacheKey]
+            }
+            val match = when (query.kind) {
                 MediaKind.EPISODE -> searchEpisode(clientId, query) ?: searchGeneric(clientId, query)
                 MediaKind.MOVIE -> searchMovie(clientId, query) ?: searchGeneric(clientId, query)
                 MediaKind.UNKNOWN -> searchGeneric(clientId, query)
             }
+            // Never cache misses — transient 429s would stick for the whole session.
+            if (match != null) {
+                synchronized(lookupCache) { lookupCache[cacheKey] = match }
+            }
+            match
         }
 
     /**
@@ -428,17 +456,23 @@ class TraktRepository {
     }
 
     private fun search(clientId: String, type: String, query: String): List<JSONObject> {
+        val cacheKey = "$clientId|$type|${query.lowercase()}"
+        synchronized(searchCache) {
+            searchCache[cacheKey]?.let { return it }
+        }
         val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
         val body = getBody(
             clientId,
             "https://api.trakt.tv/search/$type?query=$encoded&extended=full&limit=25"
         ) ?: return emptyList()
         val array = JSONArray(body)
-        return buildList {
+        val results = buildList {
             for (i in 0 until array.length()) {
                 add(array.getJSONObject(i))
             }
         }
+        synchronized(searchCache) { searchCache[cacheKey] = results }
+        return results
     }
 
     companion object {
@@ -518,22 +552,70 @@ class TraktRepository {
             val datePart = iso.take(10)
             return datePart.takeIf { it.matches(Regex("""\d{4}-\d{2}-\d{2}""")) }
         }
+
+        /** ~2.5 req/s globally — browse enrichment fans out and Trakt 429s without this. */
+        private const val MIN_REQUEST_GAP_MS = 400L
     }
 
     private fun getBody(clientId: String, url: String, accessToken: String? = null): String? {
-        val builder = Request.Builder()
-            .url(url)
-            .header("Content-Type", "application/json")
-            .header("trakt-api-version", "2")
-            .header("trakt-api-key", clientId)
-            .get()
-        if (!accessToken.isNullOrBlank()) {
-            builder.header("Authorization", "Bearer $accessToken")
+        var attempt = 0
+        while (attempt < 4) {
+            attempt++
+            throttle()
+            val builder = Request.Builder()
+                .url(url)
+                .header("Content-Type", "application/json")
+                .header("trakt-api-version", "2")
+                .header("trakt-api-key", clientId)
+                .header("User-Agent", "PallasVideoPlayer")
+                .get()
+            if (!accessToken.isNullOrBlank()) {
+                builder.header("Authorization", "Bearer $accessToken")
+            }
+            val outcome = client.newCall(builder.build()).execute().use { response ->
+                when {
+                    response.isSuccessful ->
+                        GetOutcome.Ok(response.body?.string())
+                    response.code == 429 -> {
+                        val retryAfterSec = response.header("Retry-After")?.toLongOrNull() ?: (attempt * 2L)
+                        GetOutcome.Retry(retryAfterSec.coerceIn(1L, 20L) * 1000L)
+                    }
+                    else -> GetOutcome.Ok(null)
+                }
+            }
+            when (outcome) {
+                is GetOutcome.Ok -> return outcome.body
+                is GetOutcome.Retry -> {
+                    try {
+                        Thread.sleep(outcome.waitMs)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return null
+                    }
+                }
+            }
         }
-        client.newCall(builder.build()).execute().use { response ->
-            if (!response.isSuccessful) return null
-            return response.body?.string()
+        return null
+    }
+
+    private fun throttle() {
+        synchronized(requestLock) {
+            val now = System.currentTimeMillis()
+            val wait = MIN_REQUEST_GAP_MS - (now - lastRequestAtMs)
+            if (wait > 0) {
+                try {
+                    Thread.sleep(wait)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+            lastRequestAtMs = System.currentTimeMillis()
         }
+    }
+
+    private sealed class GetOutcome {
+        data class Ok(val body: String?) : GetOutcome()
+        data class Retry(val waitMs: Long) : GetOutcome()
     }
 }
 

@@ -13,18 +13,52 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -51,6 +85,14 @@ import com.vizvag.shieldvideo.playback.NasWatchHistoryStore
 import com.vizvag.shieldvideo.playback.PlayerLaunchResult
 import com.vizvag.shieldvideo.playback.ResumeMonitor
 import com.vizvag.shieldvideo.playback.VlcLauncher
+import com.vizvag.shieldvideo.playback.remote.RemoteControlService
+import com.vizvag.shieldvideo.playback.remote.RemoteNavRequests
+import com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode
+import com.vizvag.shieldvideo.playback.remote.RemoteStatus
+import com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller
+import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
+import com.vizvag.shieldvideo.playback.remote.RemoteUiRouteStore
+import com.vizvag.shieldvideo.playback.remote.TransportAction
 import com.vizvag.shieldvideo.ui.background.BackgroundImageController
 import com.vizvag.shieldvideo.ui.browser.BrowseNavRequests
 import com.vizvag.shieldvideo.ui.browser.BrowserScreen
@@ -58,10 +100,13 @@ import com.vizvag.shieldvideo.ui.browser.BrowserViewModel
 import com.vizvag.shieldvideo.ui.browser.BrowserViewModelFactory
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.AppClockOverlay
+import com.vizvag.shieldvideo.ui.components.ForcedLandscape
 import com.vizvag.shieldvideo.ui.home.HomeLandingScreen
 import com.vizvag.shieldvideo.ui.iptv.IptvScreen
 import com.vizvag.shieldvideo.ui.music.MusicScreen
 import com.vizvag.shieldvideo.ui.radio.RadioScreen
+import com.vizvag.shieldvideo.ui.remote.RemoteScreen
+import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.iptv.IptvViewModel
 import com.vizvag.shieldvideo.ui.iptv.IptvViewModelFactory
@@ -69,15 +114,40 @@ import com.vizvag.shieldvideo.ui.iptv.MultiviewScreen
 import com.vizvag.shieldvideo.ui.settings.SettingsScreen
 import com.vizvag.shieldvideo.ui.settings.SettingsViewModel
 import com.vizvag.shieldvideo.ui.settings.SettingsViewModelFactory
+import com.vizvag.shieldvideo.ui.theme.Accent
+import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.ShieldVideoTheme
+import com.vizvag.shieldvideo.ui.theme.TextCream
+import com.vizvag.shieldvideo.ui.theme.TextMuted
+import com.vizvag.shieldvideo.ui.youtube.YoutubeScreen
+import com.vizvag.shieldvideo.ui.youtube.YoutubeViewModel
+import com.vizvag.shieldvideo.ui.youtube.YoutubeViewModelFactory
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
+import android.app.UiModeManager
+import android.content.Context
+import android.os.Build
+import android.view.View
+import android.view.WindowManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.platform.LocalLifecycleOwner
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val EXTRA_REMOTE_ROUTE = "com.vizvag.shieldvideo.EXTRA_REMOTE_ROUTE"
+    }
+
     private lateinit var vlcLauncher: VlcLauncher
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        lockLandscapeFullscreen()
+        consumeRemoteRouteExtra(intent)
 
         val app = application as ShieldVideoApp
         val settingsRepository = app.settingsRepository
@@ -117,10 +187,98 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        lockLandscapeFullscreen()
+        RemoteStatusPoller.onForeground()
+        // Phones/tablets are remotes only — don't advertise a control server on them.
+        if (!isTelevisionDevice()) {
+            RemoteControlService.stop(this)
+            return
+        }
+        RemoteControlService.start(this)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        lockLandscapeFullscreen()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) lockLandscapeFullscreen()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Samsung/large-screen OEMs ignore screenOrientation — keep requesting + immersive.
+        lockLandscapeFullscreen()
+    }
+
+    /** Fixed landscape + immersive bars. Tablets may still rotate the window; Compose forces landscape. */
+    private fun lockLandscapeFullscreen() {
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        if (isTelevisionDevice()) return
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            )
+    }
+
+    private fun isTelevisionDevice(): Boolean {
+        val uiMode = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+        return uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            packageManager.hasSystemFeature("android.software.leanback")
+    }
+
+    override fun onStop() {
+        RemoteStatusPoller.onBackground()
+        // Hard rule: leaving the app must kill in-app audio/video.
+        val app = application as ShieldVideoApp
+        runCatching { app.musicModule.playerController.stop() }
+        runCatching { app.radioPlayback.stop() }
+        runCatching { app.iptvPlayback.stop() }
+        runCatching { app.youtubePlayback.stop() }
+        // Keep remote control alive while VLC handoff FGS is streaming (TVs only).
+        if (isTelevisionDevice() &&
+            !app.resumeMonitor.isPlayerActive() &&
+            app.resumeMonitor.activeVideoPath() == null
+        ) {
+            RemoteControlService.stop(this)
+        }
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        consumeRemoteRouteExtra(intent)
         handleDeepLink(intent, application as ShieldVideoApp)
+    }
+
+    private fun consumeRemoteRouteExtra(intent: Intent?) {
+        val route = intent?.getStringExtra(EXTRA_REMOTE_ROUTE)?.trim().orEmpty()
+        if (route.isNotEmpty()) {
+            RemoteNavRequests.requestRoute(route)
+            intent?.removeExtra(EXTRA_REMOTE_ROUTE)
+        }
     }
 
     /** @return true if this launch was consumed as a deep-link handoff (UI not needed). */
@@ -260,6 +418,8 @@ private fun ShieldVideoAppNav(
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
+    var iptvFullscreen by remember { mutableStateOf(false) }
+    var youtubeFullscreen by remember { mutableStateOf(false) }
     val backgroundModel by backgroundImages.imageModel.collectAsState()
     val fallbackGradient = Brush.verticalGradient(
         colors = listOf(
@@ -268,7 +428,22 @@ private fun ShieldVideoAppNav(
             Color(0xFF121216)
         )
     )
+    val settingsRevision by settingsRepository.revision.collectAsState()
+    val appSettings = remember(settingsRevision) { settingsRepository.load() }
+    val clockCorner = appSettings.clockCorner
+    val context = LocalContext.current
+    val isPhoneOrTablet = remember {
+        val uiMode = context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+        val tv = uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            context.packageManager.hasSystemFeature("android.software.leanback")
+        !tv
+    }
+    // Tablets used as remotes: static backdrop — animated mesh burns GPU/battery.
+    val liteVisuals = appSettings.liteVisuals || isPhoneOrTablet
+    val startRoute = "home"
 
+    CompositionLocalProvider(LocalLiteVisuals provides liteVisuals) {
+    ForcedLandscape(enabled = isPhoneOrTablet) {
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -310,21 +485,37 @@ private fun ShieldVideoAppNav(
             targetOffsetX = { it / 36 },
         )
 
-        NavHost(
-            navController = navController,
-            startDestination = "home",
-            modifier = Modifier.fillMaxSize(),
-            enterTransition = { routeEnter },
-            exitTransition = { routeExit },
-            popEnterTransition = { routePopEnter },
-            popExitTransition = { routePopExit },
-        ) {
+        val remoteTarget by RemoteTargetStore.target.collectAsState()
+        val showRemoteBanner = remoteTarget != null && !iptvFullscreen && !youtubeFullscreen
+        val remoteStatus by RemoteStatusPoller.status.collectAsState()
+        val remoteBannerScope = rememberCoroutineScope()
+        val remoteClient = remember { (context.applicationContext as ShieldVideoApp).remoteClient }
+        val lifecycleOwner = LocalLifecycleOwner.current
+
+        // Full-bleed stage — no system-bar padding that shrinks the TV layout.
+        Box(modifier = Modifier.fillMaxSize()) {
+            val navHost: @Composable (Modifier) -> Unit = { navModifier ->
+            NavHost(
+                navController = navController,
+                startDestination = startRoute,
+                modifier = navModifier,
+                enterTransition = { routeEnter },
+                exitTransition = { routeExit },
+                popEnterTransition = { routePopEnter },
+                popExitTransition = { routePopExit },
+            ) {
             composable("home") {
-                val homeSettings = settingsRepository.load()
+                val homeSettings = remember(settingsRevision) { settingsRepository.load() }
                 HomeLandingScreen(
                     settings = homeSettings,
                     onOpenLiveTv = {
                         navController.navigate("iptv") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenYouTube = {
+                        navController.navigate("youtube") {
                             popUpTo("home") { inclusive = false }
                             launchSingleTop = true
                         }
@@ -349,6 +540,7 @@ private fun ShieldVideoAppNav(
                         }
                     },
                     onOpenSettings = { navController.navigate("settings") },
+                    onOpenRemote = { navController.navigate("remote") },
                 )
             }
             composable("browser") {
@@ -377,6 +569,12 @@ private fun ShieldVideoAppNav(
                     onOpenSettings = { navController.navigate("settings") },
                     onOpenLiveTv = {
                         navController.navigate("iptv") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenYouTube = {
+                        navController.navigate("youtube") {
                             popUpTo("home") { inclusive = false }
                             launchSingleTop = true
                         }
@@ -421,6 +619,13 @@ private fun ShieldVideoAppNav(
                             launchSingleTop = true
                         }
                     },
+                    onOpenYouTube = {
+                        appContext.musicModule.playerController.stop()
+                        navController.navigate("youtube") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
                     onOpenRadio = {
                         appContext.musicModule.playerController.stop()
                         navController.navigate("radio") {
@@ -451,6 +656,12 @@ private fun ShieldVideoAppNav(
                             launchSingleTop = true
                         }
                     },
+                    onOpenYouTube = {
+                        navController.navigate("youtube") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
                     onOpenMusic = {
                         navController.navigate("music") {
                             popUpTo("home") { inclusive = false }
@@ -458,6 +669,51 @@ private fun ShieldVideoAppNav(
                         }
                     },
                     onOpenSettings = { navController.navigate("settings") },
+                )
+            }
+            composable("youtube") {
+                val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext as ShieldVideoApp
+                val viewModel: YoutubeViewModel = viewModel(
+                    factory = YoutubeViewModelFactory(
+                        settingsRepository = settingsRepository,
+                        repository = appContext.youtubeRepository,
+                        historyStore = appContext.youtubeWatchHistory,
+                    )
+                )
+                fun openBrowser(share: String? = null, openSearch: Boolean = false) {
+                    share?.let { BrowseNavRequests.requestShare(it) }
+                    if (openSearch) BrowseNavRequests.requestOpenSearch()
+                    navController.navigate("browser") {
+                        popUpTo("home") { inclusive = false }
+                        launchSingleTop = true
+                    }
+                }
+                YoutubeScreen(
+                    viewModel = viewModel,
+                    settingsRepository = settingsRepository,
+                    onBack = { navController.popBackStack() },
+                    onOpenBrowser = { openBrowser() },
+                    onSelectShare = { openBrowser(share = it) },
+                    onOpenLiveTv = {
+                        navController.navigate("iptv") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenRadio = {
+                        navController.navigate("radio") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenMusic = {
+                        navController.navigate("music") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenSettings = { navController.navigate("settings") },
+                    onFullscreenChanged = { youtubeFullscreen = it },
                 )
             }
             composable("iptv") {
@@ -496,6 +752,12 @@ private fun ShieldVideoAppNav(
                     onOpenMultiview = { navController.navigate("multiview") },
                     onOpenBrowser = { openBrowser() },
                     onSelectShare = { openBrowser(share = it) },
+                    onOpenYouTube = {
+                        navController.navigate("youtube") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
                     onOpenRadio = {
                         navController.navigate("radio") {
                             popUpTo("home") { inclusive = false }
@@ -508,6 +770,7 @@ private fun ShieldVideoAppNav(
                             launchSingleTop = true
                         }
                     },
+                    onFullscreenChanged = { iptvFullscreen = it },
                 )
             }
             composable("multiview") {
@@ -529,7 +792,8 @@ private fun ShieldVideoAppNav(
                         videoIndex,
                         ShieldVideoApp.instance.musicModule.musicIndex,
                         iptvParental,
-                        ShieldVideoApp.instance.settingsBackupManager
+                        ShieldVideoApp.instance.settingsBackupManager,
+                        ShieldVideoApp.instance.youtubeRepository,
                     )
                 )
                 SettingsScreen(
@@ -539,12 +803,144 @@ private fun ShieldVideoAppNav(
                     notificationAccessEnabled = resumeMonitor.isNotificationAccessEnabled()
                 )
             }
+            composable("remote") {
+                RemoteScreen(
+                    onBack = {
+                        if (!navController.popBackStack()) {
+                            navController.navigate("home") {
+                                launchSingleTop = true
+                            }
+                        }
+                    },
+                    onOpenRoom = { _ ->
+                        // Always land on home — don't mirror the TV's current screen.
+                        navController.navigate("home") {
+                            launchSingleTop = true
+                            popUpTo("remote") { inclusive = true }
+                        }
+                    },
+                )
+            }
+            }
+            }
+
+            navHost(Modifier.fillMaxSize())
+
+            if (showRemoteBanner) {
+                val room = remoteTarget!!.deviceId.ifBlank { remoteTarget!!.host }
+                val videoNowPlaying = remoteStatus?.takeIf {
+                    it.mode == RemotePlaybackMode.NasVideo
+                }
+                // Tiny floating chip — must not steal vertical space from the stage.
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .zIndex(8f)
+                        .padding(top = 8.dp, end = 10.dp)
+                        .heightIn(max = 28.dp)
+                        .wrapContentWidth()
+                        .widthIn(max = 280.dp)
+                        .background(CardSurface.copy(alpha = 0.92f), RoundedCornerShape(14.dp))
+                        .border(1.dp, Accent.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (videoNowPlaying != null) {
+                            "▶ ${videoNowPlaying.title.ifBlank { room }}"
+                        } else {
+                            room
+                        },
+                        color = TextCream,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 160.dp),
+                    )
+                    if (videoNowPlaying != null) {
+                        val playing = videoNowPlaying.isPlaying
+                        Icon(
+                            imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = if (playing) "Pause" else "Play",
+                            tint = Color.White,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(Accent.copy(alpha = 0.35f))
+                                .clickable {
+                                    val device = remoteTarget ?: return@clickable
+                                    remoteBannerScope.launch {
+                                        remoteClient.transport(device, TransportAction.Toggle)
+                                            .onSuccess { RemoteStatusPoller.publish(it) }
+                                    }
+                                }
+                                .padding(3.dp),
+                        )
+                        Icon(
+                            imageVector = Icons.Filled.Stop,
+                            contentDescription = "Stop",
+                            tint = Color.White,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.10f))
+                                .clickable {
+                                    val device = remoteTarget ?: return@clickable
+                                    remoteBannerScope.launch {
+                                        remoteClient.transport(device, TransportAction.Stop)
+                                            .onSuccess { RemoteStatusPoller.publish(it) }
+                                    }
+                                }
+                                .padding(3.dp),
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Disconnect",
+                        tint = Accent,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clickable {
+                                RemoteTargetStore.clear()
+                                navController.navigate("remote") {
+                                    launchSingleTop = true
+                                }
+                            }
+                            .padding(2.dp),
+                    )
+                }
+            }
         }
 
-        val settingsRevision by settingsRepository.revision.collectAsState()
-        val clockCorner = remember(settingsRevision) {
-            settingsRepository.load().clockCorner
+        // TVs publish the visible screen so remotes can open the same route.
+        LaunchedEffect(backStackEntry?.destination?.route, isPhoneOrTablet) {
+            if (!isPhoneOrTablet) {
+                RemoteUiRouteStore.set(backStackEntry?.destination?.route)
+            }
         }
-        AppClockOverlay(corner = clockCorner)
+
+        val pendingRemoteRoute by RemoteNavRequests.pendingRoute.collectAsState()
+        LaunchedEffect(pendingRemoteRoute, lifecycleOwner) {
+            val route = pendingRemoteRoute ?: return@LaunchedEffect
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                val current = navController.currentDestination?.route
+                if (current != route) {
+                    navController.navigate(route) {
+                        launchSingleTop = true
+                        popUpTo("home") { inclusive = false }
+                    }
+                }
+                RemoteNavRequests.consume(route)
+            }
+        }
+
+        if (!iptvFullscreen && !youtubeFullscreen) {
+            AppClockOverlay(corner = clockCorner)
+        }
+    }
+    }
     }
 }
+

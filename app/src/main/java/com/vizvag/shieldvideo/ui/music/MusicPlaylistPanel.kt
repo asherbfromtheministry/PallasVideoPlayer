@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -46,7 +47,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -78,11 +78,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vizvag.shieldvideo.music.data.albumRootFolder
 import com.vizvag.shieldvideo.music.data.local.TrackEntity
 import com.vizvag.shieldvideo.music.data.metadata.MetadataResolver
+import com.vizvag.shieldvideo.music.data.trackDiscNumber
 import com.vizvag.shieldvideo.music.ui.AlbumArt
 import com.vizvag.shieldvideo.ui.theme.AudioAccent
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
+import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -100,9 +103,8 @@ internal fun QueueDrawer(
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
-    /** Album art for the playing track — same source as the blurred player background. */
-    nowPlayingAlbumArt: Any?,
-    resolveCoverUrl: suspend (TrackEntity) -> Any?,
+    coverCache: Map<String, Any>,
+    resolveTrackDuration: (TrackEntity) -> Long,
     onPlayIndex: (Int) -> Unit,
     onRemove: (Int) -> Unit,
     onMove: (Int, Int) -> Unit,
@@ -116,7 +118,6 @@ internal fun QueueDrawer(
     var moving by remember { mutableIntStateOf(-1) }
     val movingFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
-    val coverCache = remember { mutableStateMapOf<String, Any?>() }
 
     val remainingMs = remember(queue, queueIndex, positionMs, durationMs) {
         playlistRemainingMs(queue, queueIndex, positionMs, durationMs)
@@ -125,31 +126,15 @@ internal fun QueueDrawer(
         playlistProgress(queue, queueIndex, positionMs, durationMs)
     }
     val rows = remember(queue, queueIndex) { buildPlaylistRows(queue, queueIndex) }
+    val showDiscOnRows = remember(queue) { playlistIsSingleMultiDiscAlbum(queue) }
+    val discOfIndex = remember(queue, showDiscOnRows) {
+        if (showDiscOnRows) playlistDiscNumbers(queue) else null
+    }
 
     LaunchedEffect(moving) {
         if (moving < 0) return@LaunchedEffect
         delay(24)
         runCatching { movingFocus.requestFocus() }
-    }
-
-    LaunchedEffect(queue) {
-        val keys = queue.map(::playlistAlbumKey).distinct()
-        for (key in keys) {
-            // Absent vs null: never treat a failed probe as "done", and never
-            // clobber art that now-playing (or a parallel resolve) already set.
-            if (coverCache[key] != null) continue
-            val sample = queue.firstOrNull { playlistAlbumKey(it) == key } ?: continue
-            val resolved = runCatching { resolveCoverUrl(sample) }.getOrNull() ?: continue
-            if (coverCache[key] == null) {
-                coverCache[key] = resolved
-            }
-        }
-    }
-
-    LaunchedEffect(nowPlayingAlbumArt, queueIndex, queue) {
-        val track = queue.getOrNull(queueIndex) ?: return@LaunchedEffect
-        val art = nowPlayingAlbumArt ?: return@LaunchedEffect
-        coverCache[playlistAlbumKey(track)] = art
     }
 
     LaunchedEffect(queueIndex, rows.size, moving) {
@@ -212,14 +197,12 @@ internal fun QueueDrawer(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(bottom = 12.dp),
+                    contentPadding = PaddingValues(bottom = 8.dp),
                 ) {
                     items(
                         count = rows.size,
                         key = { idx ->
                             when (val row = rows[idx]) {
-                                is PlaylistRow.AlbumHeader ->
-                                    "album|${row.albumKey}|$idx"
                                 is PlaylistRow.DiscHeader ->
                                     "disc|${row.albumKey}|${row.disc}|$idx"
                                 is PlaylistRow.SectionLabel ->
@@ -230,15 +213,6 @@ internal fun QueueDrawer(
                         },
                     ) { idx ->
                         when (val row = rows[idx]) {
-                            is PlaylistRow.AlbumHeader -> {
-                                PlaylistAlbumHeader(
-                                    title = row.albumTitle,
-                                    artist = row.artist,
-                                    year = row.year,
-                                    trackCount = row.trackCount,
-                                    coverUrl = coverCache[row.albumKey],
-                                )
-                            }
                             is PlaylistRow.DiscHeader -> {
                                 PlaylistDiscHeader(
                                     disc = row.disc,
@@ -257,8 +231,9 @@ internal fun QueueDrawer(
                                     index = index,
                                     title = playlistTrackTitle(track),
                                     artist = playlistTrackArtist(track),
-                                    durationMs = track.durationMs,
-                                    coverUrl = coverCache[playlistAlbumKey(track)],
+                                    discNumber = discOfIndex?.getOrNull(index),
+                                    trackDurationMs = resolveTrackDuration(track),
+                                    coverUrl = coverCache[playlistTrackCoverKey(track)],
                                     current = current,
                                     playing = current && isPlaying,
                                     moving = isMoving,
@@ -582,69 +557,19 @@ private fun PlaylistEmptyState(
 }
 
 @Composable
-private fun PlaylistAlbumHeader(
-    title: String,
-    artist: String,
-    year: Int?,
-    trackCount: Int,
-    coverUrl: Any?,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, top = 14.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        AlbumArt(
-            imageUrl = coverUrl,
-            title = title,
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(6.dp)),
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                title.ifBlank { "Unknown album" },
-                color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = PallasFontFamily,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            val meta = buildString {
-                append(artist.ifBlank { "Unknown artist" })
-                if (year != null && year > 0) append(" · $year")
-                append(" · $trackCount track${if (trackCount == 1) "" else "s"}")
-            }
-            Text(
-                meta,
-                color = AudioTextMuted,
-                fontSize = 11.sp,
-                fontFamily = PallasFontFamily,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
 private fun PlaylistDiscHeader(disc: Int, trackCount: Int) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 2.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             "DISC $disc",
             color = AudioAccent,
-            fontSize = 10.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 1.6.sp,
+            letterSpacing = 1.8.sp,
             fontFamily = PallasFontFamily,
         )
         Spacer(
@@ -652,12 +577,12 @@ private fun PlaylistDiscHeader(disc: Int, trackCount: Int) {
                 .padding(horizontal = 10.dp)
                 .weight(1f)
                 .height(1.dp)
-                .background(AudioAccent.copy(alpha = 0.28f)),
+                .background(AudioAccent.copy(alpha = 0.35f)),
         )
         Text(
-            "$trackCount",
-            color = AudioTextMuted.copy(alpha = 0.8f),
-            fontSize = 10.sp,
+            "$trackCount tracks",
+            color = AudioTextMuted.copy(alpha = 0.9f),
+            fontSize = 11.sp,
             fontFamily = PallasFontFamily,
         )
     }
@@ -672,7 +597,7 @@ private fun PlaylistSectionLabel(label: String) {
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.8.sp,
         fontFamily = PallasFontFamily,
-        modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 4.dp),
+        modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
     )
 }
 
@@ -696,7 +621,7 @@ private fun PlaylistMoveBanner() {
                     ),
                 ),
             )
-            .padding(horizontal = 12.dp, vertical = 9.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
     )
 }
 
@@ -706,7 +631,8 @@ private fun PlaylistTrackRow(
     index: Int,
     title: String,
     artist: String,
-    durationMs: Long,
+    discNumber: Int? = null,
+    trackDurationMs: Long,
     coverUrl: Any?,
     current: Boolean,
     playing: Boolean,
@@ -737,7 +663,7 @@ private fun PlaylistTrackRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .padding(horizontal = 6.dp, vertical = 1.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -835,7 +761,7 @@ private fun PlaylistTrackRow(
                 onLongClick = onLongClick,
             )
             .focusable(canFocus, interaction)
-            .padding(horizontal = 8.dp, vertical = 7.dp),
+            .padding(horizontal = 6.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -843,8 +769,8 @@ private fun PlaylistTrackRow(
                 imageUrl = coverUrl,
                 title = title,
                 modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(5.dp))
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(4.dp))
                     .border(
                         width = 1.dp,
                         color = when {
@@ -852,14 +778,14 @@ private fun PlaylistTrackRow(
                             current -> AudioAccent.copy(alpha = 0.55f)
                             else -> Color.White.copy(alpha = 0.10f)
                         },
-                        shape = RoundedCornerShape(5.dp),
+                        shape = RoundedCornerShape(4.dp),
                     ),
             )
             if (playing) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(5.dp))
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(4.dp))
                         .background(Color.Black.copy(alpha = 0.45f)),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -867,8 +793,11 @@ private fun PlaylistTrackRow(
                 }
             }
         }
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        Spacer(Modifier.width(8.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
             Text(
                 title,
                 color = when {
@@ -876,20 +805,25 @@ private fun PlaylistTrackRow(
                     current -> Color.White
                     else -> Color.White.copy(alpha = 0.94f)
                 },
-                fontSize = 13.sp,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
                 fontWeight = if (current || moving || focused) FontWeight.Bold else FontWeight.Medium,
                 fontFamily = PallasFontFamily,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                artist,
+                buildString {
+                    if (discNumber != null) append("Disc $discNumber · ")
+                    append(artist)
+                },
                 color = when {
                     moving -> PlaylistMoveAccent.copy(alpha = 0.95f)
                     current -> AudioAccent.copy(alpha = 0.85f)
                     else -> AudioTextMuted
                 },
-                fontSize = 11.sp,
+                fontSize = 10.sp,
+                lineHeight = 11.sp,
                 fontFamily = PallasFontFamily,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -899,19 +833,19 @@ private fun PlaylistTrackRow(
             moving -> Text(
                 "MOVE",
                 color = PlaylistMoveAccent,
-                fontSize = 10.sp,
+                fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp,
                 fontFamily = PallasFontFamily,
             )
             else -> Text(
-                if (durationMs > 0) formatTrackTime(durationMs) else "%02d".format(index + 1),
+                if (trackDurationMs > 0) formatTrackTime(trackDurationMs) else "%02d".format(index + 1),
                 color = when {
                     current -> AudioAccent.copy(alpha = 0.9f)
                     focused -> Color.White.copy(alpha = 0.75f)
                     else -> AudioTextMuted.copy(alpha = 0.7f)
                 },
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 fontWeight = FontWeight.Medium,
                 fontFamily = PallasFontFamily,
             )
@@ -925,6 +859,25 @@ private fun MiniEqualizer(
     color: Color,
     modifier: Modifier = Modifier,
 ) {
+    val liteVisuals = LocalLiteVisuals.current
+    if (liteVisuals) {
+        Row(
+            modifier = modifier.height(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            listOf(0.45f, 0.85f, 0.55f).forEach { h ->
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .height((14 * if (active) h else 0.32f).dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(color),
+                )
+            }
+        }
+        return
+    }
     val infinite = rememberInfiniteTransition(label = "miniEq")
     Row(
         modifier = modifier.height(14.dp),
@@ -983,14 +936,6 @@ private fun PlaylistIconButton(
 }
 
 private sealed class PlaylistRow {
-    data class AlbumHeader(
-        val albumKey: String,
-        val albumTitle: String,
-        val artist: String,
-        val year: Int?,
-        val trackCount: Int,
-    ) : PlaylistRow()
-
     data class DiscHeader(
         val disc: Int,
         val trackCount: Int,
@@ -1005,76 +950,92 @@ private sealed class PlaylistRow {
     ) : PlaylistRow()
 }
 
+/**
+ * One physical album = same title (+ year when tagged).
+ * Never key by track artist — that splits compilations.
+ */
 private fun playlistAlbumKey(track: TrackEntity): String {
     val title = track.albumTitle.trim().lowercase()
-    if (title.isNotBlank()) return "t:$title"
-    val folder = track.nasPath.replace('\\', '/')
-        .substringBeforeLast('/')
-        .trimEnd('/')
-        .lowercase()
-    return if (folder.isNotBlank()) "f:$folder" else "id:${track.albumId}"
+    if (title.isBlank()) {
+        val folder = track.nasPath.replace('\\', '/')
+            .substringBeforeLast('/')
+            .trimEnd('/')
+        val root = albumRootFolder(folder).lowercase()
+        if (root.isNotBlank()) return "f:$root"
+        if (track.albumId.isNotBlank()) return "id:${track.albumId.lowercase()}"
+        return "id:${track.id}"
+    }
+    val year = track.year?.takeIf { it > 0 }?.toString().orEmpty()
+    return if (year.isNotEmpty()) "t:$title|y:$year" else "t:$title"
 }
 
+/** ID3 disc tag, else CD1/Disc 2 folder name. */
+private fun playlistDiscNumber(track: TrackEntity): Int = trackDiscNumber(track)
+
 /**
- * Album headers on every album change; disc headers for multi-disc sets;
- * UP NEXT label after the currently playing track.
+ * Resolve disc numbers for a single-album queue. Prefer tags/folders; if those
+ * are all 1 but track numbers restart (1…N then 1…M), treat restarts as new discs.
+ */
+private fun playlistDiscNumbers(queue: List<TrackEntity>): List<Int> {
+    val tagged = queue.map(::playlistDiscNumber)
+    if (tagged.toSet().size > 1 || tagged.any { it > 1 }) return tagged
+
+    val nums = queue.map { it.trackNumber }
+    if (nums.any { it == null || it <= 0 }) return tagged
+
+    val inferred = ArrayList<Int>(queue.size)
+    var disc = 1
+    var prev = 0
+    for (n in nums) {
+        val tn = n!!
+        if (prev > 0 && tn < prev && tn <= 3) disc++
+        inferred += disc
+        prev = tn
+    }
+    return if (inferred.toSet().size > 1) inferred else tagged
+}
+
+private fun playlistIsSingleMultiDiscAlbum(queue: List<TrackEntity>): Boolean {
+    if (queue.isEmpty()) return false
+    if (queue.map(::playlistAlbumKey).distinct().size != 1) return false
+    val discs = playlistDiscNumbers(queue).toSet()
+    return discs.size > 1 || discs.any { it > 1 }
+}
+
+private fun playlistTrackCoverKey(track: TrackEntity): String =
+    "tr:${track.id}|${track.nasPath.replace('\\', '/').lowercase()}"
+
+/**
+ * Single-album multi-disc queues: disc headers + per-row "Disc N".
+ * Mixed albums: flat list, disc numbers ignored.
  */
 private fun buildPlaylistRows(queue: List<TrackEntity>, queueIndex: Int): List<PlaylistRow> {
     if (queue.isEmpty()) return emptyList()
-    val multiDiscKeys = queue
-        .groupBy(::playlistAlbumKey)
-        .filterValues { tracks -> tracks.any { (it.discNumber ?: 1) > 1 } }
-        .keys
 
-    val out = ArrayList<PlaylistRow>(queue.size + 16)
-    var i = 0
-    var lastKey: String? = null
-    while (i < queue.size) {
-        val t = queue[i]
-        val key = playlistAlbumKey(t)
+    val out = ArrayList<PlaylistRow>(queue.size + 8)
+    val multiDisc = playlistIsSingleMultiDiscAlbum(queue)
+    val discOf = if (multiDisc) playlistDiscNumbers(queue) else emptyList()
 
-        if (key != lastKey) {
-            var albumEnd = i + 1
-            while (albumEnd < queue.size && playlistAlbumKey(queue[albumEnd]) == key) {
-                albumEnd++
-            }
-            out += PlaylistRow.AlbumHeader(
-                albumKey = key,
-                albumTitle = t.albumTitle.trim().ifBlank { "Unknown album" },
-                artist = albumHeaderArtist(queue.subList(i, albumEnd)),
-                year = queue.subList(i, albumEnd).mapNotNull { it.year }.maxOrNull(),
-                trackCount = albumEnd - i,
+    if (multiDisc) {
+        val albumKey = playlistAlbumKey(queue.first())
+        val byDisc = LinkedHashMap<Int, MutableList<Int>>()
+        for (i in queue.indices) {
+            byDisc.getOrPut(discOf[i]) { mutableListOf() }.add(i)
+        }
+        for ((disc, indices) in byDisc.toSortedMap()) {
+            out += PlaylistRow.DiscHeader(
+                disc = disc,
+                trackCount = indices.size,
+                albumKey = albumKey,
             )
-            lastKey = key
-
-            if (key in multiDiscKeys) {
-                var j = i
-                while (j < albumEnd) {
-                    val disc = queue[j].discNumber ?: 1
-                    var discEnd = j + 1
-                    while (
-                        discEnd < albumEnd &&
-                        (queue[discEnd].discNumber ?: 1) == disc
-                    ) {
-                        discEnd++
-                    }
-                    out += PlaylistRow.DiscHeader(
-                        disc = disc,
-                        trackCount = discEnd - j,
-                        albumKey = key,
-                    )
-                    for (k in j until discEnd) {
-                        out += PlaylistRow.Track(k, queue[k])
-                    }
-                    j = discEnd
-                }
-                i = albumEnd
-                continue
+            for (k in indices) {
+                out += PlaylistRow.Track(k, queue[k])
             }
         }
-
-        out += PlaylistRow.Track(i, t)
-        i++
+    } else {
+        for (i in queue.indices) {
+            out += PlaylistRow.Track(i, queue[i])
+        }
     }
 
     if (queueIndex in 0 until queue.lastIndex) {
@@ -1084,15 +1045,6 @@ private fun buildPlaylistRows(queue: List<TrackEntity>, queueIndex: Int): List<P
         }
     }
     return out
-}
-
-private fun albumHeaderArtist(tracks: List<TrackEntity>): String {
-    val artists = tracks.map { playlistTrackArtist(it) }.distinct()
-    return when {
-        artists.size == 1 -> artists.first()
-        artists.isEmpty() -> "Various artists"
-        else -> "Various artists"
-    }
 }
 
 private fun playlistRemainingMs(

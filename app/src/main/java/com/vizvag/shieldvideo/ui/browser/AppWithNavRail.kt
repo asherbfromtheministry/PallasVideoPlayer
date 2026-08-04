@@ -18,6 +18,7 @@ fun AppWithNavRail(
     onSelectShare: (String) -> Unit,
     recordingFolder: String?,
     onLiveTv: () -> Unit,
+    onYouTube: () -> Unit,
     onRadio: () -> Unit,
     onMusic: () -> Unit,
     sleepTimerActive: Boolean,
@@ -29,6 +30,7 @@ fun AppWithNavRail(
     showRail: Boolean = true,
     /** When false, rail stays visible but is not in the D-pad focus tree. */
     railFocusEnabled: Boolean = true,
+    players: RailPlayerVisibility = RailPlayerVisibility(),
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
@@ -40,6 +42,7 @@ fun AppWithNavRail(
                 onSelectShare = onSelectShare,
                 recordingFolder = recordingFolder,
                 onLiveTv = onLiveTv,
+                onYouTube = onYouTube,
                 onRadio = onRadio,
                 onMusic = onMusic,
                 sleepTimerActive = sleepTimerActive,
@@ -50,6 +53,7 @@ fun AppWithNavRail(
                 onGoUp = onGoUp,
                 destination = destination,
                 focusEnabled = railFocusEnabled,
+                players = players,
             )
         }
         Box(modifier = Modifier.weight(1f).fillMaxHeight().fillMaxSize()) {
@@ -58,11 +62,16 @@ fun AppWithNavRail(
     }
 }
 
-/** Ordered share list with default share first (matches BrowserScreen). */
+/** Ordered share list with default share first (matches BrowserScreen / home landing). */
 fun orderedSharesForRail(settings: AppSettings): List<String> {
     val shares = settings.shares
-    val default = shares.firstOrNull { it.equals(settings.defaultShare, ignoreCase = true) }
-        ?: return shares
+    if (shares.isEmpty()) return shares
+    val configured = settings.defaultShare.trim().trimEnd('/').lowercase()
+    if (configured.isBlank()) return shares
+    val default = shares.firstOrNull { share ->
+        val n = share.trim().trimEnd('/').lowercase()
+        n == configured || n.equals(settings.defaultShare, ignoreCase = true)
+    } ?: return shares
     return listOf(default) + shares.filterNot { it.equals(default, ignoreCase = true) }
 }
 

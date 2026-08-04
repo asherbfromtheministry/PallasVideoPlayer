@@ -10,22 +10,35 @@ import com.vizvag.shieldvideo.music.data.settings.MusicSettingsBridge
 import com.vizvag.shieldvideo.music.data.settings.NasSettings
 import com.vizvag.shieldvideo.music.data.synology.FileEntry
 import com.vizvag.shieldvideo.music.data.synology.SynologyApiClient
+import com.vizvag.shieldvideo.data.settings.SettingsRepository
 import com.vizvag.shieldvideo.music.player.PlayerController
+import com.vizvag.shieldvideo.music.player.PlayerUiState
+import com.vizvag.shieldvideo.playback.remote.MusicQueueAction
+import com.vizvag.shieldvideo.playback.remote.MusicTrackRef
+import com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode
+import com.vizvag.shieldvideo.playback.remote.RemoteQueueItem
+import com.vizvag.shieldvideo.playback.remote.RemoteStatus
+import com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller
+import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
+import com.vizvag.shieldvideo.playback.remote.TransportAction
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.vizvag.shieldvideo.ShieldVideoApp
 
 class MusicViewModel(
     private val libraryRepository: LibraryRepository,
     libraryCache: com.vizvag.shieldvideo.music.data.MusicLibraryCache,
     private val musicSettings: MusicSettingsBridge,
+    private val settingsRepository: SettingsRepository,
     private val synologyApiClient: SynologyApiClient,
     private val musicIndex: com.vizvag.shieldvideo.music.data.MusicIndexController,
     private val streamUrlBuilder: com.vizvag.shieldvideo.music.player.StreamUrlBuilder,
@@ -33,6 +46,7 @@ class MusicViewModel(
     val playerController: PlayerController,
     private val albumArtLookup: com.vizvag.shieldvideo.music.data.metadata.AlbumArtLookup,
     private val coverArtCache: com.vizvag.shieldvideo.music.data.metadata.CoverArtCache,
+    private val playlistCoverStore: com.vizvag.shieldvideo.music.data.metadata.PlaylistCoverStore,
     private val lyricsRepository: com.vizvag.shieldvideo.music.data.lyrics.LyricsRepository,
 ) : ViewModel() {
 
@@ -45,16 +59,74 @@ class MusicViewModel(
     val recentTracks = libraryCache.recentTracks
     val indexState = libraryCache.indexState
     val libraryTracksReady = libraryCache.tracksReady
-    val playerState = playerController.uiState.stateIn(
+
+    private val _hueSyncReady = MutableStateFlow(false)
+    val hueSyncReady = _hueSyncReady.asStateFlow()
+    private val _hueSyncEnabled = MutableStateFlow(false)
+    val hueSyncEnabled = _hueSyncEnabled.asStateFlow()
+
+    private val _remoteStatus = MutableStateFlow<RemoteStatus?>(null)
+    val controllingRemote = RemoteTargetStore.target
+
+    init {
+        refreshHueSyncState()
+        viewModelScope.launch {
+            settingsRepository.revision.collect { refreshHueSyncState() }
+        }
+        viewModelScope.launch {
+            RemoteStatusPoller.status.collect { _remoteStatus.value = it }
+        }
+    }
+
+    val playerState = combine(
+        playerController.uiState,
+        _remoteStatus,
+        RemoteTargetStore.target,
+    ) { local, remote, target ->
+        when {
+            target == null -> local
+            remote != null && remoteLooksLikeMusic(remote) -> remote.toPlayerUiState()
+            // Controlling a room: never show this tablet's local now-playing as if it were the TV.
+            else -> PlayerUiState()
+        }
+    }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
-        com.vizvag.shieldvideo.music.player.PlayerUiState(),
+        PlayerUiState(),
     )
-    val queue = queueManager.queue.stateIn(
-        viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList(),
+
+    val queue = combine(
+        queueManager.queue,
+        _remoteStatus,
+        RemoteTargetStore.target,
+    ) { local, remote, target ->
+        when {
+            target == null -> local
+            remote != null && remote.queue.isNotEmpty() -> remote.queue.map { it.toTrackEntity() }
+            remote != null && remoteLooksLikeMusic(remote) -> remote.queue.map { it.toTrackEntity() }
+            // Connected but room has no music queue yet — empty, not this device's leftover playlist.
+            else -> emptyList()
+        }
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptyList(),
     )
-    val queueIndex = queueManager.currentIndex.stateIn(
-        viewModelScope, SharingStarted.WhileSubscribed(5000), -1,
+
+    val queueIndex = combine(
+        queueManager.currentIndex,
+        _remoteStatus,
+        RemoteTargetStore.target,
+    ) { local, remote, target ->
+        when {
+            target == null -> local
+            remote != null && remoteLooksLikeMusic(remote) -> remote.queueIndex
+            else -> -1
+        }
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        -1,
     )
 
     private val _coverUrl = MutableStateFlow<Any?>(null)
@@ -83,6 +155,9 @@ class MusicViewModel(
     private val _lyricsVisible = MutableStateFlow(false)
     val lyricsVisible = _lyricsVisible.asStateFlow()
 
+    private val _lyricsStatus = MutableStateFlow(LyricsStatus.Idle)
+    val lyricsStatus = _lyricsStatus.asStateFlow()
+
     private val _connectionMessage = MutableStateFlow<String?>(null)
     val connectionMessage = _connectionMessage.asStateFlow()
 
@@ -92,12 +167,19 @@ class MusicViewModel(
     private val _searchResults = MutableStateFlow(com.vizvag.shieldvideo.music.data.SearchResults())
     val searchResults = _searchResults.asStateFlow()
 
+    private var searchJob: Job? = null
     private var tagLoadJob: Job? = null
     private var lyricsLoadJob: Job? = null
     private var statusClearJob: Job? = null
     private var queueTagJob: Job? = null
     /** Paths already ID3-enriched for the current queue session (avoid re-download loops). */
     private val queueTagsDone = mutableSetOf<String>()
+    /** Tracks where the user declined an online lyrics lookup this session. */
+    private val onlineLyricsDeclined = mutableSetOf<String>()
+    private val libraryTrackById = MutableStateFlow<Map<String, TrackEntity>>(emptyMap())
+    private val libraryTrackByPath = MutableStateFlow<Map<String, TrackEntity>>(emptyMap())
+
+    val playlistCoverCache = playlistCoverStore.covers
 
     fun toggleLyrics() {
         val turningOn = !_lyricsVisible.value
@@ -107,25 +189,83 @@ class MusicViewModel(
         }
     }
 
+    fun acceptOnlineLyrics() {
+        val track = playerState.value.track ?: return
+        if (_lyrics.value.isNotEmpty()) return
+        val key = track.id.ifBlank { track.nasPath }
+        onlineLyricsDeclined.remove(key)
+        lyricsLoadJob?.cancel()
+        lyricsLoadJob = viewModelScope.launch {
+            _lyricsStatus.value = LyricsStatus.FetchingOnline
+            val tags = _trackTags.value
+            val durationMs = playerState.value.durationMs.takeIf { it > 0 }
+                ?: track.durationMs
+            val result = runCatching {
+                lyricsRepository.getOnlineLyrics(
+                    track = track,
+                    titleOverride = tags?.title,
+                    artistOverride = tags?.artist,
+                    albumOverride = tags?.album,
+                    durationMsOverride = durationMs,
+                )
+            }.onFailure {
+                android.util.Log.e("PallasLyrics", "online lyrics threw", it)
+            }.getOrDefault(
+                com.vizvag.shieldvideo.music.data.lyrics.LyricsLoadResult(emptyList()),
+            )
+            val cur = playerController.uiState.value.track
+            if (cur?.id != track.id &&
+                cur?.nasPath?.replace('\\', '/') != track.nasPath.replace('\\', '/')
+            ) {
+                return@launch
+            }
+            if (result.lines.isNotEmpty()) {
+                _lyrics.value = result.lines
+                _lyricsPath.value = result.lyricsPath
+                _lyricsStatus.value = LyricsStatus.Available
+            } else {
+                _lyrics.value = emptyList()
+                _lyricsPath.value = null
+                _lyricsStatus.value = LyricsStatus.NotFound
+            }
+        }
+    }
+
+    fun declineOnlineLyrics() {
+        val track = playerState.value.track ?: return
+        onlineLyricsDeclined += track.id.ifBlank { track.nasPath }
+        _lyricsStatus.value = LyricsStatus.NotFound
+    }
+
     private fun reloadLyrics(track: TrackEntity) {
         lyricsLoadJob?.cancel()
         lyricsLoadJob = viewModelScope.launch {
+            _lyricsStatus.value = LyricsStatus.Loading
             val result = runCatching { lyricsRepository.getLyricsForTrack(track) }
                 .onFailure {
                     android.util.Log.e("PallasLyrics", "lyrics load threw", it)
-                    flashStatus("Lyrics error: ${it.message ?: it.javaClass.simpleName}")
                 }
                 .getOrDefault(
                     com.vizvag.shieldvideo.music.data.lyrics.LyricsLoadResult(emptyList()),
                 )
             val cur = playerController.uiState.value.track
-            if (cur?.id == track.id ||
-                cur?.nasPath?.replace('\\', '/') == track.nasPath.replace('\\', '/')
+            if (cur?.id != track.id &&
+                cur?.nasPath?.replace('\\', '/') != track.nasPath.replace('\\', '/')
             ) {
+                return@launch
+            }
+            if (result.lines.isNotEmpty()) {
                 _lyrics.value = result.lines
                 _lyricsPath.value = result.lyricsPath
-                if (result.lines.isEmpty()) {
-                    flashStatus("No lyrics file found")
+                _lyricsStatus.value = LyricsStatus.Available
+            } else {
+                _lyrics.value = emptyList()
+                _lyricsPath.value = null
+                val key = track.id.ifBlank { track.nasPath }
+                _lyricsStatus.value = when {
+                    !_lyricsVisible.value -> LyricsStatus.Idle
+                    key in onlineLyricsDeclined -> LyricsStatus.NotFound
+                    else -> LyricsStatus.OfferOnline
                 }
             }
         }
@@ -133,6 +273,15 @@ class MusicViewModel(
 
     fun currentLyricIndex(positionMs: Long = playerState.value.positionMs): Int =
         com.vizvag.shieldvideo.music.data.lyrics.LrcParser.currentLineIndex(_lyrics.value, positionMs)
+
+    enum class LyricsStatus {
+        Idle,
+        Loading,
+        Available,
+        OfferOnline,
+        FetchingOnline,
+        NotFound,
+    }
 
     init {
         musicSettings.refresh()
@@ -152,6 +301,7 @@ class MusicViewModel(
                         _trackTags.value = null
                         _lyrics.value = emptyList()
                         _lyricsPath.value = null
+                        _lyricsStatus.value = LyricsStatus.Idle
                         tagLoadJob?.cancel()
                         lyricsLoadJob?.cancel()
                         return@collect
@@ -165,6 +315,7 @@ class MusicViewModel(
                     )
                     _lyrics.value = emptyList()
                     _lyricsPath.value = null
+                    _lyricsStatus.value = LyricsStatus.Idle
                     reloadLyrics(track)
                     tagLoadJob?.cancel()
                     tagLoadJob = viewModelScope.launch {
@@ -338,6 +489,27 @@ class MusicViewModel(
 
         // Playlist / queue: live-read ID3 for every queued track (not only now-playing).
         viewModelScope.launch {
+            tracks.collect { list ->
+                libraryTrackById.value = list.associateBy { it.id }
+                libraryTrackByPath.value = buildLibraryPathIndex(list)
+            }
+        }
+        viewModelScope.launch {
+            combine(queue, tracks) { queued, library -> queued to library }
+                .collect { (queued, library) ->
+                    if (queued.isEmpty() || library.isEmpty()) return@collect
+                    repairQueueDurations(queued)
+                }
+        }
+        viewModelScope.launch {
+            // Prefer the sharp track tile (same art playlist rows use), not album backdrop.
+            combine(trackArtUrl, coverUrl, playerState) { trackArt, albumArt, state ->
+                Triple(state.track, trackArt ?: albumArt, state)
+            }.collect { (track, art, _) ->
+                if (track != null && art != null) playlistCoverStore.putCover(track, art)
+            }
+        }
+        viewModelScope.launch {
             queueManager.queue
                 .map { list -> list.map { it.nasPath.replace('\\', '/') } }
                 .distinctUntilChanged()
@@ -391,6 +563,23 @@ class MusicViewModel(
         }
     }
 
+    private fun refreshHueSyncState() {
+        _hueSyncEnabled.value = settingsRepository.isHueSyncEnabled()
+        _hueSyncReady.value = settingsRepository.isHueSyncReady()
+    }
+
+    /** Toggle Music/Radio Hue sync (persists immediately). Hint if bridge/lights not set up. */
+    fun toggleHueSync() {
+        val next = settingsRepository.toggleHueSync()
+        if (next == null) {
+            flashStatus("Set up Hue in Settings → Integrations")
+            return
+        }
+        _hueSyncEnabled.value = next
+        _hueSyncReady.value = true
+        flashStatus(if (next) "Hue sync on" else "Hue sync off")
+    }
+
     fun testConnection(settings: NasSettings) {
         viewModelScope.launch {
             _connectionMessage.value = synologyApiClient.testConnection(settings)
@@ -403,7 +592,13 @@ class MusicViewModel(
     }
 
     fun playTrack(track: TrackEntity) {
-        playerController.playTracks(listOf(track))
+        viewModelScope.launch {
+            runCatching {
+                com.vizvag.shieldvideo.playback.remote.RemotePlayBridge.playMusicTracks(listOf(track)) {
+                    playerController.playTracks(listOf(track))
+                }
+            }.onFailure { flashStatus(it.message ?: "Remote play failed") }
+        }
     }
 
     /** Play a NAS file — resolve index/ID3 metadata before starting (not the filename). */
@@ -411,18 +606,45 @@ class MusicViewModel(
         viewModelScope.launch {
             val track = runCatching { libraryRepository.resolveTrack(entry) }
                 .getOrElse { libraryRepository.trackFromFileEntry(entry) }
-            playerController.playTracks(listOf(track))
+            runCatching {
+                com.vizvag.shieldvideo.playback.remote.RemotePlayBridge.playMusicTracks(listOf(track)) {
+                    playerController.playTracks(listOf(track))
+                }
+            }.onFailure { flashStatus(it.message ?: "Remote play failed") }
         }
     }
 
     fun playTracks(tracks: List<TrackEntity>, startIndex: Int = 0) {
-        if (tracks.isNotEmpty()) playerController.playTracks(tracks, startIndex)
+        if (tracks.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                val device = RemoteTargetStore.current()
+                if (device != null) {
+                    val refs = tracks.map {
+                        MusicTrackRef(
+                            id = it.id,
+                            nasPath = it.nasPath,
+                            title = it.title,
+                            artistName = it.artistName,
+                            albumTitle = it.albumTitle,
+                            durationMs = it.durationMs,
+                        )
+                    }
+                    val status = ShieldVideoApp.instance.remoteClient
+                        .playMusic(device, refs, startIndex)
+                        .getOrThrow()
+                    _remoteStatus.value = status
+                } else {
+                    playerController.playTracks(tracks, startIndex)
+                }
+            }.onFailure { flashStatus(it.message ?: "Remote play failed") }
+        }
     }
 
     fun playArtist(artist: ArtistEntity) {
         viewModelScope.launch {
-            val tracks = libraryRepository.getTracksByArtist(artist.id)
-            if (tracks.isNotEmpty()) playerController.playTracks(tracks)
+            val tracks = libraryRepository.getTracksForArtistBrowse(artist)
+            if (tracks.isNotEmpty()) playTracks(tracks)
             else flashStatus("No tracks for ${artist.name}")
         }
     }
@@ -430,7 +652,7 @@ class MusicViewModel(
     fun playAlbum(albumId: String) {
         viewModelScope.launch {
             val tracks = libraryRepository.getTracksByAlbum(albumId)
-            if (tracks.isNotEmpty()) playerController.playTracks(tracks)
+            if (tracks.isNotEmpty()) playTracks(tracks)
             else flashStatus("No tracks in album")
         }
     }
@@ -447,7 +669,7 @@ class MusicViewModel(
                 flashStatus("No audio files in this folder")
                 return@launch
             }
-            playerController.playTracks(tracks)
+            playTracks(tracks)
             flashStatus("Playing ${tracks.size} tracks")
         }
     }
@@ -465,7 +687,7 @@ class MusicViewModel(
                     flashStatus("No audio files in this folder")
                     return@launch
                 }
-                playerController.playTracks(tracks)
+                playTracks(tracks)
                 flashStatus("Playlist cleared · ${tracks.size} tracks")
             } else {
                 enqueueAndMaybePlay(tracks)
@@ -487,7 +709,7 @@ class MusicViewModel(
                     flashStatus("No tracks in album")
                     return@launch
                 }
-                playerController.playTracks(tracks)
+                playTracks(tracks)
                 flashStatus("Playlist cleared · ${tracks.size} tracks")
             } else {
                 enqueueAndMaybePlay(tracks)
@@ -498,7 +720,7 @@ class MusicViewModel(
     fun addTrackToPlaylist(track: TrackEntity, replace: Boolean = false) {
         viewModelScope.launch {
             if (replace) {
-                playerController.playTracks(listOf(track))
+                playTracks(listOf(track))
                 flashStatus("Playlist cleared · 1 track")
             } else {
                 enqueueAndMaybePlay(listOf(track))
@@ -508,13 +730,13 @@ class MusicViewModel(
 
     fun addArtistToPlaylist(artist: ArtistEntity, replace: Boolean = false) {
         viewModelScope.launch {
-            val tracks = libraryRepository.getTracksByArtist(artist.id)
+            val tracks = libraryRepository.getTracksForArtistBrowse(artist)
             if (replace) {
                 if (tracks.isEmpty()) {
                     flashStatus("No tracks for ${artist.name}")
                     return@launch
                 }
-                playerController.playTracks(tracks)
+                playTracks(tracks)
                 flashStatus("Playlist cleared · ${tracks.size} tracks")
             } else {
                 enqueueAndMaybePlay(tracks)
@@ -527,7 +749,7 @@ class MusicViewModel(
             val track = runCatching { libraryRepository.resolveTrack(entry) }
                 .getOrElse { libraryRepository.trackFromFileEntry(entry) }
             if (replace) {
-                playerController.playTracks(listOf(track))
+                playTracks(listOf(track))
                 flashStatus("Playlist cleared · 1 track")
             } else {
                 enqueueAndMaybePlay(listOf(track))
@@ -546,13 +768,36 @@ class MusicViewModel(
             flashStatus("Nothing to add — no audio found")
             return
         }
-        val wasEmpty = queueManager.queue.value.isEmpty()
-        val insertAt = queueManager.queue.value.size
-        val idle = playerController.uiState.value.track == null
-        queueManager.addAllToEnd(tracks)
-        queueManager.persist()
-        if (wasEmpty || idle) {
-            playerController.playQueueIndex(if (wasEmpty) 0 else insertAt)
+        runCatching {
+            val device = RemoteTargetStore.current()
+            if (device != null) {
+                val refs = tracks.map {
+                    MusicTrackRef(
+                        id = it.id,
+                        nasPath = it.nasPath,
+                        title = it.title,
+                        artistName = it.artistName,
+                        albumTitle = it.albumTitle,
+                        durationMs = it.durationMs,
+                    )
+                }
+                val status = ShieldVideoApp.instance.remoteClient
+                    .musicQueue(device, MusicQueueAction.Add, tracks = refs)
+                    .getOrThrow()
+                _remoteStatus.value = status
+            } else {
+                val wasEmpty = queueManager.queue.value.isEmpty()
+                val insertAt = queueManager.queue.value.size
+                val idle = playerController.uiState.value.track == null
+                queueManager.addAllToEnd(tracks)
+                queueManager.persist()
+                if (wasEmpty || idle) {
+                    playerController.playQueueIndex(if (wasEmpty) 0 else insertAt)
+                }
+            }
+        }.onFailure {
+            flashStatus(it.message ?: "Remote queue failed")
+            return
         }
         flashStatus("Added ${tracks.size} to playlist")
     }
@@ -561,7 +806,7 @@ class MusicViewModel(
         viewModelScope.launch {
             val album = albums.value.randomOrNull() ?: return@launch
             val tracks = libraryRepository.getTracksByAlbum(album.albumId)
-            if (tracks.isNotEmpty()) playerController.playTracks(tracks)
+            if (tracks.isNotEmpty()) playTracks(tracks)
         }
     }
 
@@ -569,7 +814,7 @@ class MusicViewModel(
         viewModelScope.launch {
             val artist = artists.value.randomOrNull() ?: return@launch
             val tracks = libraryRepository.getTracksByArtist(artist.id)
-            if (tracks.isNotEmpty()) playerController.playTracks(tracks)
+            if (tracks.isNotEmpty()) playTracks(tracks)
         }
     }
 
@@ -594,12 +839,19 @@ class MusicViewModel(
                 val album = albums.value.randomOrNull() ?: return@launch
                 libraryRepository.getTracksByAlbum(album.albumId)
             }
-            if (tracks.isNotEmpty()) playerController.playTracks(tracks.shuffled())
+            if (tracks.isNotEmpty()) playTracks(tracks.shuffled())
         }
     }
 
     fun clearPlaylist() {
         viewModelScope.launch {
+            val device = RemoteTargetStore.current()
+            if (device != null) {
+                ShieldVideoApp.instance.remoteClient
+                    .musicQueue(device, MusicQueueAction.Clear)
+                    .onSuccess { _remoteStatus.value = it }
+                return@launch
+            }
             playerController.stop()
             queueManager.clear()
             queueManager.persist()
@@ -608,6 +860,20 @@ class MusicViewModel(
 
     fun shufflePlaylist() {
         viewModelScope.launch {
+            val device = RemoteTargetStore.current()
+            if (device != null) {
+                val q = queue.value
+                if (q.isEmpty()) {
+                    flashStatus("Playlist is empty")
+                    return@launch
+                }
+                val currentId = q.getOrNull(queueIndex.value)?.id
+                val current = q.firstOrNull { it.id == currentId }
+                val rest = q.filter { it.id != currentId }.shuffled()
+                val next = if (current != null) listOf(current) + rest else rest
+                playTracks(next, 0)
+                return@launch
+            }
             queueManager.shuffleKeepingCurrent()
             queueManager.persist()
         }
@@ -622,13 +888,20 @@ class MusicViewModel(
                 return@launch
             }
             val picks = all.shuffled().take(count.coerceAtLeast(1))
-            playerController.playTracks(picks)
+            playTracks(picks)
             flashStatus("Random · ${picks.size} tracks")
         }
     }
 
     fun movePlaylistItem(from: Int, to: Int) {
         viewModelScope.launch {
+            val device = RemoteTargetStore.current()
+            if (device != null) {
+                ShieldVideoApp.instance.remoteClient
+                    .musicQueue(device, MusicQueueAction.Move, from = from, to = to)
+                    .onSuccess { _remoteStatus.value = it }
+                return@launch
+            }
             queueManager.move(from, to)
             queueManager.persist()
         }
@@ -636,6 +909,13 @@ class MusicViewModel(
 
     fun removeFromPlaylist(index: Int) {
         viewModelScope.launch {
+            val device = RemoteTargetStore.current()
+            if (device != null) {
+                ShieldVideoApp.instance.remoteClient
+                    .musicQueue(device, MusicQueueAction.Remove, index = index)
+                    .onSuccess { _remoteStatus.value = it }
+                return@launch
+            }
             val current = queueManager.currentIndex.value
             queueManager.removeAt(index)
             queueManager.persist()
@@ -651,19 +931,78 @@ class MusicViewModel(
     }
 
     fun stopPlayback() {
+        val device = RemoteTargetStore.current()
+        if (device != null) {
+            viewModelScope.launch {
+                ShieldVideoApp.instance.remoteClient
+                    .transport(device, TransportAction.Stop)
+                    .onSuccess { _remoteStatus.value = it }
+            }
+            return
+        }
         playerController.stop()
     }
 
     fun search(query: String) {
         _searchQuery.value = query
-        viewModelScope.launch {
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            _searchResults.value = com.vizvag.shieldvideo.music.data.SearchResults()
+            return
+        }
+        searchJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(280)
             _searchResults.value = libraryRepository.search(query)
         }
     }
 
-    fun togglePlayPause() = playerController.togglePlayPause()
+    fun clearSearch() {
+        searchJob?.cancel()
+        _searchQuery.value = ""
+        _searchResults.value = com.vizvag.shieldvideo.music.data.SearchResults()
+    }
 
-    fun seekTo(ms: Long) = playerController.seekTo(ms)
+    fun togglePlayPause() {
+        val device = RemoteTargetStore.current()
+        if (device != null) {
+            viewModelScope.launch {
+                val client = ShieldVideoApp.instance.remoteClient
+                val remote = client.status(device).getOrNull()?.also { _remoteStatus.value = it }
+                    ?: _remoteStatus.value
+                val queueSize = remote?.queue?.size ?: 0
+                when {
+                    queueSize > 0 || (remote != null && remoteLooksLikeMusic(remote) && remote.title.isNotBlank()) -> {
+                        val action = when {
+                            remote?.isPlaying == true -> TransportAction.Pause
+                            queueSize > 0 && remote?.title.isNullOrBlank() -> TransportAction.Play
+                            else -> TransportAction.Toggle
+                        }
+                        client.transport(device, action)
+                            .onSuccess { _remoteStatus.value = it }
+                            .onFailure { flashStatus(it.message ?: "Remote play failed") }
+                    }
+                    else -> flashStatus(
+                        "Browse or Random to play on ${device.deviceId.ifBlank { "this room" }}",
+                    )
+                }
+            }
+            return
+        }
+        playerController.togglePlayPause()
+    }
+
+    fun seekTo(ms: Long) {
+        val device = RemoteTargetStore.current()
+        if (device != null) {
+            viewModelScope.launch {
+                ShieldVideoApp.instance.remoteClient
+                    .transport(device, TransportAction.Seek, positionMs = ms)
+                    .onSuccess { _remoteStatus.value = it }
+            }
+            return
+        }
+        playerController.seekTo(ms)
+    }
 
     fun seekBy(deltaMs: Long) {
         val state = playerState.value
@@ -671,26 +1010,158 @@ class MusicViewModel(
             ?: state.track?.durationMs
             ?: Long.MAX_VALUE
         val next = (state.positionMs + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
-        playerController.seekTo(next)
+        seekTo(next)
     }
 
     fun skipNext() {
-        viewModelScope.launch { playerController.playNext() }
+        viewModelScope.launch {
+            val device = RemoteTargetStore.current()
+            if (device != null) {
+                ShieldVideoApp.instance.remoteClient
+                    .transport(device, TransportAction.Next)
+                    .onSuccess { _remoteStatus.value = it }
+                return@launch
+            }
+            playerController.playNext()
+        }
     }
 
     fun skipPrevious() {
-        viewModelScope.launch { playerController.playPrevious() }
+        viewModelScope.launch {
+            val device = RemoteTargetStore.current()
+            if (device != null) {
+                ShieldVideoApp.instance.remoteClient
+                    .transport(device, TransportAction.Previous)
+                    .onSuccess { _remoteStatus.value = it }
+                return@launch
+            }
+            playerController.playPrevious()
+        }
     }
 
     suspend fun listFolder(path: String) = libraryRepository.listNasFolder(path)
 
     fun playQueueIndex(index: Int) {
+        val device = RemoteTargetStore.current()
+        if (device != null) {
+            viewModelScope.launch {
+                ShieldVideoApp.instance.remoteClient
+                    .musicQueue(device, MusicQueueAction.PlayIndex, index = index)
+                    .onSuccess { _remoteStatus.value = it }
+            }
+            return
+        }
         playerController.playQueueIndex(index)
     }
+
+    /** True when this Music UI is driving another device on the LAN. */
+    fun isRemoteSession(): Boolean = RemoteTargetStore.isControllingRemote()
+
+    private fun remoteLooksLikeMusic(remote: RemoteStatus): Boolean =
+        remote.mode == RemotePlaybackMode.Music || remote.queue.isNotEmpty()
+
+    private fun RemoteStatus.toPlayerUiState(): PlayerUiState {
+        val item = queue.getOrNull(queueIndex) ?: queue.firstOrNull()
+        val track = item?.toTrackEntity()
+            ?: TrackEntity(
+                id = "remote-now",
+                albumId = "",
+                artistId = "",
+                title = title.ifBlank { "Remote" },
+                artistName = subtitle,
+                albumTitle = "",
+                durationMs = durationMs,
+                nasPath = "",
+            )
+        return PlayerUiState(
+            track = track,
+            isPlaying = isPlaying,
+            positionMs = positionMs,
+            durationMs = durationMs.takeIf { it > 0 } ?: track.durationMs,
+        )
+    }
+
+    private fun RemoteQueueItem.toTrackEntity(): TrackEntity =
+        TrackEntity(
+            id = id.ifBlank { nasPath.ifBlank { title } },
+            albumId = "",
+            artistId = "",
+            title = title,
+            artistName = artist,
+            albumTitle = "",
+            durationMs = durationMs,
+            nasPath = nasPath,
+        )
 
     suspend fun getArtist(id: String) = libraryRepository.getArtist(id)
 
     suspend fun getAlbum(id: String) = libraryRepository.getAlbum(id)
+
+    /** Per-track duration for playlist rows — file size + bitrate beats stored metadata. */
+    fun resolveQueueTrackDuration(track: TrackEntity): Long {
+        val library = findLibraryTrack(track)
+        return bestTrackDurationMs(library ?: track)
+            .takeIf { it > 0 }
+            ?: bestTrackDurationMs(track)
+    }
+
+    private fun findLibraryTrack(track: TrackEntity): TrackEntity? {
+        libraryTrackById.value[track.id]?.let { return it }
+        for (key in trackPathKeys(track.nasPath)) {
+            libraryTrackByPath.value[key]?.let { return it }
+        }
+        return null
+    }
+
+    private fun bestTrackDurationMs(track: TrackEntity): Long {
+        estimateTrackDurationMs(track).takeIf { it > 0 }?.let { return it }
+        return track.durationMs.coerceAtLeast(0L)
+    }
+
+    private fun estimateTrackDurationMs(track: TrackEntity): Long {
+        val bitrate = track.bitrateKbps?.takeIf { it > 0 } ?: return 0L
+        val size = track.fileSize.takeIf { it > 0 } ?: return 0L
+        return (size * 8L * 1000L) / (bitrate * 1000L)
+    }
+
+    private fun trackPathKeys(path: String): List<String> {
+        val normalized = path.replace('\\', '/').trim()
+        if (normalized.isEmpty()) return emptyList()
+        return linkedSetOf(
+            normalized.lowercase(),
+            normalized.trimStart('/').lowercase(),
+            "/${normalized.trimStart('/')}".lowercase(),
+        ).toList()
+    }
+
+    private fun buildLibraryPathIndex(tracks: List<TrackEntity>): Map<String, TrackEntity> {
+        val out = LinkedHashMap<String, TrackEntity>(tracks.size * 3)
+        for (track in tracks) {
+            for (key in trackPathKeys(track.nasPath)) {
+                out.putIfAbsent(key, track)
+            }
+        }
+        return out
+    }
+
+    private fun repairQueueDurations(current: List<TrackEntity>) {
+        var changed = false
+        val repaired = current.map { track ->
+            val lib = findLibraryTrack(track) ?: return@map track
+            val duration = bestTrackDurationMs(lib).takeIf { it > 0 } ?: track.durationMs
+            val merged = track.copy(
+                fileSize = lib.fileSize.takeIf { it > 0 } ?: track.fileSize,
+                bitrateKbps = lib.bitrateKbps ?: track.bitrateKbps,
+                durationMs = duration,
+            )
+            if (merged != track) changed = true
+            merged
+        }
+        if (changed) {
+            queueManager.replaceAll(repaired)
+            viewModelScope.launch { queueManager.persist() }
+        }
+    }
 
     /** Local NAS folder cover as a Coil [java.io.File] model (authenticated download + cache). */
     suspend fun resolveLocalCoverModel(track: TrackEntity): Any? =

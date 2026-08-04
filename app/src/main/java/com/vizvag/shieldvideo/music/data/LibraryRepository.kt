@@ -23,6 +23,7 @@ import com.vizvag.shieldvideo.music.data.settings.NasSettings
 import com.vizvag.shieldvideo.music.data.synology.FileEntry
 import com.vizvag.shieldvideo.music.data.synology.SynologyApiClient
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 class LibraryRepository constructor(
     private val context: Context,
@@ -37,7 +38,8 @@ class LibraryRepository constructor(
     private val smbRepository: SmbRepository = SmbRepository(),
 ) {
     fun observeArtists(): Flow<List<ArtistEntity>> = artistDao.observeAll()
-    fun observeAlbums(): Flow<List<AlbumWithArtist>> = albumDao.observeAllWithArtist()
+    fun observeAlbums(): Flow<List<AlbumWithArtist>> =
+        albumDao.observeAllWithArtist().map { collapseSplitAlbums(it) }
     fun observeAlbumsByArtist(artistId: String): Flow<List<AlbumWithArtist>> =
         albumDao.observeByArtist(artistId)
 
@@ -68,9 +70,9 @@ class LibraryRepository constructor(
         sortAlbumPlaybackOrder(resolveFullAlbumTracks(albumId))
 
     /**
-     * Full album playback — every track with the same ID3 album title under the
-     * album root (parent of CD1/CD2/… folders). Never stop at a single albumId
-     * or a single disc folder.
+     * Full album playback — every track for this release under the album folder
+     * (parent of CD1/CD2/…), or the same album/artist credit. Never expands to
+     * unrelated albums that only share a title (e.g. every "Greatest Hits").
      */
     private suspend fun resolveFullAlbumTracks(albumId: String): List<TrackEntity> {
         val byId = trackDao.getByAlbum(albumId)
@@ -78,6 +80,17 @@ class LibraryRepository constructor(
         val title = album?.title?.takeIf { it.isNotBlank() }
             ?: byId.firstOrNull()?.albumTitle?.takeIf { it.isNotBlank() }
             ?: return sortAlbumPlaybackOrder(byId)
+
+        val year = album?.year ?: byId.firstOrNull()?.year
+        val allWithTitle = trackDao.getByAlbumTitle(title).let { rows ->
+            if (year == null) rows
+            else {
+                val sameYear = rows.filter { it.year == null || it.year == year }
+                // VA comps often omit year on some tracks — don't drop them if
+                // year-filtered set would leave only the seed albumId's rows.
+                if (sameYear.size >= byId.size.coerceAtLeast(1)) sameYear else rows
+            }
+        }
 
         val seedFolders = buildSet {
             album?.folderPath
@@ -93,31 +106,77 @@ class LibraryRepository constructor(
                     ?.let { add(it) }
             }
         }
-
         val albumRoot = inferAlbumRoot(seedFolders)
-        val allWithTitle = trackDao.getAll().filter {
-            it.albumTitle.equals(title, ignoreCase = true)
+
+        val albumArtistFromTable = album?.artistId?.let { artistDao.getById(it)?.name }
+        val seedAlbumArtist = dominantCredit(
+            byId.mapNotNull { it.albumArtist?.trim()?.takeIf { s -> s.isNotEmpty() } },
+        ) ?: albumArtistFromTable?.trim()?.takeIf { it.isNotEmpty() }
+        val seedArtist = dominantCredit(
+            byId.map { it.artistName.trim() }.filter { it.isNotEmpty() },
+        ) ?: albumArtistFromTable?.trim()?.takeIf { it.isNotEmpty() }
+        val seedIsVa = isVariousArtistsName(seedAlbumArtist.orEmpty()) ||
+            isVariousArtistsName(seedArtist.orEmpty()) ||
+            byId.any { isVariousArtistsName(it.albumArtist.orEmpty()) }
+
+        fun sameRelease(track: TrackEntity): Boolean {
+            if (seedIsVa) return true
+            val aa = track.albumArtist?.trim().orEmpty()
+            val an = track.artistName.trim()
+            if (seedAlbumArtist != null) {
+                if (aa.equals(seedAlbumArtist, ignoreCase = true) ||
+                    an.equals(seedAlbumArtist, ignoreCase = true)
+                ) {
+                    return true
+                }
+            }
+            if (seedArtist != null) {
+                if (an.equals(seedArtist, ignoreCase = true) ||
+                    aa.equals(seedArtist, ignoreCase = true)
+                ) {
+                    return true
+                }
+            }
+            val seedArtistId = album?.artistId ?: byId.firstOrNull()?.artistId
+            return seedArtistId != null && track.artistId == seedArtistId
         }
+
+        val artistScoped = allWithTitle.filter(::sameRelease)
+
+        // Prefer folder scope (multi-disc). Fall back to same artist/album-artist
+        // — never to every library track that merely shares the album title.
         val expanded = when {
-            albumRoot != null -> allWithTitle.filter { trackUnderAlbumRoot(it.nasPath, albumRoot) }
-            else -> allWithTitle
+            albumRoot != null -> {
+                val underRoot = allWithTitle.filter { trackUnderAlbumRoot(it.nasPath, albumRoot) }
+                when {
+                    underRoot.isNotEmpty() -> underRoot
+                    artistScoped.size > byId.size -> artistScoped
+                    else -> byId
+                }
+            }
+            artistScoped.size > byId.size -> artistScoped
+            else -> byId
         }
 
         android.util.Log.i(
             "PallasMusic",
             "resolveFullAlbum '$title' id=$albumId root=$albumRoot " +
-                "byId=${byId.size} expanded=${expanded.size}",
+                "byId=${byId.size} expanded=${expanded.size} va=$seedIsVa",
         )
 
         val merged = (byId + expanded).distinctBy { it.id }
         return sortAlbumPlaybackOrder(merged.ifEmpty { byId })
     }
 
-    /** ID3 disc number first, then track number — never the reverse. */
+    private fun dominantCredit(values: List<String>): String? =
+        values.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
+
+
+    /** Disc (tag or CD/Disc folder) first, then track number. */
     private fun sortAlbumPlaybackOrder(tracks: List<TrackEntity>): List<TrackEntity> =
         tracks.sortedWith(
             compareBy(
-                { it.discNumber ?: 1 },
+                { trackDiscNumber(it) },
                 { it.trackNumber ?: Int.MAX_VALUE },
                 { it.title.lowercase() },
             ),
@@ -263,7 +322,9 @@ class LibraryRepository constructor(
         val bytes = readTagBytes(nasPath, maxBytes = 2_097_152)
         if (bytes.isEmpty()) return null
         val name = nasPath.substringAfterLast('/')
+        // Partial reads skew jaudiotagger track length — never trust duration here.
         return MetadataResolver.readTagsFromBytes(bytes, context.cacheDir, name)
+            ?.copy(durationMs = 0)
     }
 
     private suspend fun readTagBytes(nasPath: String, maxBytes: Long): ByteArray {
@@ -386,7 +447,7 @@ class LibraryRepository constructor(
             trackNumber = rich.trackNumber ?: track.trackNumber,
             discNumber = rich.discNumber ?: track.discNumber,
             composer = rich.composer?.takeIf { it.isNotBlank() } ?: track.composer,
-            durationMs = rich.durationMs.takeIf { it > 0 } ?: track.durationMs,
+            durationMs = track.durationMs,
             bitrateKbps = rich.bitrateKbps ?: track.bitrateKbps,
             sampleRateHz = rich.sampleRateHz ?: track.sampleRateHz,
             channels = rich.channels ?: track.channels,
@@ -454,15 +515,321 @@ class LibraryRepository constructor(
     suspend fun getTracksByArtist(artistId: String): List<TrackEntity> =
         trackDao.getByArtist(artistId)
 
+    /**
+     * All tracks credited to this artist — by library artistId **and** by track
+     * artist / album-artist name. Room artistId alone under-counts when albums
+     * were indexed under a different id (common for album-artist credits).
+     */
+    suspend fun getTracksForArtistBrowse(artist: ArtistEntity): List<TrackEntity> {
+        val byName = getTracksByArtistCredit(artist.name)
+        if (artist.id.startsWith("performer:") || artist.id.startsWith("albumartist:")) {
+            return byName
+        }
+        val byId = trackDao.getByArtist(artist.id)
+        if (byId.isEmpty()) return byName
+        if (byName.isEmpty()) return byId
+        val merged = LinkedHashMap<String, TrackEntity>(byId.size + byName.size)
+        for (track in byId + byName) {
+            val key = track.nasPath.replace('\\', '/').lowercase().ifBlank { track.id }
+            merged.putIfAbsent(key, track)
+        }
+        return merged.values.sortedWith(
+            compareBy(
+                { it.albumTitle.lowercase() },
+                { it.discNumber ?: 1 },
+                { it.trackNumber ?: Int.MAX_VALUE },
+                { it.title.lowercase() },
+            ),
+        )
+    }
+
+    /** Tracks where artist or album artist matches [name]. */
+    suspend fun getTracksByPerformerName(name: String): List<TrackEntity> =
+        getTracksByArtistCredit(name)
+
+    private suspend fun getTracksByArtistCredit(name: String): List<TrackEntity> {
+        val wanted = name.trim()
+        if (wanted.isEmpty()) return emptyList()
+        return trackDao.searchByArtistName(wanted).filter { track ->
+            val a = track.artistName.trim()
+            val aa = track.albumArtist?.trim().orEmpty()
+            a.equals(wanted, ignoreCase = true) ||
+                aa.equals(wanted, ignoreCase = true) ||
+                a.startsWith("$wanted ", ignoreCase = true) ||
+                a.startsWith("$wanted &", ignoreCase = true) ||
+                a.startsWith("$wanted/", ignoreCase = true) ||
+                aa.startsWith("$wanted ", ignoreCase = true) ||
+                aa.startsWith("$wanted &", ignoreCase = true)
+        }.sortedWith(
+            compareBy(
+                { it.albumTitle.lowercase() },
+                { it.discNumber ?: 1 },
+                { it.trackNumber ?: Int.MAX_VALUE },
+                { it.title.lowercase() },
+            ),
+        )
+    }
+
     fun observeTracksByArtist(artistId: String): Flow<List<TrackEntity>> =
         trackDao.observeByArtist(artistId)
 
     suspend fun search(query: String): SearchResults {
         if (query.isBlank()) return SearchResults()
-        val artists = artistDao.search(query)
-        val albums = albumDao.search(query)
-        val tracks = trackDao.search(query)
-        return SearchResults(artists, albums, tracks)
+        val q = query.trim()
+        val artists = artistDao.search(q).toMutableList()
+        val tracks = trackDao.search(q)
+        val seen = artists.map { it.name.trim().lowercase() }.toMutableSet()
+        val artistMatchedTracks = trackDao.searchByArtistName(q)
+
+        // Track performers (compilations) — album-artist table may not list them.
+        for ((key, group) in artistMatchedTracks.groupBy { it.artistName.trim().lowercase() }) {
+            if (key.isEmpty() || key in seen) continue
+            val sample = group.first().artistName.trim()
+            if (!isSearchableArtistName(sample) || !sample.contains(q, ignoreCase = true)) continue
+            seen.add(key)
+            artists += ArtistEntity(
+                id = "performer:$key",
+                name = sample,
+                sortKey = key,
+            )
+        }
+        // Album-artist-only names (e.g. Jaydee credited as album artist).
+        for ((key, group) in artistMatchedTracks
+            .mapNotNull { t ->
+                t.albumArtist?.trim()?.takeIf { it.isNotBlank() }?.let { it to t }
+            }
+            .groupBy({ it.first.lowercase() }, { it.second })
+        ) {
+            if (key.isEmpty() || key in seen) continue
+            val sample = group.first().albumArtist!!.trim()
+            if (!isSearchableArtistName(sample) || !sample.contains(q, ignoreCase = true)) continue
+            seen.add(key)
+            artists += ArtistEntity(
+                id = "albumartist:$key",
+                name = sample,
+                sortKey = key,
+            )
+        }
+
+        // Albums: title/artist table hits + albums from matching track credits.
+        // Collapse VA comps indexed as one albumId per track artist (often also
+        // one folder per artist) — same title (+ year) = one physical release.
+        val albumHits = LinkedHashMap<String, AlbumWithArtist>()
+        val albumIdsByKey = HashMap<String, MutableSet<String>>()
+        fun putAlbum(album: AlbumWithArtist) {
+            val key = physicalAlbumKey(
+                album.title,
+                album.year,
+                album.folderPath,
+                album.albumId,
+                album.artistName,
+            )
+            val seenIds = albumIdsByKey.getOrPut(key) { mutableSetOf() }
+            val prior = albumHits[key]
+            if (prior == null) {
+                albumHits[key] = album
+                seenIds += album.albumId
+                return
+            }
+            val newId = album.albumId.isNotBlank() && album.albumId !in seenIds
+            if (newId) seenIds += album.albumId
+            val mergedCount = if (newId) {
+                prior.trackCount + album.trackCount
+            } else {
+                maxOf(prior.trackCount, album.trackCount)
+            }
+            val artistName = when {
+                prior.artistName.equals(album.artistName, ignoreCase = true) -> prior.artistName
+                isVariousArtistsName(prior.artistName) -> prior.artistName
+                isVariousArtistsName(album.artistName) -> album.artistName
+                else -> "Various Artists"
+            }
+            albumHits[key] = prior.copy(
+                trackCount = mergedCount,
+                artistName = artistName,
+                year = prior.year ?: album.year,
+                folderPath = prior.folderPath ?: album.folderPath,
+                coverPath = prior.coverPath ?: album.coverPath,
+            )
+        }
+        albumDao.search(q).forEach(::putAlbum)
+        // Artist-name queries: albums that contain tracks by that artist.
+        if (artistMatchedTracks.isNotEmpty()) {
+            val albumIds = artistMatchedTracks.map { it.albumId }.distinct()
+            for (id in albumIds) {
+                val sample = artistMatchedTracks.first { it.albumId == id }
+                val folder = sample.nasPath.replace('\\', '/').substringBeforeLast('/')
+                putAlbum(
+                    AlbumWithArtist(
+                        albumId = id,
+                        title = sample.albumTitle,
+                        artistId = sample.artistId,
+                        artistName = sample.albumArtist?.takeIf { it.isNotBlank() }
+                            ?: sample.artistName,
+                        year = sample.year,
+                        genre = sample.genre,
+                        coverPath = null,
+                        trackCount = artistMatchedTracks.count { it.albumId == id },
+                        folderPath = folder,
+                    ),
+                )
+            }
+        }
+        val albums = albumHits.values
+            .sortedWith(compareBy({ it.title.lowercase() }, { it.artistName.lowercase() }))
+
+        // Room albumCount is only albums with that artistId — often wrong for
+        // album-artist / performer credits. Recount from matching tracks.
+        val recounted = artists.map { artist ->
+            val (albumN, trackN) = artistAlbumTrackCounts(artist.name, artistMatchedTracks, albums)
+            artist.copy(
+                albumCount = albumN.takeIf { it > 0 } ?: artist.albumCount,
+                trackCount = trackN.takeIf { it > 0 } ?: artist.trackCount,
+            )
+        }.sortedBy { it.sortKey }
+
+        val albumArtists = if (albums.isEmpty()) {
+            emptyMap()
+        } else {
+            trackDao.albumArtistCounts(albums.map { it.albumId })
+                .groupBy { it.albumId }
+                .mapValues { (_, votes) ->
+                    votes.maxBy { it.trackCount }.albumArtist
+                }
+        }
+        return SearchResults(recounted, albums, tracks, albumArtists)
+    }
+
+    /**
+     * Same physical release across split albumIds.
+     * VA comps are often one albumId (and folder) per track artist — key by
+     * title + year when credited as Various Artists. Otherwise include artist
+     * so "Greatest Hits" for Michael Jackson stays separate from Queen.
+     */
+    private fun physicalAlbumKey(
+        title: String,
+        year: Int?,
+        folderPath: String?,
+        albumId: String,
+        artistName: String = "",
+    ): String {
+        val t = title.trim().lowercase()
+        if (t.isBlank()) return "id:${albumId.lowercase()}"
+        val y = year?.takeIf { it > 0 }?.toString().orEmpty()
+        val root = folderPath
+            ?.replace('\\', '/')
+            ?.trimEnd('/')
+            ?.takeIf { it.isNotBlank() }
+            ?.let { albumRootFolder(it).lowercase() }
+            ?.takeIf { it.isNotBlank() }
+        if (root != null) {
+            return buildString {
+                append("f:$root|t:$t")
+                if (y.isNotEmpty()) append("|y:$y")
+            }
+        }
+        val artist = artistName.trim()
+        if (artist.isNotEmpty() && !isVariousArtistsName(artist)) {
+            return buildString {
+                append("a:${artist.lowercase()}|t:$t")
+                if (y.isNotEmpty()) append("|y:$y")
+            }
+        }
+        return buildString {
+            append("t:$t")
+            if (y.isNotEmpty()) append("|y:$y")
+        }
+    }
+
+    private fun isVariousArtistsName(name: String): Boolean {
+        val n = name.trim().lowercase()
+        return n in setOf("various artists", "various artist", "various", "va", "v.a.", "v.a") ||
+            n.startsWith("various artist")
+    }
+
+    /** Merge VA comps that were indexed as one albumId per track artist. */
+    private fun collapseSplitAlbums(albums: List<AlbumWithArtist>): List<AlbumWithArtist> {
+        if (albums.size <= 1) return albums
+        return albums
+            .groupBy { album ->
+                physicalAlbumKey(
+                    album.title,
+                    album.year,
+                    album.folderPath,
+                    album.albumId,
+                    album.artistName,
+                )
+            }
+            .map { (_, group) ->
+                val best = group.maxBy { it.trackCount }
+                val artists = group.map { it.artistName.trim() }.filter { it.isNotEmpty() }.distinct()
+                best.copy(
+                    trackCount = group.sumOf { it.trackCount.coerceAtLeast(1) }
+                        .coerceAtLeast(best.trackCount),
+                    artistName = when {
+                        artists.size <= 1 -> best.artistName
+                        artists.any { isVariousArtistsName(it) } ->
+                            artists.first { isVariousArtistsName(it) }
+                        else -> "Various Artists"
+                    },
+                    year = group.mapNotNull { it.year }.maxOrNull() ?: best.year,
+                )
+            }
+            .sortedWith(compareBy({ it.title.lowercase() }, { it.artistName.lowercase() }))
+    }
+
+    /**
+     * Distinct physical albums + tracks for an artist name (track artist or album artist).
+     */
+    private fun artistAlbumTrackCounts(
+        artistName: String,
+        matchedTracks: List<TrackEntity>,
+        matchedAlbums: List<AlbumWithArtist>,
+    ): Pair<Int, Int> {
+        val wanted = artistName.trim()
+        if (wanted.isEmpty()) return 0 to 0
+
+        fun trackMatches(t: TrackEntity): Boolean {
+            val a = t.artistName.trim()
+            val aa = t.albumArtist?.trim().orEmpty()
+            return a.equals(wanted, ignoreCase = true) ||
+                aa.equals(wanted, ignoreCase = true)
+        }
+
+        val group = matchedTracks.filter(::trackMatches)
+        val fromTracks = group.map {
+            val folder = it.nasPath.replace('\\', '/').substringBeforeLast('/').trimEnd('/')
+            albumRootFolder(folder).lowercase() to it.albumTitle.trim().lowercase()
+        }.filter { (folder, title) -> folder.isNotBlank() && title.isNotBlank() }
+            .toMutableSet()
+
+        matchedAlbums.forEach { album ->
+            if (album.artistName.equals(wanted, ignoreCase = true)) {
+                val folder = album.folderPath
+                    ?.replace('\\', '/')
+                    ?.trimEnd('/')
+                    ?.let { albumRootFolder(it) }
+                    ?.lowercase()
+                    .orEmpty()
+                val title = album.title.trim().lowercase()
+                if (title.isNotBlank()) {
+                    fromTracks += (folder.ifBlank { album.albumId.lowercase() } to title)
+                }
+            }
+        }
+
+        val trackCount = group.size.takeIf { it > 0 }
+            ?: matchedAlbums
+                .filter { it.artistName.equals(wanted, ignoreCase = true) }
+                .sumOf { it.trackCount.coerceAtLeast(0) }
+        return fromTracks.size to trackCount
+    }
+
+    private fun isSearchableArtistName(name: String): Boolean {
+        if (MetadataResolver.isPlaceholderArtist(name)) return false
+        val n = name.trim().lowercase()
+        return n !in setOf("various artists", "various artist", "various", "va", "v.a.", "v.a") &&
+            !n.startsWith("various artist")
     }
 
     suspend fun recordPlay(trackId: String) {
@@ -794,6 +1161,9 @@ class LibraryRepository constructor(
 private val DiscFolderName =
     Regex("""(?i)^(cd|disc|disk|dvd)\s*[-_.]?\s*\d+\b.*""")
 
+private val DiscFolderNumber =
+    Regex("""(?i)(?:cd|disc|disk|dvd)\s*[-_.]?\s*(\d+)\b""")
+
 internal fun isDiscFolderName(name: String): Boolean =
     DiscFolderName.matches(name.trim())
 
@@ -806,6 +1176,16 @@ internal fun albumRootFolder(folderPath: String): String {
     } else {
         folder
     }
+}
+
+/** ID3 disc tag, else CD1 / Disc 2 folder name, else 1. */
+internal fun trackDiscNumber(track: TrackEntity): Int {
+    track.discNumber?.takeIf { it > 0 }?.let { return it }
+    val folderName = track.nasPath.replace('\\', '/')
+        .substringBeforeLast('/')
+        .trimEnd('/')
+        .substringAfterLast('/')
+    return DiscFolderNumber.find(folderName)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 1
 }
 
 private fun inferAlbumRoot(folders: Set<String>): String? {
@@ -847,4 +1227,6 @@ data class SearchResults(
     val artists: List<ArtistEntity> = emptyList(),
     val albums: List<AlbumWithArtist> = emptyList(),
     val tracks: List<TrackEntity> = emptyList(),
+    /** albumId → dominant album-artist from track tags */
+    val albumArtists: Map<String, String> = emptyMap(),
 )

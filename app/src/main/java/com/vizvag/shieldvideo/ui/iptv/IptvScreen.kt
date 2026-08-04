@@ -2,6 +2,10 @@ package com.vizvag.shieldvideo.ui.iptv
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -24,22 +28,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -49,10 +58,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -61,12 +74,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -76,6 +92,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -99,14 +118,16 @@ import com.vizvag.shieldvideo.playback.NasWatchHistoryEntry
 import com.vizvag.shieldvideo.ShieldVideoApp
 import com.vizvag.shieldvideo.ui.browser.AppWithNavRail
 import com.vizvag.shieldvideo.ui.browser.RailDestination
+import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.ui.components.IconActionButton
-import com.vizvag.shieldvideo.ui.components.SleepTimerButton
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
+import com.vizvag.shieldvideo.ui.theme.FocusRing
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
+import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import java.text.SimpleDateFormat
@@ -123,15 +144,45 @@ fun IptvScreen(
     onOpenBrowser: () -> Unit = onBack,
     onSelectShare: (String) -> Unit = {},
     onOpenRadio: () -> Unit = {},
+    onOpenYouTube: () -> Unit = {},
     onOpenMusic: () -> Unit = {},
+    onFullscreenChanged: (Boolean) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     var pinInput by remember { mutableStateOf("") }
     var previewError by remember { mutableStateOf<String?>(null) }
     var browsingChannels by remember { mutableStateOf(false) }
     val guideFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val controllingRemote by com.vizvag.shieldvideo.playback.remote.RemoteTargetStore.target.collectAsState()
+    val remoteSession = controllingRemote != null
     val exoPlayer = rememberIptvExoPlayer()
-    BindIptvStream(exoPlayer, state.previewChannel) { previewError = it }
+    // Never decode IPTV on the tablet while controlling a room — stream runs on the TV.
+    BindIptvStream(
+        exoPlayer,
+        state.previewChannel.takeUnless { remoteSession },
+    ) { previewError = it }
+    LaunchedEffect(remoteSession) {
+        if (!remoteSession) return@LaunchedEffect
+        runCatching {
+            exoPlayer.volume = 0f
+            exoPlayer.pause()
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            exoPlayer.volume = 1f
+        }
+        if (state.fullscreen) viewModel.closeFullscreen()
+    }
+    LaunchedEffect(state.fullscreen) {
+        onFullscreenChanged(state.fullscreen)
+        if (state.fullscreen) {
+            // Drop browse-wheel focus so Up/Down zap channels, not scroll groups under the overlay.
+            focusManager.clearFocus(force = true)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { onFullscreenChanged(false) }
+    }
     // Shared by the preview HUD and the fullscreen HUD (one frame listener per player).
     val videoDetails = rememberLiveVideoDetails(exoPlayer, state.previewChannel?.id)
     val liveBadges = videoDetails.badges
@@ -148,16 +199,20 @@ fun IptvScreen(
     val audioStatus = rememberAudioTrackStatus(exoPlayer, state.previewChannel?.id)
     val app = LocalContext.current.applicationContext as ShieldVideoApp
     val sleepState by app.sleepTimer.state.collectAsState()
-    DisposableEffect(exoPlayer) {
-        app.sleepTimer.bindPlayback(
-            onVolume = { exoPlayer.volume = it },
-            onStop = {
-                exoPlayer.pause()
-                viewModel.closeFullscreen()
-                browsingChannels = true
-            }
-        )
-        onDispose { app.sleepTimer.unbindPlayback() }
+    DisposableEffect(exoPlayer, remoteSession) {
+        if (remoteSession) {
+            onDispose { }
+        } else {
+            app.sleepTimer.bindPlayback(
+                onVolume = { exoPlayer.volume = it },
+                onStop = {
+                    exoPlayer.pause()
+                    viewModel.closeFullscreen()
+                    browsingChannels = true
+                }
+            )
+            onDispose { app.sleepTimer.unbindPlayback() }
+        }
     }
     // Cache per channel once the measurement is complete (fps present ⇒ decoder output seen),
     // so guide/search rows can show real info for channels watched before.
@@ -183,8 +238,29 @@ fun IptvScreen(
         runCatching { guideFocusRequester.requestFocus() }
     }
 
+    fun returnToGroupCards() {
+        browsingChannels = false
+    }
+
+    // Enter Live TV on the last channel in fullscreen; Back → channel list → groups → leave.
+    // Remote session: start that channel on the TV — never tablet fullscreen/decode.
+    var didAutoStartStream by remember { mutableStateOf(false) }
+    LaunchedEffect(state.previewChannel?.id, remoteSession) {
+        if (didAutoStartStream) return@LaunchedEffect
+        if (state.previewChannel == null) return@LaunchedEffect
+        didAutoStartStream = true
+        browsingChannels = false
+        if (remoteSession) {
+            viewModel.selectChannel(state.previewChannel!!)
+        } else {
+            viewModel.openFullscreen()
+        }
+    }
+
     BackHandler {
         when {
+            state.epgMatching || state.epgMatchLog.isNotEmpty() || state.epgMatchSummary != null ->
+                viewModel.cancelEpgMatch()
             state.fullscreen -> {
                 viewModel.closeFullscreen()
                 browsingChannels = true
@@ -193,10 +269,7 @@ fun IptvScreen(
             state.assignEpgChannel != null -> viewModel.closeAssignEpg()
             state.detailChannel != null -> viewModel.closeGuide()
             state.showRecordings -> viewModel.toggleRecordings()
-            browsingChannels -> browsingChannels = false
-            // At the group list with a channel playing, Back returns to watching it
-            // fullscreen. Leaving Live TV is done via the top-bar back arrow.
-            state.previewChannel != null -> viewModel.openFullscreen()
+            browsingChannels -> returnToGroupCards()
             else -> onBack()
         }
     }
@@ -211,6 +284,7 @@ fun IptvScreen(
             onSelectShare = onSelectShare,
             recordingFolder = recordingFolder,
             onLiveTv = {},
+            onYouTube = onOpenYouTube,
             onRadio = onOpenRadio,
             onMusic = onOpenMusic,
             sleepTimerActive = sleepState.active,
@@ -218,6 +292,7 @@ fun IptvScreen(
             onCycleSleepTimer = app.sleepTimer::cycle,
             onSettings = onOpenSettings,
             showRail = !state.fullscreen,
+            players = RailPlayerVisibility.from(state.settings),
         ) {
         Column(modifier = Modifier.fillMaxSize()) {
             IptvTopBar(
@@ -228,14 +303,17 @@ fun IptvScreen(
                 onBack = onBack,
                 onSearch = viewModel::openSearch,
                 onRefresh = { viewModel.reload(force = true) },
-                onMultiview = onOpenMultiview,
+                onMultiview = {
+                    if (remoteSession) {
+                        viewModel.showRemoteOnlyMessage("Multiview is only available on the TV")
+                    } else {
+                        onOpenMultiview()
+                    }
+                },
                 onRecordings = viewModel::toggleRecordings,
                 onSettings = onOpenSettings,
                 onFullscreen = if (state.previewChannel != null) viewModel::openFullscreen else null,
                 onMoveFocusToGuide = ::focusGuide,
-                sleepTimerActive = sleepState.active,
-                sleepTimerLabel = sleepState.label,
-                onCycleSleepTimer = app.sleepTimer::cycle
             )
 
             if (state.settings.iptvPlaylists.size > 1) {
@@ -264,12 +342,19 @@ fun IptvScreen(
                     attachPlayer = !state.fullscreen,
                     browsingChannels = browsingChannels,
                     onBrowsingChannelsChange = { browsingChannels = it },
+                    onReturnToGroupCards = ::returnToGroupCards,
                     guideFocusRequester = guideFocusRequester,
+                    blockGuideFocus = state.epgMatching ||
+                        state.epgMatchLog.isNotEmpty() ||
+                        state.epgMatchSummary != null,
                     onSelectGroup = viewModel::selectGroup,
                     onSetGroupOrder = viewModel::setGroupOrderMode,
                     onRenameGroup = viewModel::renameGroup,
                     onMoveGroup = viewModel::moveGroup,
+                    onMoveGroupToEdge = viewModel::moveGroupToEdge,
+                    onCommitGroupOrder = viewModel::commitGroupOrder,
                     onToggleGroupHidden = viewModel::toggleGroupHidden,
+                    onAutoMatchEpg = { key -> viewModel.autoMatchEpg(groupKey = key, userInitiated = true) },
                     onConfirm = viewModel::selectChannel,
                     onOpenFullscreen = viewModel::openFullscreen,
                     onAssignEpg = viewModel::openAssignEpg,
@@ -279,6 +364,9 @@ fun IptvScreen(
                     onFavorite = viewModel::toggleFavorite,
                     onRenameChannel = viewModel::renameChannel,
                     onMoveChannel = viewModel::moveChannel,
+                    onMoveChannelToEdge = viewModel::moveChannelToEdge,
+                    onMoveChannelToEdgeAndCommit = viewModel::moveChannelToEdgeAndCommit,
+                    onCommitChannelOrder = viewModel::commitChannelOrder,
                     onOpenExternal = { viewModel.playExternal(it) },
                     programmesFor = viewModel::programmesFor
                 )
@@ -314,9 +402,6 @@ fun IptvScreen(
                 badgesConfirmedFor = { viewModel.badgesConfirmedFor(it) },
                 programmesFor = viewModel::programmesFor,
                 epgVersion = state.epgVersion,
-                sleepTimerActive = sleepState.active,
-                sleepTimerLabel = sleepState.label,
-                onCycleSleepTimer = app.sleepTimer::cycle
             )
         }
     }
@@ -332,7 +417,7 @@ fun IptvScreen(
             onClose = viewModel::closeSearch,
             onPlayChannel = {
                 viewModel.recordSearch()
-                viewModel.zapFromSearch(it)
+                viewModel.selectChannel(it)
                 browsingChannels = true
                 viewModel.closeSearch()
             },
@@ -424,8 +509,222 @@ fun IptvScreen(
         )
     }
 
+    if (state.epgMatching || state.epgMatchLog.isNotEmpty() || state.epgMatchSummary != null) {
+        EpgMatchProgressPanel(
+            matching = state.epgMatching,
+            done = state.epgMatchDone,
+            total = state.epgMatchTotal,
+            lines = state.epgMatchLog,
+            summary = state.epgMatchSummary,
+            onCancel = viewModel::cancelEpgMatch,
+        )
+    }
+
     state.message?.let { msg ->
-        LaunchedMessage(msg, viewModel::dismissMessage)
+        if (!state.epgMatching && state.epgMatchLog.isEmpty()) {
+            LaunchedMessage(msg, viewModel::dismissMessage)
+        }
+    }
+}
+
+@Composable
+private fun EpgMatchProgressPanel(
+    matching: Boolean,
+    done: Int,
+    total: Int,
+    lines: List<EpgMatchLogLine>,
+    summary: String?,
+    onCancel: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val matchedCount = lines.count { it.matched }
+    val skippedCount = lines.count { !it.matched }
+    val cancelFocus = remember { FocusRequester() }
+    val feedback = com.vizvag.shieldvideo.ui.theme.rememberTvFeedback()
+
+    BackHandler(onBack = onCancel)
+
+    LaunchedEffect(Unit) {
+        delay(40)
+        runCatching { cancelFocus.requestFocus() }
+    }
+    LaunchedEffect(matching) {
+        // Keep focus on Cancel/Close whenever matching state flips.
+        delay(40)
+        runCatching { cancelFocus.requestFocus() }
+    }
+    LaunchedEffect(lines.size) {
+        if (lines.isNotEmpty() && lines.size % 5 == 0) {
+            listState.animateScrollToItem(lines.lastIndex)
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+        ),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.72f))
+                .focusable()
+                .onPreviewKeyEvent { event ->
+                    // Swallow D-pad so focus never falls through to Live TV behind the dialog.
+                    val nav = event.key == Key.DirectionLeft ||
+                        event.key == Key.DirectionRight ||
+                        event.key == Key.DirectionUp ||
+                        event.key == Key.DirectionDown ||
+                        event.key == Key.DirectionCenter ||
+                        event.key == Key.Enter ||
+                        event.key == Key.NumPadEnter ||
+                        event.key == Key.Back
+                    if (nav && event.type == KeyEventType.KeyDown) {
+                        if (event.key == Key.Back) {
+                            onCancel()
+                            return@onPreviewKeyEvent true
+                        }
+                        // Re-assert cancel focus if somehow lost
+                        runCatching { cancelFocus.requestFocus() }
+                    }
+                    false
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.72f)
+                    .fillMaxHeight(0.82f)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xF012141A))
+                    .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
+                    .padding(20.dp),
+            ) {
+                Text(
+                    text = if (matching) "AI EPG MATCHING" else "AI EPG MATCH RESULTS",
+                    color = CyanAccent,
+                    fontFamily = PallasFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    letterSpacing = 2.sp,
+                )
+                Text(
+                    text = when {
+                        matching && summary != null -> summary
+                        matching && total > 0 -> "$done / $total channels · $matchedCount matched"
+                        matching -> "Preparing…"
+                        else -> summary ?: "$matchedCount matched · $skippedCount no match"
+                    },
+                    color = Color.White,
+                    fontFamily = PallasFontFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 22.sp,
+                    modifier = Modifier.padding(top = 6.dp, bottom = 14.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (total > 0) {
+                    val fraction = (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Color.White.copy(alpha = 0.12f)),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(fraction)
+                                .fillMaxHeight()
+                                .background(CyanAccent),
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    userScrollEnabled = false,
+                ) {
+                    items(lines.size, key = { idx -> "${lines[idx].channelName}-$idx" }) { idx ->
+                        val line = lines[idx]
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.White.copy(alpha = 0.04f))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = line.channelName,
+                                color = Color.White.copy(alpha = 0.9f),
+                                fontFamily = PallasFontFamily,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "→",
+                                color = TextMuted,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                            )
+                            Text(
+                                text = if (line.matched) line.epgName.orEmpty() else "no match",
+                                color = if (line.matched) CyanAccent else TextMuted,
+                                fontFamily = PallasFontFamily,
+                                fontSize = 15.sp,
+                                fontWeight = if (line.matched) FontWeight.SemiBold else FontWeight.Normal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+                var cancelFocused by remember { mutableStateOf(false) }
+                Text(
+                    text = if (matching) "Cancel" else "Close",
+                    color = if (cancelFocused) Color.Black else Color.White,
+                    fontFamily = PallasFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    modifier = Modifier
+                        .padding(top = 14.dp)
+                        .align(Alignment.End)
+                        .focusRequester(cancelFocus)
+                        .focusable()
+                        .onFocusChanged { cancelFocused = it.isFocused }
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (cancelFocused) CyanAccent else Color.White.copy(alpha = 0.12f))
+                        .border(
+                            2.dp,
+                            if (cancelFocused) FocusRing else Color.White.copy(alpha = 0.2f),
+                            RoundedCornerShape(10.dp),
+                        )
+                        .clickable(role = Role.Button) {
+                            feedback.click()
+                            onCancel()
+                        }
+                        .padding(horizontal = 28.dp, vertical = 12.dp),
+                )
+                Text(
+                    text = if (matching) "Back / Cancel stops matching" else "Back / Close dismisses",
+                    color = TextMuted,
+                    fontFamily = PallasFontFamily,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
     }
 }
 
@@ -462,12 +761,17 @@ private fun LiveTvStage(
     attachPlayer: Boolean,
     browsingChannels: Boolean,
     onBrowsingChannelsChange: (Boolean) -> Unit,
+    onReturnToGroupCards: () -> Unit,
     guideFocusRequester: FocusRequester,
+    blockGuideFocus: Boolean,
     onSelectGroup: (String) -> Unit,
     onSetGroupOrder: (String, GroupChannelOrder) -> Unit,
     onRenameGroup: (String, String) -> Unit,
     onMoveGroup: (groupKey: String, delta: Int) -> Unit,
+    onMoveGroupToEdge: (groupKey: String, toTop: Boolean) -> Unit,
+    onCommitGroupOrder: () -> Unit,
     onToggleGroupHidden: (String) -> Unit,
+    onAutoMatchEpg: (groupKey: String) -> Unit,
     onConfirm: (IptvChannel) -> Unit,
     onOpenFullscreen: () -> Unit,
     onAssignEpg: (IptvChannel) -> Unit,
@@ -477,6 +781,9 @@ private fun LiveTvStage(
     onFavorite: (IptvChannel) -> Unit,
     onRenameChannel: (channelId: String, newName: String) -> Unit,
     onMoveChannel: (channelId: String, delta: Int) -> Unit,
+    onMoveChannelToEdge: (channelId: String, toTop: Boolean) -> Unit,
+    onMoveChannelToEdgeAndCommit: (channelId: String, toTop: Boolean) -> Unit,
+    onCommitChannelOrder: () -> Unit,
     onOpenExternal: (IptvChannel) -> Unit,
     programmesFor: (IptvChannel) -> List<IptvProgramme>
 ) {
@@ -501,48 +808,97 @@ private fun LiveTvStage(
         if (!state.fullscreen) fullscreenExits++
     }
 
-    LaunchedEffect(browsingChannels, state.selectedGroup, optionsRow, renameRow) {
-        if (optionsRow != null || renameRow != null) return@LaunchedEffect
-        delay(60)
+    var groupRestoreEpoch by remember { mutableIntStateOf(0) }
+    LaunchedEffect(browsingChannels) {
+        if (!browsingChannels) groupRestoreEpoch++
+    }
+
+    LaunchedEffect(browsingChannels, state.selectedGroup, optionsRow, renameRow, state.fullscreen, blockGuideFocus) {
+        if (blockGuideFocus) return@LaunchedEffect
+        if (state.fullscreen || optionsRow != null || renameRow != null) return@LaunchedEffect
+        // Wait for shared-bounds morph to settle before stealing focus.
+        delay(if (browsingChannels) 560 else 480)
+        if (blockGuideFocus) return@LaunchedEffect
         runCatching { guideFocusRequester.requestFocus() }
     }
     val previewChannel = state.previewChannel
+
+    // Idle browse chrome → fade and enter normal fullscreen viewing (Up/Down zap).
+    var browseChromeAlpha by remember { mutableFloatStateOf(1f) }
+    var browseIdleEpoch by remember { mutableIntStateOf(0) }
+    val browseIdleBlocked = groupOptionsKey != null ||
+        renameGroupKey != null ||
+        movingGroupKey != null ||
+        movingChannelId != null ||
+        optionsRow != null ||
+        renameRow != null ||
+        state.pinPrompt ||
+        state.searchOpen ||
+        state.showRecordings
+    val latestFullscreen by rememberUpdatedState(state.fullscreen)
+    val latestPreviewChannel by rememberUpdatedState(previewChannel)
+    val latestOpenFullscreen by rememberUpdatedState(onOpenFullscreen)
+    LaunchedEffect(
+        previewChannel?.id,
+        state.fullscreen,
+        browseIdleBlocked,
+        browseIdleEpoch
+    ) {
+        browseChromeAlpha = 1f
+        if (previewChannel == null || state.fullscreen || browseIdleBlocked) {
+            return@LaunchedEffect
+        }
+        delay(10_000)
+        val fade = Animatable(1f)
+        fade.animateTo(0f, animationSpec = tween(500)) {
+            browseChromeAlpha = value
+        }
+        if (latestPreviewChannel != null && !latestFullscreen) {
+            latestOpenFullscreen()
+        }
+        browseChromeAlpha = 1f
+    }
+
     val quality = remember(previewChannel?.name, state.rows) {
         previewChannel?.let { ch ->
             state.rows.firstOrNull { it.channel.id == ch.id }?.badges?.takeIf { it.isNotEmpty() }
                 ?: ChannelQuality.labelsFor(ch.name)
         }.orEmpty()
     }
-    val previewNow = remember(previewChannel?.id, state.epgChannelCount, state.epgVersion) {
-        previewChannel?.let { programmesFor(it) }?.let { XmltvParser.nowNext(it) }
+    // Advance now/next while the browse stage stays open (was frozen at first composition).
+    var epgClockMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            epgClockMs = System.currentTimeMillis()
+            delay(30_000)
+        }
+    }
+    val previewNow = remember(previewChannel?.id, state.epgChannelCount, state.epgVersion, epgClockMs) {
+        previewChannel?.let { programmesFor(it) }?.let { XmltvParser.nowNext(it, epgClockMs) }
     }
     val showEpgInPreview = state.settings.iptvShowEpgInList
     val guideSize = state.settings.iptvGuideSize
     val guideMetrics = remember(guideSize) { guideSize.metrics() }
-    val groupWheelModifier = Modifier
-        .padding(start = 16.dp, top = 4.dp, bottom = 12.dp)
-        .width(guideMetrics.groupWheelWidth)
-        .fillMaxHeight(guideMetrics.groupWheelHeightFraction)
-    val channelWheelModifier = if (showEpgInPreview) {
+    // One shared bottom guide frame for groups AND channels — content swaps inside it.
+    val guidePanelModifier = if (showEpgInPreview) {
         Modifier
-            .padding(start = 0.dp, end = 0.dp, top = 0.dp, bottom = 0.dp)
             .fillMaxWidth()
             .fillMaxHeight(guideMetrics.channelWheelHeightFraction)
     } else {
         Modifier
-            .padding(start = 12.dp, top = 4.dp, bottom = 0.dp)
+            .padding(start = 12.dp)
             .width(guideMetrics.channelWheelWidthNoEpg)
             .fillMaxHeight(guideMetrics.channelWheelHeightFraction)
     }
 
-    // Open channel sub-wheel only once the chosen group is actually selected (PIN-aware).
-    LaunchedEffect(pendingGroupOpen, state.pinPrompt, state.selectedGroup) {
+    // Open channel list only once rows are rebuilt for the chosen group (PIN-aware).
+    LaunchedEffect(pendingGroupOpen, state.pinPrompt, state.selectedGroup, state.rowsForGroup) {
         val want = pendingGroupOpen ?: return@LaunchedEffect
         if (state.pinPrompt) return@LaunchedEffect
+        if (!state.selectedGroup.equals(want, ignoreCase = true)) return@LaunchedEffect
+        if (!state.rowsForGroup.equals(want, ignoreCase = true)) return@LaunchedEffect
         pendingGroupOpen = null
-        if (state.selectedGroup.equals(want, ignoreCase = true)) {
-            onBrowsingChannelsChange(true)
-        }
+        onBrowsingChannelsChange(true)
     }
 
     Box(
@@ -550,6 +906,16 @@ private fun LiveTvStage(
             .fillMaxSize()
             .clipToBounds()
             .background(Color.Black)
+            .focusProperties { canFocus = !state.fullscreen }
+            .onPreviewKeyEvent { event ->
+                if (!state.fullscreen &&
+                    previewChannel != null &&
+                    event.type == KeyEventType.KeyDown
+                ) {
+                    browseIdleEpoch++
+                }
+                false
+            }
     ) {
         // Preview stays below the top bar (TextureView + clip — SurfaceView was bleeding over it).
         // Keep it out of the D-pad focus chain so focus stays on the guide wheel.
@@ -567,7 +933,7 @@ private fun LiveTvStage(
                 )
             } else if (!browsingChannels) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Pick a group, then channels", color = TextMuted)
+                    Text("OK on a group to open channels", color = TextMuted)
                 }
             } else if (state.previewChannel == null) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -611,18 +977,22 @@ private fun LiveTvStage(
         )
 
         // Playing-channel HUD (guide itself lives in the channel wheel)
-        if (browsingChannels && previewChannel != null) {
-            Column(
-                modifier = Modifier
-                    .align(if (showEpgInPreview) Alignment.TopEnd else Alignment.BottomEnd)
-                    .padding(
-                        start = 36.dp,
-                        end = 28.dp,
-                        top = if (showEpgInPreview) 12.dp else 0.dp,
-                        bottom = if (showEpgInPreview) 0.dp else 24.dp
-                    )
-                    .fillMaxWidth(if (showEpgInPreview) 0.28f else 0.34f)
-            ) {
+        AnimatedVisibility(
+            visible = browsingChannels && previewChannel != null,
+            modifier = Modifier
+                .align(if (showEpgInPreview) Alignment.TopEnd else Alignment.BottomEnd)
+                .padding(
+                    start = 36.dp,
+                    end = 28.dp,
+                    top = if (showEpgInPreview) 12.dp else 0.dp,
+                    bottom = if (showEpgInPreview) 0.dp else 24.dp
+                )
+                .fillMaxWidth(if (showEpgInPreview) 0.28f else 0.34f)
+                .graphicsLayer { alpha = browseChromeAlpha },
+            enter = fadeIn(tween(280, delayMillis = 120)),
+            exit = fadeOut(tween(160))
+        ) {
+            Column {
                 Text(
                     text = "PLAYING",
                     color = CyanAccent,
@@ -636,7 +1006,7 @@ private fun LiveTvStage(
                     modifier = Modifier.padding(top = 2.dp)
                 ) {
                     Text(
-                        text = previewChannel.name,
+                        text = previewChannel?.name.orEmpty(),
                         color = Color.White,
                         fontSize = if (showEpgInPreview) 18.sp else 26.sp,
                         fontWeight = FontWeight.Bold,
@@ -700,12 +1070,17 @@ private fun LiveTvStage(
                     )
                 }
             }
-        } else if (!browsingChannels) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(start = 400.dp, end = 36.dp, bottom = 28.dp)
-            ) {
+        }
+        AnimatedVisibility(
+            visible = !browsingChannels,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(start = 400.dp, end = 36.dp, bottom = 28.dp)
+                .graphicsLayer { alpha = browseChromeAlpha },
+            enter = fadeIn(tween(280, delayMillis = 80)),
+            exit = fadeOut(tween(160))
+        ) {
+            Column {
                 Text(
                     text = "LIVE TV",
                     color = CyanAccent,
@@ -714,58 +1089,39 @@ private fun LiveTvStage(
                     letterSpacing = 1.sp
                 )
                 Text(
-                    text = "Choose a group",
+                    text = "Pick a category",
                     color = Color.White,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(top = 4.dp)
                 )
-                Text(
-                    text = "OK opens that group’s channel wheel",
-                    color = TextMuted,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
             }
         }
 
-        // Nested wheels: groups (left) → channel/EPG guide docked to bottom edge
+        // One glass shell + shared-bounds morph: hero category cards ↔ channel/EPG guide.
+        val guideShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
         Box(
             modifier = Modifier
-                .align(
-                    when {
-                        browsingChannels -> Alignment.BottomCenter
-                        else -> Alignment.CenterStart
-                    }
+                .align(Alignment.BottomCenter)
+                .then(guidePanelModifier)
+                .graphicsLayer { alpha = browseChromeAlpha }
+                .clip(guideShape)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xF0181A20), Color(0xF00A0B0E))
+                    )
                 )
-                .then(if (browsingChannels) channelWheelModifier else groupWheelModifier)
+                .border(1.dp, Color.White.copy(alpha = 0.12f), guideShape)
+                .clipToBounds()
         ) {
-            if (!browsingChannels) {
-                GroupWheelPicker(
-                    groups = state.groups,
-                    selectedGroup = state.selectedGroup,
-                    displayNames = state.groupDisplayNames,
-                    hiddenGroups = state.hiddenGroups,
-                    onConfirm = { group ->
-                        pendingGroupOpen = group
-                        onSelectGroup(group)
-                    },
-                    onLongPressOptions = { groupOptionsKey = it },
-                    movingGroupKey = movingGroupKey,
-                    onMoveStep = { key, delta -> onMoveGroup(key, delta) },
-                    onMoveDone = { movingGroupKey = null },
-                    guideSize = guideSize,
-                    focusRequester = guideFocusRequester,
-                    modifier = Modifier.fillMaxSize(),
-                    requestFocus = true
-                )
-            } else {
+            // Instant swap — AnimatedContent/SharedTransition caused Shield crashes/ANRs on large groups.
+            if (browsingChannels) {
                 ChannelWheelPicker(
                     rows = state.rows,
                     selectedChannelId = state.previewChannel?.id,
                     onConfirm = { onConfirm(it.channel) },
                     onLongPressOptions = { optionsRow = it },
-                    onBackToGroups = { onBrowsingChannelsChange(false) },
+                    onBackToGroups = onReturnToGroupCards,
                     groupTitle = state.groupDisplayNames[state.selectedGroup]
                         ?: state.selectedGroup,
                     programmesFor = programmesFor,
@@ -778,11 +1134,44 @@ private fun LiveTvStage(
                     recenterKey = fullscreenExits,
                     movingChannelId = movingChannelId,
                     onMoveStep = { id, delta -> onMoveChannel(id, delta) },
-                    onMoveDone = { movingChannelId = null },
+                    onMoveJumpToEdge = { id, toTop -> onMoveChannelToEdge(id, toTop) },
+                    onMoveDone = {
+                        onCommitChannelOrder()
+                        movingChannelId = null
+                    },
                     focusRequester = guideFocusRequester,
                     modifier = Modifier.fillMaxSize(),
-                    requestFocus = true
+                    requestFocus = browsingChannels,
+                    drawChrome = false,
                 )
+            } else {
+                // Remount when the active group changes so scroll/focus cannot stick on Favorites.
+                key(state.selectedGroup, groupRestoreEpoch) {
+                    GroupHeroGallery(
+                        groups = state.groups,
+                        selectedGroup = state.selectedGroup,
+                        displayNames = state.groupDisplayNames,
+                        hiddenGroups = state.hiddenGroups,
+                        channelCounts = state.groupChannelCounts,
+                        orderModes = state.groupOrderModes,
+                        restoreEpoch = groupRestoreEpoch,
+                        onConfirm = { group ->
+                            pendingGroupOpen = group
+                            onSelectGroup(group)
+                        },
+                        onLongPressOptions = { groupOptionsKey = it },
+                        movingGroupKey = movingGroupKey,
+                        onMoveStep = { key, delta -> onMoveGroup(key, delta) },
+                        onMoveJumpToEdge = { key, toTop -> onMoveGroupToEdge(key, toTop) },
+                        onMoveDone = {
+                            onCommitGroupOrder()
+                            movingGroupKey = null
+                        },
+                        focusRequester = guideFocusRequester,
+                        modifier = Modifier.fillMaxSize(),
+                        requestFocus = !browsingChannels && !blockGuideFocus,
+                    )
+                }
             }
         }
     }
@@ -803,6 +1192,10 @@ private fun LiveTvStage(
                 movingGroupKey = groupKey
             },
             onToggleHidden = { onToggleGroupHidden(groupKey) },
+            onAutoMatchEpg = {
+                groupOptionsKey = null
+                onAutoMatchEpg(groupKey)
+            },
             onDismiss = { groupOptionsKey = null }
         )
     }
@@ -872,10 +1265,21 @@ private fun LiveTvStage(
                 optionsRow = null
                 movingChannelId = row.channel.id
             },
+            onMoveToTop = {
+                optionsRow = null
+                onMoveChannelToEdgeAndCommit(row.channel.id, true)
+            },
+            onMoveToBottom = {
+                optionsRow = null
+                onMoveChannelToEdgeAndCommit(row.channel.id, false)
+            },
             onFullscreen = {
                 optionsRow = null
                 onConfirm(row.channel)
-                onOpenFullscreen()
+                // Remote session: onConfirm already plays on the TV — never force tablet fullscreen.
+                if (!com.vizvag.shieldvideo.playback.remote.RemoteTargetStore.isControllingRemote()) {
+                    onOpenFullscreen()
+                }
             },
             onOpenExternal = {
                 optionsRow = null
@@ -959,9 +1363,6 @@ private fun IptvTopBar(
     onSettings: () -> Unit,
     onFullscreen: (() -> Unit)? = null,
     onMoveFocusToGuide: () -> Unit = {},
-    sleepTimerActive: Boolean = false,
-    sleepTimerLabel: String? = null,
-    onCycleSleepTimer: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
@@ -1013,13 +1414,6 @@ private fun IptvTopBar(
                 fontFamily = PallasFontFamily,
             )
         }
-        if (onCycleSleepTimer != null) {
-            SleepTimerButton(
-                active = sleepTimerActive,
-                label = sleepTimerLabel,
-                onCycle = onCycleSleepTimer
-            )
-        }
         if (onFullscreen != null) {
             IconActionButton(selected = false, onClick = onFullscreen) {
                 Icon(Icons.Filled.Fullscreen, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.size(26.dp))
@@ -1067,9 +1461,6 @@ private fun FullscreenLiveOverlay(
     badgesConfirmedFor: (IptvChannel) -> Boolean,
     programmesFor: (IptvChannel) -> List<IptvProgramme>,
     epgVersion: Int,
-    sleepTimerActive: Boolean = false,
-    sleepTimerLabel: String? = null,
-    onCycleSleepTimer: (() -> Unit)? = null
 ) {
     var hudVisible by remember { mutableStateOf(true) }
     var hudPulse by remember { mutableIntStateOf(0) }
@@ -1080,6 +1471,14 @@ private fun FullscreenLiveOverlay(
     val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
     val scope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
+    // Keep now/next current while watching — HUD reveal alone only refreshed on keypress.
+    var epgClockMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            epgClockMs = System.currentTimeMillis()
+            delay(30_000)
+        }
+    }
 
     fun revealHud() {
         hudVisible = true
@@ -1090,16 +1489,26 @@ private fun FullscreenLiveOverlay(
 
     LaunchedEffect(channel.id) {
         revealHud()
+        focusRequester.requestFocus()
     }
 
     LaunchedEffect(hudVisible, hudPulse, channel.id) {
         if (!hudVisible) return@LaunchedEffect
-        delay(3_500)
+        delay(7_000)
         hudVisible = false
     }
 
     LaunchedEffect(historyVisible, streamInfoVisible) {
-        if (!historyVisible && !streamInfoVisible) focusRequester.requestFocus()
+        if (!historyVisible && !streamInfoVisible) {
+            delay(16)
+            focusRequester.requestFocus()
+        }
+    }
+
+    // Ensure zap keys land here after browse chrome auto-hides into viewing mode.
+    LaunchedEffect(Unit) {
+        delay(80)
+        focusRequester.requestFocus()
     }
 
     Box(
@@ -1199,16 +1608,6 @@ private fun FullscreenLiveOverlay(
                         modifier = Modifier.size(26.dp)
                     )
                 }
-                if (onCycleSleepTimer != null) {
-                    SleepTimerButton(
-                        active = sleepTimerActive,
-                        label = sleepTimerLabel,
-                        onCycle = {
-                            onCycleSleepTimer()
-                            revealHud()
-                        }
-                    )
-                }
                 Column(
                     modifier = Modifier
                         .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
@@ -1250,9 +1649,9 @@ private fun FullscreenLiveOverlay(
                 }
             }
         }
-        // Recomputed on every HUD reveal so a programme change while watching shows fresh data.
-        val nowNext = remember(channel.id, epgVersion, hudPulse) {
-            XmltvParser.nowNext(programmesFor(channel))
+        // Recomputed on HUD reveal and on the clock tick so a programme change while watching shows.
+        val nowNext = remember(channel.id, epgVersion, hudPulse, epgClockMs) {
+            XmltvParser.nowNext(programmesFor(channel), epgClockMs)
         }
         if (nowNext.now != null || nowNext.next != null) {
             AnimatedVisibility(
@@ -1529,60 +1928,77 @@ private fun FullscreenEpgTile(nowNext: IptvNowNext, recordingNow: Boolean) {
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     fun range(p: IptvProgramme) =
         "${timeFmt.format(Date(p.startMs))}–${timeFmt.format(Date(p.stopMs))}"
+    var progressClockMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(nowNext.now?.startMs, nowNext.now?.stopMs) {
+        if (nowNext.now == null) return@LaunchedEffect
+        while (true) {
+            progressClockMs = System.currentTimeMillis()
+            delay(15_000)
+        }
+    }
 
     Column(
         modifier = Modifier
-            .fillMaxWidth(0.55f)
-            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .fillMaxWidth(0.72f)
+            .wrapContentHeight()
+            .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         nowNext.now?.let { now ->
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "NOW",
-                    color = CyanAccent,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-                if (recordingNow) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
                     Text(
-                        text = "● REC",
-                        color = Color(0xFFFF5252),
+                        text = "NOW",
+                        color = CyanAccent,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
                     )
+                    if (recordingNow) {
+                        Text(
+                            text = "● REC",
+                            color = Color(0xFFFF5252),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
                 Text(
                     text = now.title,
                     color = Color.White,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Text(text = range(now), color = TextMuted, fontSize = 12.sp)
+                Text(
+                    text = range(now),
+                    color = TextMuted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
             }
             now.description?.takeIf { it.isNotBlank() }?.let { desc ->
                 Text(
                     text = desc,
-                    color = Color.White.copy(alpha = 0.75f),
-                    fontSize = 12.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 2.dp)
+                    color = Color.White.copy(alpha = 0.78f),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 6.dp)
                 )
             }
-            val progress = ((System.currentTimeMillis() - now.startMs).toFloat() /
+            val progress = ((progressClockMs - now.startMs).toFloat() /
                 (now.stopMs - now.startMs).toFloat()).coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 6.dp)
+                    .padding(top = 8.dp)
                     .height(3.dp)
                     .clip(RoundedCornerShape(2.dp))
                     .background(Color.White.copy(alpha = 0.18f))
@@ -1596,27 +2012,46 @@ private fun FullscreenEpgTile(nowNext: IptvNowNext, recordingNow: Boolean) {
             }
         }
         nowNext.next?.let { next ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = if (nowNext.now != null) 8.dp else 0.dp)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = if (nowNext.now != null) 10.dp else 0.dp)
             ) {
-                Text(
-                    text = "NEXT",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-                Text(
-                    text = next.title,
-                    color = Color.White.copy(alpha = 0.85f),
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(text = range(next), color = TextMuted, fontSize = 12.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "NEXT",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                    Text(
+                        text = next.title,
+                        color = Color.White.copy(alpha = 0.88f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = range(next),
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+                next.description?.takeIf { it.isNotBlank() }?.let { desc ->
+                    Text(
+                        text = desc,
+                        color = Color.White.copy(alpha = 0.65f),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
             }
         }
     }
@@ -2040,6 +2475,11 @@ private fun AssignEpgDialog(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                Text(
+                    text = "Suggestions ranked by name match (strips UK:/FHD/…)",
+                    color = TextMuted.copy(alpha = 0.85f),
+                    fontSize = 12.sp
+                )
             }
         },
         text = {
@@ -2078,15 +2518,15 @@ private fun AssignEpgDialog(
                     )
                 )
                 if (results.isEmpty()) {
-                    Text(
-                        text = if (query.isBlank()) {
-                            "EPG channel list empty — refresh Live TV after EPG downloads"
-                        } else {
-                            "No matches"
-                        },
-                        color = TextMuted,
-                        fontSize = 14.sp
-                    )
+                Text(
+                    text = if (query.isBlank()) {
+                        "No ranked matches — refresh Live TV after EPG downloads"
+                    } else {
+                        "No matches"
+                    },
+                    color = TextMuted,
+                    fontSize = 14.sp
+                )
                 } else {
                     LazyColumn(
                         modifier = Modifier
@@ -2166,6 +2606,11 @@ private fun RecordChannelDialog(
         programmes.filter { it.stopMs > now }.sortedBy { it.startMs }.take(4)
     }
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val firstActionFocus = remember { FocusRequester() }
+    LaunchedEffect(channel.id, upcoming.firstOrNull()?.startMs) {
+        delay(80)
+        runCatching { firstActionFocus.requestFocus() }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -2178,38 +2623,27 @@ private fun RecordChannelDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (upcoming.isNotEmpty()) {
                     Text("PROGRAMME", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    upcoming.forEach { programme ->
+                    upcoming.forEachIndexed { index, programme ->
                         val airing = programme.startMs <= now && programme.stopMs > now
                         val recording = isRecording(programme)
-                        Text(
-                            buildString {
-                                if (recording) append("● REC  ")
+                        RecordingProgrammeRow(
+                            label = buildString {
                                 if (airing) append("Now · ")
                                 append(timeFmt.format(Date(programme.startMs)))
                                 append("–")
                                 append(timeFmt.format(Date(programme.stopMs)))
                                 append("  ")
                                 append(programme.title)
-                                append(if (recording) "   ✕ Cancel" else "")
                             },
-                            color = when {
-                                recording -> Color(0xFFFF6E6E)
-                                airing -> CyanAccent
-                                else -> Color.White
-                            },
-                            fontSize = 14.sp,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    if (recording) onCancelProgramme(programme)
-                                    else onRecordProgramme(programme)
-                                }
-                                .padding(horizontal = 10.dp, vertical = 9.dp)
+                            recording = recording,
+                            airing = airing,
+                            focusRequester = if (index == 0) firstActionFocus else null,
+                            onRecord = { onRecordProgramme(programme) },
+                            onStop = { onCancelProgramme(programme) },
                         )
                     }
                     Text(
-                        "Tap a marked (● REC) programme to cancel its recording.",
+                        "Focus the stop icon on a recording to end it.",
                         color = TextMuted,
                         fontSize = 11.sp
                     )
@@ -2258,10 +2692,97 @@ private fun RecordChannelDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
+            TextButton(onClick = onDismiss) { Text("Close", color = TextMuted) }
         },
         containerColor = CardSurface
     )
+}
+
+@Composable
+private fun RecordingProgrammeRow(
+    label: String,
+    recording: Boolean,
+    airing: Boolean,
+    focusRequester: FocusRequester? = null,
+    onRecord: () -> Unit,
+    onStop: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val localFocus = remember { FocusRequester() }
+    val requester = focusRequester ?: localFocus
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                when {
+                    focused && recording -> Color(0xFFFF5252).copy(alpha = 0.22f)
+                    focused -> CyanAccent.copy(alpha = 0.18f)
+                    recording -> Color(0xFFFF5252).copy(alpha = 0.10f)
+                    else -> Color.White.copy(alpha = 0.04f)
+                }
+            )
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = when {
+                    focused && recording -> Color(0xFFFF8A80)
+                    focused -> CyanAccent
+                    else -> Color.White.copy(alpha = 0.08f)
+                },
+                shape = RoundedCornerShape(8.dp)
+            )
+            .focusRequester(requester)
+            .onFocusChanged { focused = it.isFocused }
+            .semantics {
+                role = Role.Button
+                contentDescription = if (recording) "Stop recording $label" else "Record $label"
+            }
+            .onPreviewKeyEvent { event ->
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                if (isSelect && event.type == KeyEventType.KeyUp) {
+                    if (recording) onStop() else onRecord()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable()
+            .clickable {
+                if (recording) onStop() else onRecord()
+            }
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        if (recording) {
+            Icon(
+                imageVector = Icons.Filled.FiberManualRecord,
+                contentDescription = null,
+                tint = Color(0xFFFF5252),
+                modifier = Modifier.size(14.dp)
+            )
+        }
+        Text(
+            text = label,
+            color = when {
+                recording -> Color(0xFFFF8A80)
+                airing -> CyanAccent
+                else -> Color.White
+            },
+            fontSize = 14.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Icon(
+            imageVector = if (recording) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
+            contentDescription = if (recording) "Stop recording" else "Record",
+            tint = if (recording) Color(0xFFFF5252) else CyanAccent,
+            modifier = Modifier.size(22.dp)
+        )
+    }
 }
 
 @Composable
@@ -2277,12 +2798,20 @@ private fun GuideDialog(
     onDismiss: () -> Unit
 ) {
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(channel.id) {
+        delay(80)
+        runCatching { firstFocus.requestFocus() }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(channel.name, color = Color.White, fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                TextButton(onClick = onPlayLive) {
+                TextButton(
+                    onClick = onPlayLive,
+                    modifier = Modifier.focusRequester(firstFocus)
+                ) {
                     Text("Preview / fullscreen", color = CyanAccent, fontWeight = FontWeight.Bold)
                 }
                 Box(modifier = Modifier.height(8.dp))
@@ -2298,38 +2827,39 @@ private fun GuideDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 6.dp)
-                                    .clickable {
-                                        when {
-                                            catchup -> onCatchup(p)
-                                            !past -> onPlayLive()
-                                        }
-                                    }
                             ) {
                                 Text(
                                     buildString {
-                                        if (recording) append("● REC  ")
                                         append(timeFmt.format(Date(p.startMs)))
                                         append("–")
                                         append(timeFmt.format(Date(p.stopMs)))
                                         append("  ")
                                         append(p.title)
                                     },
-                                    color = if (recording) Color(0xFFFF6E6E) else Color.White,
+                                    color = if (recording) Color(0xFFFF8A80) else Color.White,
                                     fontWeight = FontWeight.SemiBold
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                ) {
                                     if (catchup) {
-                                        Text("Catch-up", color = CyanAccent, fontSize = 13.sp,
-                                            modifier = Modifier.clickable { onCatchup(p) })
-                                    }
-                                    Text(
-                                        if (recording) "Cancel recording" else "Record",
-                                        color = if (recording) Color(0xFFFF6E6E) else TextMuted,
-                                        fontSize = 13.sp,
-                                        modifier = Modifier.clickable {
-                                            if (recording) onCancelRecording(p) else onRecord(p)
+                                        TextButton(onClick = { onCatchup(p) }) {
+                                            Text("Catch-up", color = CyanAccent, fontSize = 13.sp)
                                         }
-                                    )
+                                    } else if (!past) {
+                                        TextButton(onClick = onPlayLive) {
+                                            Text("Watch", color = TextMuted, fontSize = 13.sp)
+                                        }
+                                    }
+                                    if (!past || recording) {
+                                        RecordingActionIcon(
+                                            recording = recording,
+                                            onRecord = { onRecord(p) },
+                                            onStop = { onCancelRecording(p) },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2342,6 +2872,40 @@ private fun GuideDialog(
         },
         containerColor = CardSurface
     )
+}
+
+@Composable
+private fun RecordingActionIcon(
+    recording: Boolean,
+    onRecord: () -> Unit,
+    onStop: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    IconButton(
+        onClick = { if (recording) onStop() else onRecord() },
+        modifier = Modifier
+            .size(44.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .background(
+                when {
+                    focused && recording -> Color(0xFFFF5252).copy(alpha = 0.35f)
+                    focused -> CyanAccent.copy(alpha = 0.28f)
+                    recording -> Color(0xFFFF5252).copy(alpha = 0.18f)
+                    else -> Color.White.copy(alpha = 0.06f)
+                },
+                RoundedCornerShape(10.dp)
+            )
+            .semantics {
+                contentDescription = if (recording) "Stop recording" else "Record programme"
+            }
+    ) {
+        Icon(
+            imageVector = if (recording) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
+            contentDescription = null,
+            tint = if (recording) Color(0xFFFF5252) else CyanAccent,
+            modifier = Modifier.size(22.dp)
+        )
+    }
 }
 
 @Composable
@@ -2382,6 +2946,8 @@ private fun RecordingsPane(
                             TextButton(onClick = { onStop(r.id) }) {
                                 Text("Stop & save", color = Color(0xFFFF8A80), fontWeight = FontWeight.Bold)
                             }
+                        } else if (r.status == IptvRecordingStatus.SAVING) {
+                            Text("Converting…", color = CyanAccent, fontSize = 13.sp)
                         } else {
                             TextButton(onClick = { onRemove(r.id) }) {
                                 Text("Remove", color = TextMuted)

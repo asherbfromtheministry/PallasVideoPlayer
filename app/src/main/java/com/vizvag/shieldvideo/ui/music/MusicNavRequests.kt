@@ -1,39 +1,32 @@
 package com.vizvag.shieldvideo.ui.music
 
 /**
- * One-shot intents to open Music Browse filtered by artist or track
- * (e.g. from Radio now-playing metadata).
+ * One-shot intents to open Music **Search** with a query
+ * (e.g. from Radio now-playing metadata, or cross-screen handoff).
  */
 object MusicNavRequests {
     @Volatile
-    private var pendingArtist: String? = null
+    private var pendingSearch: String? = null
 
-    @Volatile
-    private var pendingTrack: String? = null
-
-    fun requestArtist(artist: String) {
-        val name = artist.trim()
+    fun requestSearch(query: String) {
+        val name = query.trim()
         if (name.isEmpty()) return
-        pendingArtist = name
-        pendingTrack = null
+        pendingSearch = name
     }
 
-    fun requestTrack(track: String) {
-        val name = track.trim()
-        if (name.isEmpty()) return
-        pendingTrack = name
-        pendingArtist = null
-    }
+    /** @deprecated Prefer [requestSearch] — kept for call-site clarity. */
+    fun requestArtist(artist: String) = requestSearch(artist)
 
-    fun takeArtist(): String? {
-        val value = pendingArtist
-        pendingArtist = null
+    /** @deprecated Prefer [requestSearch] — kept for call-site clarity. */
+    fun requestTrack(track: String) = requestSearch(track)
+
+    fun takeSearch(): String? {
+        val value = pendingSearch
+        pendingSearch = null
         return value
     }
 
-    fun takeTrack(): String? {
-        val value = pendingTrack
-        pendingTrack = null
-        return value
-    }
+    fun takeArtist(): String? = takeSearch()
+
+    fun takeTrack(): String? = takeSearch()
 }

@@ -7,6 +7,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -14,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.Motion
 import kotlin.math.PI
@@ -30,6 +32,23 @@ fun AmbientBackdrop(
     intensity: Float = 1f,
 ) {
     val chrome = LocalScreenChrome.current
+    val liteVisuals = LocalLiteVisuals.current
+    if (liteVisuals) {
+        // Static soft wash — no Canvas loop on weak devices.
+        androidx.compose.foundation.layout.Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            chrome.accent.copy(alpha = 0.04f * intensity),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+        return
+    }
     val infinite = rememberInfiniteTransition(label = "ambient")
     val drift by infinite.animateFloat(
         initialValue = 0f,

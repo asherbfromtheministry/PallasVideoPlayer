@@ -187,10 +187,8 @@ private fun StreamPane(channel: IptvChannel?, onClick: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val player = remember(channel?.streamUrl) {
         if (channel == null) null
-        else ExoPlayer.Builder(context).build().apply {
+        else buildIptvExoPlayer(context).apply {
             setMediaItem(MediaItem.fromUri(channel.streamUrl))
-            repeatMode = Player.REPEAT_MODE_OFF
-            playWhenReady = true
             prepare()
         }
     }

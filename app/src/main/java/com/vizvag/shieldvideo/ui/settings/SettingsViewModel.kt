@@ -3,6 +3,8 @@ package com.vizvag.shieldvideo.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.vizvag.shieldvideo.data.hue.HueBridgeClient
+import com.vizvag.shieldvideo.data.hue.HueLight
 import com.vizvag.shieldvideo.data.index.VideoIndexController
 import com.vizvag.shieldvideo.data.index.VideoIndexUiStatus
 import com.vizvag.shieldvideo.music.data.MusicIndexController
@@ -54,7 +56,15 @@ data class SettingsUiState(
     val editingPlaylistId: String? = null,
     val editingRadioStationId: String? = null,
     val backupBusy: Boolean = false,
-    val backupMessage: String? = null
+    val backupMessage: String? = null,
+    /** Transient Piped password for login/register (not persisted). */
+    val youtubePassword: String = "",
+    val youtubePasswordVisible: Boolean = false,
+    val youtubeAuthBusy: Boolean = false,
+    val youtubeAuthMessage: String? = null,
+    val hueBusy: Boolean = false,
+    val hueMessage: String? = null,
+    val hueLights: List<HueLight> = emptyList(),
 )
 
 class SettingsViewModel(
@@ -66,13 +76,15 @@ class SettingsViewModel(
     private val videoIndex: VideoIndexController,
     private val musicIndex: MusicIndexController,
     private val iptvParental: IptvParentalStore,
-    private val settingsBackup: SettingsBackupManager
+    private val settingsBackup: SettingsBackupManager,
+    private val youtubeRepository: com.vizvag.shieldvideo.data.youtube.YoutubeRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
     private var linkJob: Job? = null
     private var baseline: AppSettings = AppSettings()
+    private val hueClient = HueBridgeClient()
 
     init {
         val loaded = settingsRepository.load()
@@ -483,6 +495,83 @@ class SettingsViewModel(
         }
     }
 
+    fun pairHueBridge() {
+        viewModelScope.launch {
+            val draft = _state.value.draft
+            _state.update { it.copy(hueBusy = true, hueMessage = "Pairing… press the bridge button first") }
+            val result = withContext(Dispatchers.IO) {
+                hueClient.pair(draft.hueBridgeIp)
+            }
+            result.fold(
+                onSuccess = { username ->
+                    update { it.copy(hueUsername = username) }
+                    _state.update {
+                        it.copy(
+                            hueBusy = false,
+                            hueMessage = "Paired — Save settings, refresh lights, then pick which ones to sync",
+                        )
+                    }
+                    refreshHueLights()
+                },
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(
+                            hueBusy = false,
+                            hueMessage = error.message ?: "Pairing failed",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    fun refreshHueLights() {
+        viewModelScope.launch {
+            val draft = _state.value.draft
+            if (draft.hueUsername.isBlank()) {
+                _state.update { it.copy(hueMessage = "Pair the bridge first") }
+                return@launch
+            }
+            _state.update { it.copy(hueBusy = true, hueMessage = "Loading lights…") }
+            val result = withContext(Dispatchers.IO) {
+                hueClient.listLights(draft.hueBridgeIp, draft.hueUsername)
+            }
+            result.fold(
+                onSuccess = { lights ->
+                    _state.update {
+                        it.copy(
+                            hueBusy = false,
+                            hueLights = lights,
+                            hueMessage = if (lights.isEmpty()) {
+                                "No lights found on this bridge"
+                            } else {
+                                "${lights.size} light(s) — select which to sync with Music"
+                            },
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(
+                            hueBusy = false,
+                            hueMessage = error.message ?: "Could not list lights",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    fun toggleHueLight(lightId: String) {
+        update { draft ->
+            val id = lightId.trim()
+            if (id.isBlank()) return@update draft
+            val selected = draft.hueLightIds.toMutableList()
+            if (selected.contains(id)) selected.remove(id) else selected.add(id)
+            draft.copy(hueLightIds = selected)
+        }
+    }
+
     fun linkTrakt() {
         linkJob?.cancel()
         linkJob = viewModelScope.launch {
@@ -563,6 +652,160 @@ class SettingsViewModel(
             )
         }
     }
+
+    fun setYoutubePassword(value: String) {
+        _state.update { it.copy(youtubePassword = value) }
+    }
+
+    fun setYoutubeAuthMessage(message: String) {
+        _state.update { it.copy(youtubeAuthMessage = message) }
+    }
+
+    fun toggleYoutubePasswordVisible() {
+        _state.update { it.copy(youtubePasswordVisible = !it.youtubePasswordVisible) }
+    }
+
+    fun importSubscriptionsCsv(csvText: String) {
+        linkJob?.cancel()
+        linkJob = viewModelScope.launch {
+            val draft = _state.value.draft
+            if (!draft.isYoutubeLoggedIn) {
+                _state.update {
+                    it.copy(youtubeAuthMessage = "Log in to Piped first, then import the CSV")
+                }
+                return@launch
+            }
+            val ids = com.vizvag.shieldvideo.data.youtube.YoutubeRepository
+                .parseTakeoutSubscriptionsCsv(csvText)
+            if (ids.isEmpty()) {
+                _state.update {
+                    it.copy(youtubeAuthMessage = "No channels found in that CSV")
+                }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    youtubeAuthBusy = true,
+                    youtubeAuthMessage = "Importing ${ids.size} channels…",
+                )
+            }
+            runCatching {
+                youtubeRepository.importSubscriptions(
+                    authToken = draft.youtubePipedAuthToken,
+                    channelIds = ids,
+                    override = true,
+                )
+                val subscribed = runCatching {
+                    youtubeRepository.subscriptions(draft.youtubePipedAuthToken).size
+                }.getOrDefault(ids.size)
+                subscribed
+            }.onSuccess { count ->
+                _state.update {
+                    it.copy(
+                        youtubeAuthBusy = false,
+                        youtubeAuthMessage = if (count > 0) {
+                            "Imported — $count channels on Piped. Open YouTube and press Refresh."
+                        } else {
+                            "Import sent, but Piped still shows 0 channels. Try another Piped API URL."
+                        },
+                    )
+                }
+            }.onFailure { e ->
+                _state.update {
+                    it.copy(
+                        youtubeAuthBusy = false,
+                        youtubeAuthMessage = e.message ?: "Import failed",
+                    )
+                }
+            }
+        }
+    }
+
+    fun loginPiped() {
+        pipedAuth(register = false)
+    }
+
+    fun registerPiped() {
+        pipedAuth(register = true)
+    }
+
+    fun logoutPiped() {
+        linkJob?.cancel()
+        val next = _state.value.draft.copy(youtubePipedAuthToken = "")
+        settingsRepository.save(next)
+        baseline = next
+        _state.update {
+            it.copy(
+                draft = next,
+                youtubePassword = "",
+                youtubeAuthMessage = "Logged out of Piped",
+                isDirty = false,
+                saved = true,
+            )
+        }
+    }
+
+    private fun pipedAuth(register: Boolean) {
+        linkJob?.cancel()
+        linkJob = viewModelScope.launch {
+            val draft = _state.value.draft
+            val password = _state.value.youtubePassword
+            if (draft.youtubePipedUsername.isBlank() || password.isBlank()) {
+                _state.update {
+                    it.copy(youtubeAuthMessage = "Enter Piped username and password")
+                }
+                return@launch
+            }
+            // Persist API URL first so repository uses the draft instance.
+            settingsRepository.save(
+                draft.copy(youtubePipedAuthToken = draft.youtubePipedAuthToken)
+            )
+            _state.update {
+                it.copy(
+                    youtubeAuthBusy = true,
+                    youtubeAuthMessage = if (register) "Creating Piped account…" else "Logging in…",
+                )
+            }
+            val result = runCatching {
+                if (register) {
+                    youtubeRepository.register(draft.youtubePipedUsername, password)
+                } else {
+                    youtubeRepository.login(draft.youtubePipedUsername, password)
+                }
+            }
+            result.onSuccess { auth ->
+                val linked = draft.copy(
+                    youtubePipedUsername = auth.username,
+                    youtubePipedAuthToken = auth.token,
+                    youtubePipedApiUrl = com.vizvag.shieldvideo.data.youtube.YoutubeDefaults
+                        .normalizeApiUrl(draft.youtubePipedApiUrl),
+                )
+                settingsRepository.save(linked)
+                baseline = linked
+                _state.update {
+                    it.copy(
+                        draft = linked,
+                        youtubePassword = "",
+                        youtubeAuthBusy = false,
+                        youtubeAuthMessage = if (register) {
+                            "Account created — tap Import from Downloads (or Import CSV)"
+                        } else {
+                            "Logged in as ${auth.username} — import subscriptions.csv next"
+                        },
+                        saved = true,
+                        isDirty = false,
+                    )
+                }
+            }.onFailure { e ->
+                _state.update {
+                    it.copy(
+                        youtubeAuthBusy = false,
+                        youtubeAuthMessage = e.message ?: "Piped auth failed",
+                    )
+                }
+            }
+        }
+    }
 }
 
 class SettingsViewModelFactory(
@@ -574,7 +817,8 @@ class SettingsViewModelFactory(
     private val videoIndex: VideoIndexController,
     private val musicIndex: MusicIndexController,
     private val iptvParental: IptvParentalStore,
-    private val settingsBackup: SettingsBackupManager
+    private val settingsBackup: SettingsBackupManager,
+    private val youtubeRepository: com.vizvag.shieldvideo.data.youtube.YoutubeRepository,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -587,7 +831,8 @@ class SettingsViewModelFactory(
             videoIndex,
             musicIndex,
             iptvParental,
-            settingsBackup
+            settingsBackup,
+            youtubeRepository,
         ) as T
     }
 }

@@ -55,10 +55,12 @@ class SettingsBackupManager(
             root.optJSONObject("settings")
                 ?: throw IllegalArgumentException("Backup is missing app settings")
         )
-        // Keep this TV's HA handoff id (lounge/bedroom) when one is already set.
+        // Keep this TV's HA handoff device id when one is already set.
+        // Import remoteToken so phones/tablets share the LAN control secret with the TVs.
         val localSettings = settingsRepository.load()
         val merged = imported.copy(
             deviceId = localSettings.deviceId.ifBlank { imported.deviceId },
+            remoteToken = imported.remoteToken.ifBlank { localSettings.remoteToken },
             // SAF permissions belong to this Android device and cannot be transferred.
             iptvRecordingLocalTreeUri = localSettings.iptvRecordingLocalTreeUri
         )

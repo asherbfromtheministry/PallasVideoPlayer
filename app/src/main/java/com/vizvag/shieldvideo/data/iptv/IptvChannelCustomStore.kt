@@ -75,7 +75,7 @@ class IptvChannelCustomStore(context: Context) {
     fun setGroupOrder(playlistId: String, groupKeys: List<String>) {
         val arr = JSONArray()
         groupKeys.forEach { arr.put(it) }
-        prefs.edit().putString(groupOrderKey(playlistId), arr.toString()).commit()
+        prefs.edit().putString(groupOrderKey(playlistId), arr.toString()).apply()
     }
 
     fun hiddenGroups(playlistId: String): Set<String> =
@@ -114,7 +114,7 @@ class IptvChannelCustomStore(context: Context) {
         groupKey: String,
         mode: GroupChannelOrder
     ) {
-        prefs.edit().putString(groupModeKey(playlistId, groupKey), mode.name).commit()
+        prefs.edit().putString(groupModeKey(playlistId, groupKey), mode.name).apply()
     }
 
     fun watchCount(playlistId: String, channelId: String): Int =

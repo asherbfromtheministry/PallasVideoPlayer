@@ -19,13 +19,50 @@ class LyricsRepository(
     private val synologyApiClient: SynologyApiClient,
     private val settingsRepository: SettingsRepository,
     private val smbRepository: SmbRepository,
+    private val onlineLyricsClient: OnlineLyricsClient = OnlineLyricsClient(),
 ) {
     private val cache = mutableMapOf<String, List<LyricLine>>()
+    private val onlineCache = mutableMapOf<String, List<LyricLine>>()
 
     suspend fun getLyrics(path: String?): List<LyricLine> {
         if (path.isNullOrBlank()) return emptyList()
         return downloadFirstHit(path)?.lines.orEmpty()
     }
+
+    suspend fun getOnlineLyrics(
+        track: TrackEntity,
+        titleOverride: String? = null,
+        artistOverride: String? = null,
+        albumOverride: String? = null,
+        durationMsOverride: Long? = null,
+    ): LyricsLoadResult {
+        val cacheKey = track.id.ifBlank { track.nasPath }
+        onlineCache[cacheKey]?.takeIf { it.isNotEmpty() }?.let {
+            return LyricsLoadResult(it, lyricsPath = "online:lrclib")
+        }
+        val title = titleOverride?.takeIf { it.isNotBlank() } ?: track.title
+        val artist = artistOverride?.takeIf { it.isNotBlank() } ?: track.artistName
+        val album = albumOverride?.takeIf { it.isNotBlank() } ?: track.albumTitle
+        val durationMs = durationMsOverride?.takeIf { it > 0 }
+            ?: track.durationMs.takeIf { it > 0 }
+            ?: 0L
+        Log.i(TAG, "online lyrics lookup: '$title' / '$artist' / '$album' (${durationMs}ms)")
+        val lines = runCatching {
+            onlineLyricsClient.fetch(title, artist, album, durationMs)
+        }.onFailure {
+            Log.e(TAG, "online lyrics failed", it)
+        }.getOrDefault(emptyList())
+        if (lines.isNotEmpty()) {
+            onlineCache[cacheKey] = lines
+            Log.i(TAG, "online lyrics loaded (${lines.size} lines)")
+            return LyricsLoadResult(lines, lyricsPath = "online:lrclib")
+        }
+        Log.w(TAG, "online lyrics not found for '$title'")
+        return LyricsLoadResult(emptyList())
+    }
+
+    fun cachedOnlineLyrics(trackId: String): List<LyricLine>? =
+        onlineCache[trackId]?.takeIf { it.isNotEmpty() }
 
     suspend fun getLyricsForTrack(track: TrackEntity): LyricsLoadResult {
         Log.i(TAG, "loading lyrics for ${track.nasPath}")
@@ -85,6 +122,13 @@ class LyricsRepository(
                     }
                 }
             }
+        }
+
+        val cachedOnline = onlineCache[track.id.ifBlank { track.nasPath }]
+            ?.takeIf { it.isNotEmpty() }
+        if (cachedOnline != null) {
+            Log.i(TAG, "lyrics from online cache (${cachedOnline.size} lines)")
+            return LyricsLoadResult(cachedOnline, lyricsPath = "online:lrclib")
         }
 
         Log.w(TAG, "lyrics not found for ${track.nasPath}")
@@ -196,7 +240,10 @@ class LyricsRepository(
         return null
     }
 
-    fun clearCache() = cache.clear()
+    fun clearCache() {
+        cache.clear()
+        onlineCache.clear()
+    }
 
     /** Lyrics SMB must use 445 even when the app is in HTTP/File Station mode (port 5000). */
     private fun smbConnectSettings(settings: AppSettings): AppSettings = settings.copy(

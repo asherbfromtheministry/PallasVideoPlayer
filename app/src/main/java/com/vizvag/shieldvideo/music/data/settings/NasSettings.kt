@@ -1,7 +1,7 @@
 package com.vizvag.shieldvideo.music.data.settings
 
 data class NasSettings(
-    val host: String = "192.168.68.50",
+    val host: String = "",
     val port: Int = 5000,
     val useHttps: Boolean = false,
     val musicPaths: List<String> = listOf("/music"),

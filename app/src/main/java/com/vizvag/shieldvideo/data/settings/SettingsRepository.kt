@@ -4,16 +4,20 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.vizvag.shieldvideo.BuildConfig
+import com.vizvag.shieldvideo.data.iptv.EpgAiMatcher
+import com.vizvag.shieldvideo.data.iptv.EpgAiProvider
 import com.vizvag.shieldvideo.data.iptv.IptvDefaults
 import com.vizvag.shieldvideo.data.iptv.IptvPlaylistConfig
 import com.vizvag.shieldvideo.data.radio.CustomRadioStationConfig
 import com.vizvag.shieldvideo.data.radio.RadioDefaults
 import com.vizvag.shieldvideo.data.nas.NasPaths
+import com.vizvag.shieldvideo.data.youtube.YoutubeDefaults
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 enum class IptvRecordingStorage {
     LOCAL,
@@ -37,9 +41,23 @@ data class AppSettings(
     val backupFolderPath: String = "",
     val playerPackage: String = "org.videolan.vlc",
     val deviceId: String = "",
+    /**
+     * Shared secret for LAN remote control (Bearer token). Auto-generated on first load;
+     * included in settings backup so phones/tablets match the TVs after import.
+     */
+    val remoteToken: String = "",
+    /** When true and [deviceId] is set, advertise NSD and accept LAN control commands. */
+    val allowRemoteControl: Boolean = true,
     val haWebhookUrl: String = BuildConfig.DEFAULT_HA_WEBHOOK,
     /** When enabled, sleep timer expiry POSTs to the HA sleep webhook (standby). */
     val sleepTimerHaStandby: Boolean = false,
+    /** Music/Radio Philips Hue light sync over the local bridge API. */
+    val hueEnabled: Boolean = false,
+    val hueBridgeIp: String = BuildConfig.DEFAULT_HUE_BRIDGE_IP,
+    /** Bridge username/token from pairing (link button). */
+    val hueUsername: String = "",
+    /** Selected Hue light IDs (CLIP v1 numeric ids as strings). */
+    val hueLightIds: List<String> = emptyList(),
     val traktClientId: String = BuildConfig.DEFAULT_TRAKT_CLIENT_ID,
     val traktClientSecret: String = "",
     val traktUsername: String = BuildConfig.DEFAULT_TRAKT_USERNAME,
@@ -59,15 +77,41 @@ data class AppSettings(
     val iptvRecordingLocalTreeUri: String = "",
     /** NAS path in /share/folder form. */
     val iptvRecordingNasFolder: String = "",
+    /**
+     * API key for AI EPG matching (Gemini free key or OpenAI / compatible).
+     * Used by Live TV → hold group → AI match EPG.
+     */
+    val iptvEpgAiApiKey: String = BuildConfig.DEFAULT_IPTV_EPG_AI_KEY,
+    val iptvEpgAiProvider: EpgAiProvider = EpgAiProvider.GEMINI,
+    /** OpenAI-compatible base URL when provider is OPENAI. */
+    val iptvEpgAiOpenAiBaseUrl: String = EpgAiMatcher.DEFAULT_OPENAI_BASE,
     /** NAS music library folder paths (e.g. /music). Indexed and shown in Music → Folders. */
     val musicPaths: List<String> = defaultMusicPaths(),
     val musicUseHttps: Boolean = false,
     val musicTrustSelfSigned: Boolean = true,
     val customRadioStations: List<CustomRadioStationConfig> = emptyList(),
+    /** Piped API base URL for in-app YouTube (search + ad-free direct streams). */
+    val youtubePipedApiUrl: String = YoutubeDefaults.DEFAULT_PIPED_API_URL,
+    /** Piped account username (not a Google account). */
+    val youtubePipedUsername: String = "",
+    /** Piped session token for subscription feed. */
+    val youtubePipedAuthToken: String = "",
     /** On-screen clock corner (subtle time + long date). */
     val clockCorner: ClockCorner = ClockCorner.BottomRight,
+    /**
+     * Weaker devices (e.g. Chromecast HD): skip blurred art, looping EQ/ambient
+     * animations, and other continuous GPU effects.
+     */
+    val liteVisuals: Boolean = false,
+    /** Home landing hotspots — which room tiles are shown. */
+    val homeShowRadio: Boolean = true,
+    val homeShowMusic: Boolean = true,
+    val homeShowLibrary: Boolean = true,
+    val homeShowYouTube: Boolean = false,
+    val homeShowLiveTv: Boolean = true,
 ) {
     val isTraktLinked: Boolean get() = traktAccessToken.isNotBlank()
+    val isYoutubeLoggedIn: Boolean get() = youtubePipedAuthToken.isNotBlank()
 
     /** Primary music folder (first configured path). */
     val musicPath: String
@@ -143,11 +187,22 @@ class SettingsRepository(context: Context) {
             playerPackage = prefs.getString(KEY_PLAYER_PACKAGE, "org.videolan.vlc")
                 ?: "org.videolan.vlc",
             deviceId = prefs.getString(KEY_DEVICE_ID, "") ?: "",
+            remoteToken = ensureRemoteToken(),
+            allowRemoteControl = prefs.getBoolean(KEY_ALLOW_REMOTE_CONTROL, true),
             haWebhookUrl = prefs.getString(
                 KEY_HA_WEBHOOK,
                 BuildConfig.DEFAULT_HA_WEBHOOK
             ) ?: BuildConfig.DEFAULT_HA_WEBHOOK,
             sleepTimerHaStandby = prefs.getBoolean(KEY_SLEEP_TIMER_HA_STANDBY, false),
+            hueEnabled = prefs.getBoolean(KEY_HUE_ENABLED, false),
+            hueBridgeIp = prefs.getString(KEY_HUE_BRIDGE_IP, BuildConfig.DEFAULT_HUE_BRIDGE_IP)
+                ?: BuildConfig.DEFAULT_HUE_BRIDGE_IP,
+            hueUsername = prefs.getString(KEY_HUE_USERNAME, "") ?: "",
+            hueLightIds = prefs.getString(KEY_HUE_LIGHT_IDS, "")
+                .orEmpty()
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() },
             traktClientId = prefs.getString(KEY_TRAKT_CLIENT_ID, BuildConfig.DEFAULT_TRAKT_CLIENT_ID)
                 ?: BuildConfig.DEFAULT_TRAKT_CLIENT_ID,
             traktClientSecret = prefs.getString(KEY_TRAKT_CLIENT_SECRET, "") ?: "",
@@ -170,13 +225,42 @@ class SettingsRepository(context: Context) {
             ),
             iptvRecordingLocalTreeUri = prefs.getString(KEY_IPTV_RECORDING_LOCAL_TREE, "") ?: "",
             iptvRecordingNasFolder = prefs.getString(KEY_IPTV_RECORDING_NAS_FOLDER, "") ?: "",
+            iptvEpgAiApiKey = prefs.getString(KEY_IPTV_EPG_AI_KEY, null)
+                ?.takeIf { it.isNotBlank() }
+                ?: BuildConfig.DEFAULT_IPTV_EPG_AI_KEY,
+            iptvEpgAiProvider = EpgAiProvider.fromStorage(
+                prefs.getString(KEY_IPTV_EPG_AI_PROVIDER, EpgAiProvider.GEMINI.name)
+            ),
+            iptvEpgAiOpenAiBaseUrl = prefs.getString(
+                KEY_IPTV_EPG_AI_OPENAI_BASE,
+                EpgAiMatcher.DEFAULT_OPENAI_BASE
+            ) ?: EpgAiMatcher.DEFAULT_OPENAI_BASE,
             musicPaths = loadMusicPaths(),
             musicUseHttps = prefs.getBoolean(KEY_MUSIC_USE_HTTPS, false),
             musicTrustSelfSigned = prefs.getBoolean(KEY_MUSIC_TRUST_SELF_SIGNED, true),
             customRadioStations = loadCustomRadioStations(),
+            youtubePipedApiUrl = run {
+                val raw = prefs.getString(KEY_YOUTUBE_PIPED_API, null)
+                val normalized = YoutubeDefaults.normalizeApiUrl(
+                    raw ?: YoutubeDefaults.DEFAULT_PIPED_API_URL
+                )
+                // Persist migration off the dead default so Settings shows the live URL.
+                if (raw != normalized) {
+                    prefs.edit().putString(KEY_YOUTUBE_PIPED_API, normalized).apply()
+                }
+                normalized
+            },
+            youtubePipedUsername = prefs.getString(KEY_YOUTUBE_PIPED_USER, "") ?: "",
+            youtubePipedAuthToken = prefs.getString(KEY_YOUTUBE_PIPED_TOKEN, "") ?: "",
             clockCorner = ClockCorner.fromStorage(
                 prefs.getString(KEY_CLOCK_CORNER, ClockCorner.BottomRight.name)
             ),
+            liteVisuals = prefs.getBoolean(KEY_LITE_VISUALS, false),
+            homeShowRadio = prefs.getBoolean(KEY_HOME_SHOW_RADIO, true),
+            homeShowMusic = prefs.getBoolean(KEY_HOME_SHOW_MUSIC, true),
+            homeShowLibrary = prefs.getBoolean(KEY_HOME_SHOW_LIBRARY, true),
+            homeShowYouTube = prefs.getBoolean(KEY_HOME_SHOW_YOUTUBE, false),
+            homeShowLiveTv = prefs.getBoolean(KEY_HOME_SHOW_LIVETV, true),
         )
     }
 
@@ -205,8 +289,20 @@ class SettingsRepository(context: Context) {
             .putString(KEY_BACKUP_FOLDER, settings.backupFolderPath.trim())
             .putString(KEY_PLAYER_PACKAGE, settings.playerPackage.trim().ifBlank { "org.videolan.vlc" })
             .putString(KEY_DEVICE_ID, settings.deviceId.trim().lowercase())
+            .putString(
+                KEY_REMOTE_TOKEN,
+                settings.remoteToken.trim().ifBlank { ensureRemoteToken() },
+            )
+            .putBoolean(KEY_ALLOW_REMOTE_CONTROL, settings.allowRemoteControl)
             .putString(KEY_HA_WEBHOOK, settings.haWebhookUrl.trim())
             .putBoolean(KEY_SLEEP_TIMER_HA_STANDBY, settings.sleepTimerHaStandby)
+            .putBoolean(KEY_HUE_ENABLED, settings.hueEnabled)
+            .putString(KEY_HUE_BRIDGE_IP, settings.hueBridgeIp.trim())
+            .putString(KEY_HUE_USERNAME, settings.hueUsername.trim())
+            .putString(
+                KEY_HUE_LIGHT_IDS,
+                settings.hueLightIds.map { it.trim() }.filter { it.isNotEmpty() }.joinToString(","),
+            )
             .putString(KEY_TRAKT_CLIENT_ID, settings.traktClientId.trim())
             .putString(KEY_TRAKT_CLIENT_SECRET, settings.traktClientSecret.trim())
             .putString(KEY_TRAKT_USERNAME, settings.traktUsername.trim())
@@ -224,6 +320,12 @@ class SettingsRepository(context: Context) {
             .putString(KEY_IPTV_RECORDING_STORAGE, settings.iptvRecordingStorage.name)
             .putString(KEY_IPTV_RECORDING_LOCAL_TREE, settings.iptvRecordingLocalTreeUri)
             .putString(KEY_IPTV_RECORDING_NAS_FOLDER, settings.iptvRecordingNasFolder.trim())
+            .putString(KEY_IPTV_EPG_AI_KEY, settings.iptvEpgAiApiKey.trim())
+            .putString(KEY_IPTV_EPG_AI_PROVIDER, settings.iptvEpgAiProvider.name)
+            .putString(
+                KEY_IPTV_EPG_AI_OPENAI_BASE,
+                settings.iptvEpgAiOpenAiBaseUrl.trim().ifBlank { EpgAiMatcher.DEFAULT_OPENAI_BASE }
+            )
             .putString(
                 KEY_MUSIC_PATHS,
                 AppSettings.normalizeMusicPaths(settings.musicPaths).joinToString(",") { it.trim() },
@@ -232,7 +334,19 @@ class SettingsRepository(context: Context) {
             .putBoolean(KEY_MUSIC_USE_HTTPS, settings.musicUseHttps)
             .putBoolean(KEY_MUSIC_TRUST_SELF_SIGNED, settings.musicTrustSelfSigned)
             .putString(KEY_CUSTOM_RADIO_STATIONS, encodeCustomRadioStations(settings.customRadioStations))
+            .putString(
+                KEY_YOUTUBE_PIPED_API,
+                YoutubeDefaults.normalizeApiUrl(settings.youtubePipedApiUrl),
+            )
+            .putString(KEY_YOUTUBE_PIPED_USER, settings.youtubePipedUsername.trim())
+            .putString(KEY_YOUTUBE_PIPED_TOKEN, settings.youtubePipedAuthToken)
             .putString(KEY_CLOCK_CORNER, settings.clockCorner.name)
+            .putBoolean(KEY_LITE_VISUALS, settings.liteVisuals)
+            .putBoolean(KEY_HOME_SHOW_RADIO, settings.homeShowRadio)
+            .putBoolean(KEY_HOME_SHOW_MUSIC, settings.homeShowMusic)
+            .putBoolean(KEY_HOME_SHOW_LIBRARY, settings.homeShowLibrary)
+            .putBoolean(KEY_HOME_SHOW_YOUTUBE, settings.homeShowYouTube)
+            .putBoolean(KEY_HOME_SHOW_LIVETV, settings.homeShowLiveTv)
             .apply()
         _revision.value = System.currentTimeMillis()
     }
@@ -250,8 +364,14 @@ class SettingsRepository(context: Context) {
             .put("backupFolderPath", settings.backupFolderPath)
             .put("playerPackage", settings.playerPackage)
             .put("deviceId", settings.deviceId)
+            .put("remoteToken", settings.remoteToken)
+            .put("allowRemoteControl", settings.allowRemoteControl)
             .put("haWebhookUrl", settings.haWebhookUrl)
             .put("sleepTimerHaStandby", settings.sleepTimerHaStandby)
+            .put("hueEnabled", settings.hueEnabled)
+            .put("hueBridgeIp", settings.hueBridgeIp)
+            .put("hueUsername", settings.hueUsername)
+            .put("hueLightIds", JSONArray(settings.hueLightIds))
             .put("traktClientId", settings.traktClientId)
             .put("traktClientSecret", settings.traktClientSecret)
             .put("traktUsername", settings.traktUsername)
@@ -269,12 +389,27 @@ class SettingsRepository(context: Context) {
             .put("iptvRecordingStorage", settings.iptvRecordingStorage.name)
             .put("iptvRecordingLocalTreeUri", settings.iptvRecordingLocalTreeUri)
             .put("iptvRecordingNasFolder", settings.iptvRecordingNasFolder)
+            .put("iptvEpgAiApiKey", settings.iptvEpgAiApiKey)
+            .put("iptvEpgAiProvider", settings.iptvEpgAiProvider.name)
+            .put("iptvEpgAiOpenAiBaseUrl", settings.iptvEpgAiOpenAiBaseUrl)
             .put("musicPaths", JSONArray(AppSettings.normalizeMusicPaths(settings.musicPaths)))
             .put("musicPath", settings.musicPath)
             .put("musicUseHttps", settings.musicUseHttps)
             .put("musicTrustSelfSigned", settings.musicTrustSelfSigned)
             .put("customRadioStations", encodeCustomRadioStationsJson(settings.customRadioStations))
+            .put(
+                "youtubePipedApiUrl",
+                YoutubeDefaults.normalizeApiUrl(settings.youtubePipedApiUrl),
+            )
+            .put("youtubePipedUsername", settings.youtubePipedUsername)
+            .put("youtubePipedAuthToken", settings.youtubePipedAuthToken)
             .put("clockCorner", settings.clockCorner.name)
+            .put("liteVisuals", settings.liteVisuals)
+            .put("homeShowRadio", settings.homeShowRadio)
+            .put("homeShowMusic", settings.homeShowMusic)
+            .put("homeShowLibrary", settings.homeShowLibrary)
+            .put("homeShowYouTube", settings.homeShowYouTube)
+            .put("homeShowLiveTv", settings.homeShowLiveTv)
 
     fun decodeBackup(obj: JSONObject): AppSettings {
         val defaults = AppSettings()
@@ -297,11 +432,26 @@ class SettingsRepository(context: Context) {
             backupFolderPath = obj.optString("backupFolderPath", defaults.backupFolderPath),
             playerPackage = obj.optString("playerPackage", defaults.playerPackage),
             deviceId = obj.optString("deviceId", defaults.deviceId),
+            remoteToken = obj.optString("remoteToken", defaults.remoteToken),
+            allowRemoteControl = obj.optBoolean(
+                "allowRemoteControl",
+                defaults.allowRemoteControl
+            ),
             haWebhookUrl = obj.optString("haWebhookUrl", defaults.haWebhookUrl),
             sleepTimerHaStandby = obj.optBoolean(
                 "sleepTimerHaStandby",
                 defaults.sleepTimerHaStandby
             ),
+            hueEnabled = obj.optBoolean("hueEnabled", defaults.hueEnabled),
+            hueBridgeIp = obj.optString("hueBridgeIp", defaults.hueBridgeIp),
+            hueUsername = obj.optString("hueUsername", defaults.hueUsername),
+            hueLightIds = obj.optJSONArray("hueLightIds")?.toStringList().orEmpty()
+                .ifEmpty {
+                    obj.optString("hueLightIds", "")
+                        .split(',')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                },
             traktClientId = obj.optString("traktClientId", defaults.traktClientId),
             traktClientSecret = obj.optString("traktClientSecret", defaults.traktClientSecret),
             traktUsername = obj.optString("traktUsername", defaults.traktUsername),
@@ -335,6 +485,14 @@ class SettingsRepository(context: Context) {
                 "iptvRecordingNasFolder",
                 defaults.iptvRecordingNasFolder
             ),
+            iptvEpgAiApiKey = obj.optString("iptvEpgAiApiKey", defaults.iptvEpgAiApiKey),
+            iptvEpgAiProvider = EpgAiProvider.fromStorage(
+                obj.optString("iptvEpgAiProvider", defaults.iptvEpgAiProvider.name)
+            ),
+            iptvEpgAiOpenAiBaseUrl = obj.optString(
+                "iptvEpgAiOpenAiBaseUrl",
+                defaults.iptvEpgAiOpenAiBaseUrl
+            ),
             musicPaths = obj.optJSONArray("musicPaths")?.toStringList().orEmpty()
                 .ifEmpty {
                     listOf(obj.optString("musicPath", defaults.musicPath))
@@ -350,9 +508,26 @@ class SettingsRepository(context: Context) {
             } else {
                 RadioDefaults.stations()
             },
+            youtubePipedApiUrl = YoutubeDefaults.normalizeApiUrl(
+                obj.optString("youtubePipedApiUrl", defaults.youtubePipedApiUrl)
+            ),
+            youtubePipedUsername = obj.optString(
+                "youtubePipedUsername",
+                defaults.youtubePipedUsername
+            ),
+            youtubePipedAuthToken = obj.optString(
+                "youtubePipedAuthToken",
+                defaults.youtubePipedAuthToken
+            ),
             clockCorner = ClockCorner.fromStorage(
                 obj.optString("clockCorner", defaults.clockCorner.name)
             ),
+            liteVisuals = obj.optBoolean("liteVisuals", defaults.liteVisuals),
+            homeShowRadio = obj.optBoolean("homeShowRadio", defaults.homeShowRadio),
+            homeShowMusic = obj.optBoolean("homeShowMusic", defaults.homeShowMusic),
+            homeShowLibrary = obj.optBoolean("homeShowLibrary", defaults.homeShowLibrary),
+            homeShowYouTube = obj.optBoolean("homeShowYouTube", defaults.homeShowYouTube),
+            homeShowLiveTv = obj.optBoolean("homeShowLiveTv", defaults.homeShowLiveTv),
         )
     }
 
@@ -490,6 +665,31 @@ class SettingsRepository(context: Context) {
             .apply()
     }
 
+    fun isHueSyncReady(): Boolean {
+        val s = load()
+        return s.hueUsername.isNotBlank() && s.hueLightIds.isNotEmpty()
+    }
+
+    fun isHueSyncEnabled(): Boolean = load().hueEnabled
+
+    /** Flip Music/Radio Hue sync and persist. Returns new enabled state, or null if not set up. */
+    fun toggleHueSync(): Boolean? {
+        val s = load()
+        if (s.hueUsername.isBlank() || s.hueLightIds.isEmpty()) return null
+        val next = !s.hueEnabled
+        save(s.copy(hueEnabled = next))
+        return next
+    }
+
+    /** Persist a new UUID once if missing so LAN remotes can authenticate. */
+    private fun ensureRemoteToken(): String {
+        val existing = prefs.getString(KEY_REMOTE_TOKEN, null)?.trim().orEmpty()
+        if (existing.isNotBlank()) return existing
+        val generated = UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_REMOTE_TOKEN, generated).apply()
+        return generated
+    }
+
     companion object {
         private const val KEY_HOST = "host"
         private const val KEY_PORT = "port"
@@ -502,8 +702,14 @@ class SettingsRepository(context: Context) {
         private const val KEY_BACKUP_FOLDER = "backup_folder"
         private const val KEY_PLAYER_PACKAGE = "player_package"
         private const val KEY_DEVICE_ID = "device_id"
+        private const val KEY_REMOTE_TOKEN = "remote_token"
+        private const val KEY_ALLOW_REMOTE_CONTROL = "allow_remote_control"
         private const val KEY_HA_WEBHOOK = "ha_webhook_url"
         private const val KEY_SLEEP_TIMER_HA_STANDBY = "sleep_timer_ha_standby"
+        private const val KEY_HUE_ENABLED = "hue_enabled"
+        private const val KEY_HUE_BRIDGE_IP = "hue_bridge_ip"
+        private const val KEY_HUE_USERNAME = "hue_username"
+        private const val KEY_HUE_LIGHT_IDS = "hue_light_ids"
         private const val KEY_TRAKT_CLIENT_ID = "trakt_client_id"
         private const val KEY_TRAKT_CLIENT_SECRET = "trakt_client_secret"
         private const val KEY_TRAKT_USERNAME = "trakt_username"
@@ -521,11 +727,23 @@ class SettingsRepository(context: Context) {
         private const val KEY_IPTV_RECORDING_STORAGE = "iptv_recording_storage"
         private const val KEY_IPTV_RECORDING_LOCAL_TREE = "iptv_recording_local_tree"
         private const val KEY_IPTV_RECORDING_NAS_FOLDER = "iptv_recording_nas_folder"
+        private const val KEY_IPTV_EPG_AI_KEY = "iptv_epg_ai_api_key"
+        private const val KEY_IPTV_EPG_AI_PROVIDER = "iptv_epg_ai_provider"
+        private const val KEY_IPTV_EPG_AI_OPENAI_BASE = "iptv_epg_ai_openai_base"
         private const val KEY_MUSIC_PATH = "music_path"
         private const val KEY_MUSIC_PATHS = "music_paths"
         private const val KEY_MUSIC_USE_HTTPS = "music_use_https"
         private const val KEY_MUSIC_TRUST_SELF_SIGNED = "music_trust_self_signed"
         private const val KEY_CUSTOM_RADIO_STATIONS = "custom_radio_stations_json"
+        private const val KEY_YOUTUBE_PIPED_API = "youtube_piped_api_url"
+        private const val KEY_YOUTUBE_PIPED_USER = "youtube_piped_username"
+        private const val KEY_YOUTUBE_PIPED_TOKEN = "youtube_piped_auth_token"
         private const val KEY_CLOCK_CORNER = "clock_corner"
+        private const val KEY_LITE_VISUALS = "lite_visuals"
+        private const val KEY_HOME_SHOW_RADIO = "home_show_radio"
+        private const val KEY_HOME_SHOW_MUSIC = "home_show_music"
+        private const val KEY_HOME_SHOW_LIBRARY = "home_show_library"
+        private const val KEY_HOME_SHOW_YOUTUBE = "home_show_youtube"
+        private const val KEY_HOME_SHOW_LIVETV = "home_show_livetv"
     }
 }

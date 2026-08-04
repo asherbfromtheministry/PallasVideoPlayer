@@ -79,6 +79,12 @@ val AudioChrome = VideoChrome
 
 val LocalScreenChrome = staticCompositionLocalOf { VideoChrome }
 
+/**
+ * When true, skip expensive continuous visuals (blur, looping EQ/ambient).
+ * Set from Settings → Display → Lite visuals.
+ */
+val LocalLiteVisuals = staticCompositionLocalOf { false }
+
 @Composable
 fun AudioScreenTheme(content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalScreenChrome provides VideoChrome, content = content)

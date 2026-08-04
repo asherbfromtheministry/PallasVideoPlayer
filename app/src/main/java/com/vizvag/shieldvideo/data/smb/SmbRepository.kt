@@ -236,6 +236,29 @@ class SmbRepository {
         }
     }
 
+    /** Delete a file or folder on the share. Folders are removed recursively. */
+    suspend fun delete(
+        settings: AppSettings,
+        shareName: String,
+        relativePath: String,
+        isDirectory: Boolean
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            withShare(settings, shareName) { share ->
+                val normalized = relativePath.trim('/').replace('\\', '/')
+                if (normalized.isBlank()) {
+                    throw IllegalArgumentException("Refusing to delete share root")
+                }
+                if (isDirectory) {
+                    share.rmdir(normalized, true)
+                } else {
+                    share.rm(normalized)
+                }
+                Unit
+            }
+        }
+    }
+
     private fun FileIdBothDirectoryInformation.toEntry(parent: String): SmbEntry {
         val isDir = (fileAttributes.toLong() and 0x10L) != 0L
         val childPath = if (parent.isBlank()) fileName else "$parent/$fileName"

@@ -15,14 +15,18 @@ data class ForcedMetadata(
 
 /**
  * Paths the user has cleared — skip Trakt/TMDB enrichment.
- * Clearing a folder also clears everything under it (ancestor match).
+ * Recursive clears cover everything under the path (ancestor match).
+ * Exact clears apply only to that path; nested folders/files keep metadata.
  * Forced assignments pin a folder/file to a chosen show/movie and inherit
  * to every nested path unless a closer clear or exact override wins.
  */
 class MetadataOverrideStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private val cleared = ConcurrentHashMap.newKeySet<String>().apply {
+    private val clearedRecursive = ConcurrentHashMap.newKeySet<String>().apply {
         addAll(prefs.getStringSet(KEY_CLEARED, emptySet()).orEmpty().map { normalize(it) })
+    }
+    private val clearedExact = ConcurrentHashMap.newKeySet<String>().apply {
+        addAll(prefs.getStringSet(KEY_CLEARED_EXACT, emptySet()).orEmpty().map { normalize(it) })
     }
     private val forced = ConcurrentHashMap<String, ForcedMetadata>().apply {
         val raw = prefs.getString(KEY_FORCED, null) ?: return@apply
@@ -45,16 +49,16 @@ class MetadataOverrideStore(context: Context) {
         }
     }
 
-    /** True if this path or any ancestor folder was cleared. */
+    /** True if this path is cleared exactly, or any ancestor (including self) was cleared recursively. */
     fun isCleared(path: String): Boolean {
         val key = normalize(path)
-        if (cleared.contains(key)) return true
+        if (clearedExact.contains(key) || clearedRecursive.contains(key)) return true
         var prefix = key
         while (true) {
             val slash = prefix.lastIndexOf('/')
             if (slash <= 0) break
             prefix = prefix.substring(0, slash)
-            if (cleared.contains(prefix)) return true
+            if (clearedRecursive.contains(prefix)) return true
         }
         return false
     }
@@ -63,7 +67,7 @@ class MetadataOverrideStore(context: Context) {
      * Exact assignment for this path, or nearest assigned ancestor folder.
      * Applies to files and folders so a folder assign covers every nested
      * subfolder and every file under it. An exact clear on this path (or an
-     * ancestor clear) blocks inheritance.
+     * ancestor recursive clear) blocks inheritance.
      */
     fun getForced(path: String): ForcedMetadata? {
         val key = normalize(path)
@@ -82,27 +86,37 @@ class MetadataOverrideStore(context: Context) {
     /** Same as [getForced] — kept for call sites that name folders explicitly. */
     fun getForcedForFolder(path: String): ForcedMetadata? = getForced(path)
 
-    fun clearMetadata(path: String) {
+    fun clearMetadata(path: String, includeDescendants: Boolean = true) {
         val key = normalize(path)
-        cleared += key
+        if (includeDescendants) {
+            clearedRecursive += key
+            clearedExact.remove(key)
+            val childPrefix = "$key/"
+            forced.keys.filter { it.startsWith(childPrefix) }.forEach { forced.remove(it) }
+            clearedRecursive.filter { it != key && it.startsWith(childPrefix) }.forEach { clearedRecursive.remove(it) }
+            clearedExact.filter { it.startsWith(childPrefix) }.forEach { clearedExact.remove(it) }
+        } else {
+            clearedExact += key
+            clearedRecursive.remove(key)
+        }
         forced.remove(key)
-        val childPrefix = "$key/"
-        forced.keys.filter { it.startsWith(childPrefix) }.forEach { forced.remove(it) }
-        cleared.filter { it != key && it.startsWith(childPrefix) }.forEach { cleared.remove(it) }
         persist()
     }
 
     fun restoreMetadata(path: String) {
         val key = normalize(path)
-        cleared.remove(key)
+        clearedRecursive.remove(key)
+        clearedExact.remove(key)
         persist()
     }
 
     fun assignMetadata(path: String, assignment: ForcedMetadata) {
         val key = normalize(path)
-        cleared.remove(key)
+        clearedRecursive.remove(key)
+        clearedExact.remove(key)
         val childPrefix = "$key/"
-        cleared.filter { it.startsWith(childPrefix) }.forEach { cleared.remove(it) }
+        clearedRecursive.filter { it.startsWith(childPrefix) }.forEach { clearedRecursive.remove(it) }
+        clearedExact.filter { it.startsWith(childPrefix) }.forEach { clearedExact.remove(it) }
         forced.keys.filter { it.startsWith(childPrefix) }.forEach { forced.remove(it) }
         // If an ancestor folder was cleared, lift those clears so this assignment can show
         var prefix = key
@@ -110,14 +124,15 @@ class MetadataOverrideStore(context: Context) {
             val slash = prefix.lastIndexOf('/')
             if (slash <= 0) break
             prefix = prefix.substring(0, slash)
-            cleared.remove(prefix)
+            clearedRecursive.remove(prefix)
+            clearedExact.remove(prefix)
         }
         forced[key] = assignment
         persist()
     }
 
     fun keepEmpty(path: String) {
-        clearMetadata(path)
+        clearMetadata(path, includeDescendants = true)
     }
 
     private fun persist() {
@@ -136,7 +151,8 @@ class MetadataOverrideStore(context: Context) {
             )
         }
         prefs.edit()
-            .putStringSet(KEY_CLEARED, HashSet(cleared))
+            .putStringSet(KEY_CLEARED, HashSet(clearedRecursive))
+            .putStringSet(KEY_CLEARED_EXACT, HashSet(clearedExact))
             .putString(KEY_FORCED, forcedJson.toString())
             .commit()
     }
@@ -146,6 +162,7 @@ class MetadataOverrideStore(context: Context) {
     companion object {
         private const val PREFS = "metadata_overrides"
         private const val KEY_CLEARED = "cleared_paths"
+        private const val KEY_CLEARED_EXACT = "cleared_paths_exact"
         private const val KEY_FORCED = "forced_assignments"
     }
 }

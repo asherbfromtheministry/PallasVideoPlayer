@@ -3,7 +3,10 @@ package com.vizvag.shieldvideo.music.player
 import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import com.vizvag.shieldvideo.music.data.LibraryRepository
 import com.vizvag.shieldvideo.music.data.local.TrackEntity
 import kotlinx.coroutines.CoroutineScope
@@ -27,8 +30,10 @@ class PlayerController constructor(
     private val queueManager: QueueManager,
     private val streamUrlBuilder: StreamUrlBuilder,
     private val libraryRepository: LibraryRepository,
+    val energyProbe: MusicEnergyProbe = MusicEnergyProbe(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val appContext = context.applicationContext
 
     /**
      * Bumped on every intentional start and on [stop]. Async play work checks this so a
@@ -36,25 +41,42 @@ class PlayerController constructor(
      */
     private var playEpoch: Int = 0
 
-    val player: ExoPlayer = ExoPlayer.Builder(context).build().apply {
-        addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _uiState.value = _uiState.value.copy(isPlaying = isPlaying)
-            }
+    val player: ExoPlayer = ExoPlayer.Builder(appContext)
+        .setRenderersFactory(
+            object : DefaultRenderersFactory(appContext) {
+                override fun buildAudioSink(
+                    context: Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioTrackPlaybackParams: Boolean,
+                ): AudioSink {
+                    return DefaultAudioSink.Builder(context)
+                        .setEnableFloatOutput(enableFloatOutput)
+                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .setAudioProcessors(arrayOf(energyProbe.asProcessor()))
+                        .build()
+                }
+            },
+        )
+        .build()
+        .apply {
+            addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    _uiState.value = _uiState.value.copy(isPlaying = isPlaying)
+                }
 
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                _uiState.value = _uiState.value.copy(
-                    isBuffering = playbackState == Player.STATE_BUFFERING,
-                )
-                if (playbackState == Player.STATE_ENDED) {
-                    // Only advance if we still have an active now-playing track (stop clears it).
-                    if (_uiState.value.track != null) {
-                        scope.launch { playNext() }
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    _uiState.value = _uiState.value.copy(
+                        isBuffering = playbackState == Player.STATE_BUFFERING,
+                    )
+                    if (playbackState == Player.STATE_ENDED) {
+                        // Only advance if we still have an active now-playing track (stop clears it).
+                        if (_uiState.value.track != null) {
+                            scope.launch { playNext() }
+                        }
                     }
                 }
-            }
-        })
-    }
+            })
+        }
 
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
@@ -199,6 +221,7 @@ class PlayerController constructor(
     fun stop() {
         playEpoch++
         hardStopPlayer()
+        energyProbe.resetLevels()
         _uiState.value = PlayerUiState()
     }
 

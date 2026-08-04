@@ -99,6 +99,7 @@ class ResumeMonitor(
 
     fun stopPlayer() {
         captureOnce()
+        val playerPkg = activePlayerPackage.ifBlank { MediaPlayerLauncher.VLC_PACKAGE }
         try {
             findPlayerController()?.transportControls?.stop()
         } catch (_: Exception) {
@@ -109,7 +110,57 @@ class ResumeMonitor(
         }
         clearNowPlaying()
         stop()
+        // MediaSession stop often leaves VLC on-screen. After Pallas is brought forward,
+        // VLC is backgrounded and can be dismissed so Music/Radio UI is visible again.
+        handler.post {
+            try {
+                val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                am.killBackgroundProcesses(playerPkg)
+            } catch (_: Exception) {
+            }
+        }
     }
+
+    fun pausePlayer() {
+        try {
+            findPlayerController()?.transportControls?.pause()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun resumePlayer() {
+        try {
+            findPlayerController()?.transportControls?.play()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun seekPlayer(positionMs: Long) {
+        try {
+            findPlayerController()?.transportControls?.seekTo(positionMs.coerceAtLeast(0L))
+        } catch (_: Exception) {
+        }
+    }
+
+    fun isPlayerActive(): Boolean {
+        if (activePath.isNullOrBlank()) return false
+        val state = findPlayerController()?.playbackState ?: return running
+        return state.state == PlaybackState.STATE_PLAYING ||
+            state.state == PlaybackState.STATE_PAUSED ||
+            state.state == PlaybackState.STATE_BUFFERING
+    }
+
+    fun isPlayerPlaying(): Boolean {
+        val state = findPlayerController()?.playbackState ?: return false
+        return state.state == PlaybackState.STATE_PLAYING
+    }
+
+    fun nowPlayingTitle(): String? = activeTitle
+
+    fun activeVideoPath(): String? = activePath
+
+    fun readPosition(): Pair<Long, Long>? =
+        activePlayerPackage.takeIf { it.isNotBlank() }?.let { readPlayerPosition(it) }
 
     fun captureOnce() {
         val path = resumeStore.lastLaunchedPath() ?: activePath ?: return

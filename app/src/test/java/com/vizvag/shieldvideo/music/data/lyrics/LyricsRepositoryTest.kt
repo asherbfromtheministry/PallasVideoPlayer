@@ -57,4 +57,14 @@ class LyricsRepositoryTest {
         assertEquals(0, LrcParser.currentLineIndex(lines, 15_000L))
         assertEquals(1, LrcParser.currentLineIndex(lines, 17_460L))
     }
+
+    @Test
+    fun plainToTimedLines_spreadsAcrossDuration() {
+        val lines = OnlineLyricsClient.plainToTimedLines("One\nTwo\nThree", 9_000L)
+        assertEquals(3, lines.size)
+        assertEquals("One", lines[0].text)
+        assertEquals(0L, lines[0].timeMs)
+        assertEquals(3_000L, lines[1].timeMs)
+        assertEquals(6_000L, lines[2].timeMs)
+    }
 }

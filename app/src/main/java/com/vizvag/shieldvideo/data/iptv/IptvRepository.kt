@@ -35,9 +35,13 @@ class IptvRepository(private val context: Context) {
         .followRedirects(true)
         .build()
 
-    private val mutex = Mutex()
-    private val epgByTvgId = HashMap<String, List<IptvProgramme>>()
-    private val epgByLower = HashMap<String, List<IptvProgramme>>()
+    /** Channel catalog only — never share with EPG so Live TV preview is not blocked. */
+    private val channelsMutex = Mutex()
+    /** EPG parse/index only — downloads happen outside this lock. */
+    private val epgMutex = Mutex()
+    private val epgByTvgId = java.util.concurrent.ConcurrentHashMap<String, List<IptvProgramme>>()
+    private val epgByLower = java.util.concurrent.ConcurrentHashMap<String, List<IptvProgramme>>()
+    @Volatile
     private var epgChannelIndex: List<EpgChannelEntry> = emptyList()
     /** Extra XMLTV ids (from manual channel→EPG mapping) always included in programme parse. */
     @Volatile
@@ -51,13 +55,21 @@ class IptvRepository(private val context: Context) {
 
     /**
      * Instant hydrate for Live TV: memory → compact snapshot → groups text → (async) M3U/network.
-     * Does **not** wait for EPG.
+     * Does **not** wait for EPG (separate lock; memory hit returns without locking).
      */
     suspend fun ensureChannelsLoaded(
         playlist: IptvPlaylistConfig,
         forceRefresh: Boolean = false
     ): IptvCatalog = withContext(Dispatchers.IO) {
-        mutex.withLock {
+        // Memory hit must not wait on an in-flight EPG download/parse.
+        if (!forceRefresh) {
+            val current = _catalog.value
+            if (current.playlistId == playlist.id && current.channels.isNotEmpty()) {
+                return@withContext current
+            }
+        }
+
+        channelsMutex.withLock {
             val current = _catalog.value
             if (!forceRefresh &&
                 current.playlistId == playlist.id &&
@@ -128,7 +140,7 @@ class IptvRepository(private val context: Context) {
     /** Background refresh when disk M3U is older than TTL. */
     suspend fun refreshChannelsIfStale(playlist: IptvPlaylistConfig): IptvCatalog =
         withContext(Dispatchers.IO) {
-            mutex.withLock {
+            channelsMutex.withLock {
                 val m3uFile = m3uCacheFile(playlist.id)
                 val need = !m3uFile.exists() ||
                     m3uFile.length() == 0L ||
@@ -168,28 +180,32 @@ class IptvRepository(private val context: Context) {
             error = null
         )
         if (!keepEpg) {
-            epgByTvgId.clear()
-            epgByLower.clear()
+            clearEpgMaps()
         }
         return true
     }
 
     /**
      * Load EPG from memory → disk → network. Safe to call after channels are shown.
+     * Network download never holds [epgMutex] / never blocks channel load.
      */
     suspend fun ensureEpgLoaded(
         playlist: IptvPlaylistConfig,
         forceRefresh: Boolean = false
     ): IptvCatalog = withContext(Dispatchers.IO) {
-        mutex.withLock {
+        if (playlist.epgUrl.isBlank()) return@withContext _catalog.value
+
+        epgMutex.withLock {
             _catalog.value = _catalog.value.copy(epgLoading = true)
-            try {
-                loadEpgLocked(playlist, forceRefresh = forceRefresh)
-            } finally {
+        }
+        try {
+            loadEpg(playlist, forceRefresh = forceRefresh)
+        } finally {
+            epgMutex.withLock {
                 _catalog.value = _catalog.value.copy(epgLoading = false)
             }
-            _catalog.value
         }
+        _catalog.value
     }
 
     /** @deprecated Prefer [ensureChannelsLoaded] + [ensureEpgLoaded]. */
@@ -234,7 +250,7 @@ class IptvRepository(private val context: Context) {
         playlist: IptvPlaylistConfig,
         ids: Set<String>
     ): Boolean = withContext(Dispatchers.IO) {
-        mutex.withLock {
+        epgMutex.withLock {
             val missing = ids.map { it.trim() }.filter { id ->
                 id.isNotEmpty() &&
                     epgByTvgId[id] == null &&
@@ -251,14 +267,24 @@ class IptvRepository(private val context: Context) {
     fun nowNext(channel: IptvChannel): IptvNowNext =
         XmltvParser.nowNext(programmesFor(channel))
 
-    fun searchChannels(query: String, channels: List<IptvChannel>): List<IptvChannel> {
+    fun searchChannels(
+        query: String,
+        channels: List<IptvChannel>,
+        limit: Int = 60
+    ): List<IptvChannel> {
         val q = query.trim().lowercase()
         if (q.isEmpty()) return emptyList()
-        return channels.filter {
-            it.name.lowercase().contains(q) ||
-                it.group.lowercase().contains(q) ||
-                (it.tvgId?.lowercase()?.contains(q) == true)
+        val out = ArrayList<IptvChannel>(minOf(limit, 64))
+        for (ch in channels) {
+            if (ch.name.lowercase().contains(q) ||
+                ch.group.lowercase().contains(q) ||
+                (ch.tvgId?.lowercase()?.contains(q) == true)
+            ) {
+                out += ch
+                if (out.size >= limit) break
+            }
         }
+        return out
     }
 
     fun searchProgrammes(query: String, limit: Int = 40): List<Pair<IptvChannel, IptvProgramme>> {
@@ -266,12 +292,24 @@ class IptvRepository(private val context: Context) {
         if (q.isEmpty()) return emptyList()
         val channels = _catalog.value.channels
         val byTvg = channels.associateBy { it.tvgId?.lowercase().orEmpty() }
-        val results = ArrayList<Pair<IptvChannel, IptvProgramme>>()
+        val results = ArrayList<Pair<IptvChannel, IptvProgramme>>(limit)
+        // Titles first — description scans over a full XMLTV cache are too expensive for typing.
         for ((key, programmes) in epgByLower) {
             val channel = byTvg[key] ?: continue
             for (p in programmes) {
-                if (p.title.lowercase().contains(q) ||
-                    p.description?.lowercase()?.contains(q) == true
+                if (p.title.lowercase().contains(q)) {
+                    results += channel to p
+                    if (results.size >= limit) return results
+                }
+            }
+        }
+        if (results.size >= limit) return results
+        for ((key, programmes) in epgByLower) {
+            val channel = byTvg[key] ?: continue
+            for (p in programmes) {
+                val desc = p.description ?: continue
+                if (desc.lowercase().contains(q) &&
+                    results.none { it.first.id == channel.id && it.second.startMs == p.startMs }
                 ) {
                     results += channel to p
                     if (results.size >= limit) return results
@@ -305,8 +343,7 @@ class IptvRepository(private val context: Context) {
             error = error
         )
         if (!keepEpg) {
-            epgByTvgId.clear()
-            epgByLower.clear()
+            clearEpgMaps()
         }
         // Persist fast snapshot for next cold start.
         try {
@@ -328,79 +365,92 @@ class IptvRepository(private val context: Context) {
     /**
      * Prefer any on-disk EPG for instant fill-in; download only when missing/forced/stale
      * (stale disk still used first, then upgraded from network).
+     * Downloads run outside [epgMutex] so channel open / preview never waits on the network.
      */
-    private fun loadEpgLocked(playlist: IptvPlaylistConfig, forceRefresh: Boolean) {
+    private suspend fun loadEpg(playlist: IptvPlaylistConfig, forceRefresh: Boolean) {
         if (playlist.epgUrl.isBlank()) return
         val channels = _catalog.value.channels
         val wanted = buildWantedEpgIds(channels)
         if (wanted.isEmpty() && extraWantedEpgIds.isEmpty()) {
-            // Still try to build the channel index for assign-EPG search.
-            val epgFile = epgCacheFile(playlist.id)
-            if (epgFile.exists()) loadEpgChannelIndex(epgFile)
-            _catalog.value = _catalog.value.copy(
-                epgLoadedAtMs = System.currentTimeMillis(),
-                epgChannelCount = 0,
-                epgFromDisk = false
-            )
-            return
-        }
-
-        val memAge = System.currentTimeMillis() - _catalog.value.epgLoadedAtMs
-        if (!forceRefresh &&
-            _catalog.value.playlistId == playlist.id &&
-            _catalog.value.epgLoadedAtMs > 0L &&
-            memAge <= EPG_TTL_MS &&
-            epgByTvgId.isNotEmpty()
-        ) {
-            if (epgChannelIndex.isEmpty()) {
+            epgMutex.withLock {
                 val epgFile = epgCacheFile(playlist.id)
                 if (epgFile.exists()) loadEpgChannelIndex(epgFile)
+                _catalog.value = _catalog.value.copy(
+                    epgLoadedAtMs = System.currentTimeMillis(),
+                    epgChannelCount = 0,
+                    epgFromDisk = false
+                )
             }
             return
         }
 
+        val needNetwork = epgMutex.withLock {
+            val memAge = System.currentTimeMillis() - _catalog.value.epgLoadedAtMs
+            if (!forceRefresh &&
+                _catalog.value.playlistId == playlist.id &&
+                _catalog.value.epgLoadedAtMs > 0L &&
+                memAge <= EPG_TTL_MS &&
+                epgByTvgId.isNotEmpty()
+            ) {
+                if (epgChannelIndex.isEmpty()) {
+                    val epgFile = epgCacheFile(playlist.id)
+                    if (epgFile.exists()) loadEpgChannelIndex(epgFile)
+                }
+                return@withLock false
+            }
+
+            val epgFile = epgCacheFile(playlist.id)
+            val diskExists = epgFile.exists() && epgFile.length() > 0L
+
+            // Prefer on-disk EPG (even if older than TTL) so Live TV never waits on the network.
+            if (!forceRefresh && diskExists) {
+                loadEpgChannelIndex(epgFile)
+                val parseError = parseEpgFile(epgFile, wanted)
+                if (parseError == null) {
+                    applyEpgCatalog(playlist.id, epgFile.lastModified(), fromDisk = true)
+                    return@withLock false
+                }
+            }
+            true
+        }
+        if (!needNetwork) return
+
+        // Network I/O outside the lock — channel catalog / preview stay usable.
         val epgFile = epgCacheFile(playlist.id)
         val diskExists = epgFile.exists() && epgFile.length() > 0L
-
-        // Prefer on-disk EPG (even if older than TTL) so Live TV never waits on the network.
-        if (!forceRefresh && diskExists) {
-            loadEpgChannelIndex(epgFile)
-            val parseError = parseEpgFile(epgFile, wanted)
-            if (parseError == null) {
-                applyEpgCatalog(playlist.id, epgFile.lastModified(), fromDisk = true)
-                return
-            }
-        }
-
         try {
             downloadToFile(playlist.epgUrl, epgFile)
-            loadEpgChannelIndex(epgFile)
-            val parseError = parseEpgFile(epgFile, wanted)
-            if (parseError != null) throw IllegalStateException(parseError)
-            applyEpgCatalog(playlist.id, epgFile.lastModified(), fromDisk = false)
-        } catch (e: Exception) {
-            if (epgByTvgId.isNotEmpty()) {
-                _catalog.value = _catalog.value.copy(
-                    error = "EPG network failed — keeping cache (${e.message})"
-                )
-                return
-            }
-            if (diskExists) {
+            epgMutex.withLock {
                 loadEpgChannelIndex(epgFile)
-                val fallbackErr = parseEpgFile(epgFile, wanted)
-                if (fallbackErr == null) {
-                    applyEpgCatalog(
-                        playlist.id,
-                        epgFile.lastModified(),
-                        fromDisk = true,
-                        error = "EPG network failed — using cached file (${e.message})"
+                val parseError = parseEpgFile(epgFile, wanted)
+                if (parseError != null) throw IllegalStateException(parseError)
+                applyEpgCatalog(playlist.id, epgFile.lastModified(), fromDisk = false)
+            }
+        } catch (e: Exception) {
+            epgMutex.withLock {
+                if (epgByTvgId.isNotEmpty()) {
+                    _catalog.value = _catalog.value.copy(
+                        error = "EPG network failed — keeping cache (${e.message})"
                     )
                     return
                 }
+                if (diskExists) {
+                    loadEpgChannelIndex(epgFile)
+                    val fallbackErr = parseEpgFile(epgFile, wanted)
+                    if (fallbackErr == null) {
+                        applyEpgCatalog(
+                            playlist.id,
+                            epgFile.lastModified(),
+                            fromDisk = true,
+                            error = "EPG network failed — using cached file (${e.message})"
+                        )
+                        return
+                    }
+                }
+                _catalog.value = _catalog.value.copy(
+                    error = e.message ?: "EPG load failed"
+                )
             }
-            _catalog.value = _catalog.value.copy(
-                error = e.message ?: "EPG load failed"
-            )
         }
     }
 
@@ -412,27 +462,32 @@ class IptvRepository(private val context: Context) {
     /** Upgrade stale on-disk EPG from the network after the UI is already usable. */
     suspend fun refreshEpgIfStale(playlist: IptvPlaylistConfig): IptvCatalog =
         withContext(Dispatchers.IO) {
-            mutex.withLock {
-                if (playlist.epgUrl.isBlank()) return@withLock _catalog.value
-                val epgFile = epgCacheFile(playlist.id)
-                val stale = !epgFile.exists() ||
-                    epgFile.length() == 0L ||
-                    isStale(epgFile.lastModified(), EPG_TTL_MS)
-                if (!stale) return@withLock _catalog.value
-                try {
-                    downloadToFile(playlist.epgUrl, epgFile)
+            if (playlist.epgUrl.isBlank()) return@withContext _catalog.value
+            val epgFile = epgCacheFile(playlist.id)
+            val stale = !epgFile.exists() ||
+                epgFile.length() == 0L ||
+                isStale(epgFile.lastModified(), EPG_TTL_MS)
+            if (!stale) return@withContext _catalog.value
+            try {
+                downloadToFile(playlist.epgUrl, epgFile)
+                epgMutex.withLock {
                     val wanted = buildWantedEpgIds(_catalog.value.channels)
                     loadEpgChannelIndex(epgFile)
                     val parseError = parseEpgFile(epgFile, wanted)
                     if (parseError == null) {
                         applyEpgCatalog(playlist.id, epgFile.lastModified(), fromDisk = false)
                     }
-                } catch (_: Exception) {
-                    // Keep whatever EPG we already parsed from disk.
                 }
-                _catalog.value
+            } catch (_: Exception) {
+                // Keep whatever EPG we already parsed from disk.
             }
+            _catalog.value
         }
+
+    private fun clearEpgMaps() {
+        epgByTvgId.clear()
+        epgByLower.clear()
+    }
 
     private fun applyEpgCatalog(
         playlistId: String,

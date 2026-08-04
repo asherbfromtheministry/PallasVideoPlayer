@@ -225,22 +225,6 @@ private fun SplitListRow(
         item.episodeTitle,
     )
     val rowTitle = episodeLabel ?: cleanSplitTitle(item.displayTitle)
-    val subtitle = when {
-        item.entry.isDirectory -> splitRowSubtitle(item)
-        episodeLabel != null -> buildList {
-            val show = cleanSplitTitle(item.displayTitle)
-            if (show.isNotBlank() && !show.equals(episodeLabel, ignoreCase = true)) add(show)
-            item.line2.split("  ·  ", " · ")
-                .map { it.trim() }
-                .filter {
-                    it.isNotBlank() &&
-                        !it.equals("Watched", ignoreCase = true) &&
-                        !it.matches(Regex("""(?i)S\d{1,2}E\d{1,3}"""))
-                }
-                .forEach { add(it) }
-        }.distinct().joinToString(" · ")
-        else -> splitRowSubtitle(item)
-    }
     val rowIcon = when {
         focused || selected -> Icons.Filled.PlayArrow
         item.entry.isDirectory -> Icons.Filled.Folder
@@ -351,16 +335,6 @@ private fun SplitListRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (subtitle.isNotBlank()) {
-                Text(
-                    text = subtitle,
-                    color = Color.White.copy(alpha = 0.45f),
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 3.dp),
-                )
-            }
         }
     }
 }
@@ -411,6 +385,7 @@ private fun SplitPreviewPane(
                     .filter { bit ->
                         bit.isNotBlank() &&
                             !bit.equals("Watched", ignoreCase = true) &&
+                            !bit.equals("Folder", ignoreCase = true) &&
                             !bit.matches(Regex("""(?i)S\d{1,2}E\d{1,3}"""))
                     }
                     .forEach { add(it) }
@@ -685,16 +660,6 @@ private fun SplitPreviewPane(
             }
         }
     }
-}
-private fun splitRowSubtitle(item: MediaCardItem): String {
-    if (item.entry.isDirectory) {
-        val seasonish = listOf(item.line1, item.line2)
-            .firstOrNull { it.isNotBlank() && !it.equals("Category", ignoreCase = true) }
-        return seasonish?.takeIf { it.isNotBlank() } ?: "Folder"
-    }
-    return listOf(item.line1, item.line2)
-        .filter { it.isNotBlank() }
-        .joinToString(" · ")
 }
 private fun cleanSplitTitle(raw: String): String {
     var t = raw

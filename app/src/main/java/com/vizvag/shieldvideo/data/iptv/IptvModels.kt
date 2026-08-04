@@ -63,6 +63,8 @@ data class IptvRecording(
 enum class IptvRecordingStatus {
     SCHEDULED,
     RECORDING,
+    /** Capture stopped; remux/save in progress — do not show ● REC in the guide. */
+    SAVING,
     COMPLETED,
     FAILED,
     CANCELLED

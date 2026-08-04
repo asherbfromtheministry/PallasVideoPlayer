@@ -192,9 +192,6 @@ fun ShareSwitcher(
     musicSelected: Boolean = false,
     /** NAS IPTV recording folder ("/share/folder"); shown as its own icon when set. */
     recordingFolder: String? = null,
-    sleepTimerActive: Boolean = false,
-    sleepTimerLabel: String? = null,
-    onCycleSleepTimer: (() -> Unit)? = null
 ) {
     val chrome = LocalScreenChrome.current
 
@@ -269,14 +266,6 @@ fun ShareSwitcher(
             }
 
             Spacer(modifier = Modifier.weight(1f))
-
-            if (onCycleSleepTimer != null) {
-                SleepTimerButton(
-                    active = sleepTimerActive,
-                    label = sleepTimerLabel,
-                    onCycle = onCycleSleepTimer
-                )
-            }
 
             if (canGoUp) {
                 IconActionButton(selected = false, onClick = onGoUp) {
@@ -501,7 +490,7 @@ fun HaStyleMediaCard(
                         lineHeight = 26.sp
                     )
                     val secondary = listOf(item.line1, item.line2)
-                        .filter { it.isNotBlank() }
+                        .filter { it.isNotBlank() && !it.equals("Folder", ignoreCase = true) }
                         .joinToString("  ·  ")
                     if (secondary.isNotBlank()) {
                         Text(

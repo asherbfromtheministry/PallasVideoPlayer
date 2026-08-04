@@ -26,6 +26,13 @@ data class SearchResult(
     val subtitle: String,
 )
 
+/** Per-album album-artist vote from track tags (search subtitles). */
+data class AlbumArtistCount(
+    val albumId: String,
+    val albumArtist: String,
+    val trackCount: Int,
+)
+
 @Dao
 interface ArtistDao {
     @Query("SELECT * FROM artists ORDER BY sortKey ASC")
@@ -52,7 +59,7 @@ interface AlbumDao {
                a.year, a.genre, a.coverPath, a.trackCount, a.folderPath
         FROM albums a
         JOIN artists ar ON a.artistId = ar.id
-        ORDER BY ar.sortKey, a.title
+        ORDER BY a.title, ar.sortKey
         """,
     )
     fun observeAllWithArtist(): Flow<List<AlbumWithArtist>>
@@ -113,7 +120,7 @@ interface AlbumDao {
         FROM albums a
         JOIN artists ar ON a.artistId = ar.id
         JOIN tracks t ON t.albumId = a.id
-        WHERE IFNULL(t.albumArtist, ar.name) = :albumArtist
+        WHERE LOWER(IFNULL(NULLIF(TRIM(t.albumArtist), ''), ar.name)) = LOWER(:albumArtist)
         ORDER BY ar.sortKey, a.title
         """,
     )
@@ -156,8 +163,8 @@ interface AlbumDao {
         JOIN artists ar ON a.artistId = ar.id
         WHERE a.title LIKE '%' || :query || '%'
            OR ar.name LIKE '%' || :query || '%'
-           OR IFNULL(a.genre, '') LIKE '%' || :query || '%'
-        ORDER BY ar.sortKey, a.title LIMIT 50
+        ORDER BY a.title, ar.sortKey
+        LIMIT 100
         """,
     )
     suspend fun search(query: String): List<AlbumWithArtist>
@@ -208,6 +215,15 @@ interface TrackDao {
     @Query(
         """
         SELECT * FROM tracks
+        WHERE albumTitle = :title COLLATE NOCASE
+        ORDER BY IFNULL(discNumber, 1), trackNumber, title
+        """,
+    )
+    suspend fun getByAlbumTitle(title: String): List<TrackEntity>
+
+    @Query(
+        """
+        SELECT * FROM tracks
         WHERE artistId = :artistId
         ORDER BY albumTitle, IFNULL(discNumber, 1), trackNumber, title
         """,
@@ -233,14 +249,34 @@ interface TrackDao {
         """
         SELECT * FROM tracks
         WHERE title LIKE '%' || :query || '%'
-           OR artistName LIKE '%' || :query || '%'
-           OR albumTitle LIKE '%' || :query || '%'
-           OR IFNULL(genre, '') LIKE '%' || :query || '%'
-        ORDER BY artistName, albumTitle, IFNULL(discNumber, 1), trackNumber
+        ORDER BY title, artistName, albumTitle
         LIMIT 100
         """,
     )
     suspend fun search(query: String): List<TrackEntity>
+
+    @Query(
+        """
+        SELECT albumId,
+               IFNULL(NULLIF(TRIM(albumArtist), ''), artistName) AS albumArtist,
+               COUNT(*) AS trackCount
+        FROM tracks
+        WHERE albumId IN (:albumIds)
+        GROUP BY albumId, IFNULL(NULLIF(TRIM(albumArtist), ''), artistName)
+        """,
+    )
+    suspend fun albumArtistCounts(albumIds: List<String>): List<AlbumArtistCount>
+
+    @Query(
+        """
+        SELECT * FROM tracks
+        WHERE artistName LIKE '%' || :query || '%'
+           OR IFNULL(albumArtist, '') LIKE '%' || :query || '%'
+        ORDER BY albumTitle, IFNULL(discNumber, 1), trackNumber, title
+        LIMIT 500
+        """,
+    )
+    suspend fun searchByArtistName(query: String): List<TrackEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(tracks: List<TrackEntity>)

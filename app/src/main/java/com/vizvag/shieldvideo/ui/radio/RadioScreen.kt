@@ -1,5 +1,7 @@
 package com.vizvag.shieldvideo.ui.radio
+import android.app.Activity
 import android.content.Context
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Brightness2
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -117,9 +120,9 @@ import com.vizvag.shieldvideo.data.settings.SettingsRepository
 import com.vizvag.shieldvideo.playback.RadioRecordingService
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.IconActionButton
-import com.vizvag.shieldvideo.ui.components.SleepTimerButton
 import com.vizvag.shieldvideo.ui.browser.AppWithNavRail
 import com.vizvag.shieldvideo.ui.browser.RailDestination
+import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.ui.theme.Accent
@@ -132,11 +135,11 @@ import com.vizvag.shieldvideo.ui.theme.AudioText
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.FocusRing
+import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import com.vizvag.shieldvideo.ui.theme.staggeredEntrance
-import com.vizvag.shieldvideo.ui.music.MusicNavRequests
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -160,6 +163,7 @@ fun RadioScreen(
     onOpenBrowser: () -> Unit = onBack,
     onSelectShare: (String) -> Unit = {},
     onOpenLiveTv: () -> Unit = {},
+    onOpenYouTube: () -> Unit = {},
     onOpenMusic: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
@@ -170,6 +174,7 @@ fun RadioScreen(
             onOpenBrowser = onOpenBrowser,
             onSelectShare = onSelectShare,
             onOpenLiveTv = onOpenLiveTv,
+            onOpenYouTube = onOpenYouTube,
             onOpenMusic = onOpenMusic,
             onOpenSettings = onOpenSettings,
         )
@@ -182,6 +187,7 @@ private fun RadioScreenBody(
     onOpenBrowser: () -> Unit,
     onSelectShare: (String) -> Unit,
     onOpenLiveTv: () -> Unit,
+    onOpenYouTube: () -> Unit,
     onOpenMusic: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -224,12 +230,14 @@ private fun RadioScreenBody(
             onSelectShare = onSelectShare,
             recordingFolder = recordingFolder,
             onLiveTv = onOpenLiveTv,
+            onYouTube = onOpenYouTube,
             onRadio = {},
             onMusic = onOpenMusic,
             sleepTimerActive = sleepForEmpty.active,
             sleepTimerLabel = sleepForEmpty.label,
             onCycleSleepTimer = appForRail.sleepTimer::cycle,
             onSettings = onOpenSettings,
+            players = RailPlayerVisibility.from(appSettings),
         ) {
         Box(
             modifier = Modifier
@@ -285,14 +293,50 @@ private fun RadioScreenBody(
     var metadataLoading by remember(station.id) { mutableStateOf(true) }
     var screenBlack by remember { mutableStateOf(false) }
     var showStopAfterDialog by remember { mutableStateOf(false) }
+    var nasFind by remember { mutableStateOf<RadioNasFind?>(null) }
     val player = rememberRadioPlayer()
     val metadataRepo = remember { BbcRadioMetadataRepository() }
     val hostView = LocalView.current
     val playFocus = remember { FocusRequester() }
     val blackFocus = remember { FocusRequester() }
     val app = LocalContext.current.applicationContext as ShieldVideoApp
+    val scope = rememberCoroutineScope()
+    val musicCache = app.musicModule.libraryCache
+    val libraryArtists by musicCache.artists.collectAsState()
+    val libraryAlbums by musicCache.albums.collectAsState()
+    val libraryTracks by musicCache.tracks.collectAsState()
+    val libraryReady by musicCache.tracksReady.collectAsState()
     val sleepState by app.sleepTimer.state.collectAsState()
     val recordState by RadioRecordingService.state.collectAsState()
+    val settingsRevision by app.settingsRepository.revision.collectAsState()
+    var hueSyncReady by remember { mutableStateOf(app.settingsRepository.isHueSyncReady()) }
+    var hueSyncEnabled by remember { mutableStateOf(app.settingsRepository.isHueSyncEnabled()) }
+    var hueStatus by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(settingsRevision) {
+        hueSyncReady = app.settingsRepository.isHueSyncReady()
+        hueSyncEnabled = app.settingsRepository.isHueSyncEnabled()
+    }
+    LaunchedEffect(hueStatus) {
+        val msg = hueStatus ?: return@LaunchedEffect
+        delay(2500)
+        if (hueStatus == msg) hueStatus = null
+    }
+
+    fun openLibraryFind(query: String, asTrack: Boolean) {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        // Stay on Radio — search overlay keeps the stream playing until the user
+        // actually starts Music (album/track) or leaves for another player.
+        nasFind = if (asTrack) RadioNasFind.Track(q) else RadioNasFind.Artist(q)
+    }
+
+    fun playOnMusic(tracks: List<com.vizvag.shieldvideo.music.data.local.TrackEntity>) {
+        if (tracks.isEmpty()) return
+        scope.launch {
+            app.musicModule.playerController.playTracks(tracks)
+            onOpenMusic()
+        }
+    }
     DisposableEffect(player) {
         app.sleepTimer.bindPlayback(
             onVolume = { player.volume = it },
@@ -316,20 +360,41 @@ private fun RadioScreenBody(
     }
     val streamUrls = station.streamFallbackUrls
     val activeStreamUrl = streamUrls.getOrElse(streamAttempt) { streamUrls.last() }
-    DisposableEffect(hostView) {
-        hostView.keepScreenOn = true
-        onDispose { hostView.keepScreenOn = false }
+    // Keep the display out of ambient/screensaver while radio plays (Chromecast / Google TV).
+    // Do NOT stop on ON_PAUSE alone — some devices fire pause for transient UI; KEEP_SCREEN_ON
+    // prevents screensaver. When the user leaves the app (Home / other app), ON_STOP must kill audio.
+    DisposableEffect(playing, hostView) {
+        val window = (hostView.context as? Activity)?.window
+        if (playing) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            hostView.keepScreenOn = true
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            hostView.keepScreenOn = false
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            hostView.keepScreenOn = false
+        }
     }
-    DisposableEffect(lifecycleOwner, player) {
+    val playerLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(player, playerLifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> player.pause()
-                Lifecycle.Event.ON_RESUME -> if (playing) player.play()
-                else -> Unit
+            if (event == Lifecycle.Event.ON_STOP) {
+                screenBlack = false
+                player.pause()
+                player.stop()
+                player.clearMediaItems()
+                playing = false
             }
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        playerLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            playerLifecycleOwner.lifecycle.removeObserver(observer)
+            player.pause()
+            player.stop()
+            player.clearMediaItems()
+        }
     }
     DisposableEffect(player, station.id) {
         val listener = object : Player.Listener {
@@ -358,6 +423,12 @@ private fun RadioScreenBody(
     }
     LaunchedEffect(station.id, streamAttempt, activeStreamUrl) {
         prefs.edit().putString(KEY_LAST_STATION, station.id).apply()
+        if (com.vizvag.shieldvideo.playback.remote.RemoteTargetStore.isControllingRemote()) {
+            runCatching {
+                com.vizvag.shieldvideo.playback.remote.RemotePlayBridge.playRadio(station.id) {}
+            }
+            return@LaunchedEffect
+        }
         if (streamAttempt == 0) error = null
         buffering = true
         val factory = DefaultHttpDataSource.Factory()
@@ -375,6 +446,11 @@ private fun RadioScreenBody(
         player.prepare()
         player.playWhenReady = true
         player.volume = 1f
+        com.vizvag.shieldvideo.ShieldVideoApp.instance.radioPlayback.notePlaying(
+            station.id,
+            station.name,
+            activeStreamUrl,
+        )
     }
     DisposableEffect(station.id) {
         onDispose {
@@ -409,10 +485,10 @@ private fun RadioScreenBody(
         }
     }
     BackHandler {
-        if (screenBlack) {
-            screenBlack = false
-        } else {
-            onBack()
+        when {
+            screenBlack -> screenBlack = false
+            nasFind != null -> nasFind = null
+            else -> onBack()
         }
     }
     val bgTop by animateColorAsState(station.accentDeep, label = "bgTop")
@@ -430,6 +506,7 @@ private fun RadioScreenBody(
         onSelectShare = onSelectShare,
         recordingFolder = recordingFolder,
         onLiveTv = onOpenLiveTv,
+        onYouTube = onOpenYouTube,
         onRadio = {},
         onMusic = onOpenMusic,
         sleepTimerActive = sleepState.active,
@@ -437,6 +514,8 @@ private fun RadioScreenBody(
         onCycleSleepTimer = app.sleepTimer::cycle,
         onSettings = onOpenSettings,
         showRail = !screenBlack,
+        railFocusEnabled = nasFind == null,
+        players = RailPlayerVisibility.from(appSettings),
     ) {
     Box(modifier = Modifier.fillMaxSize().background(AppBackground)) {
         Row(modifier = Modifier.fillMaxSize()) {
@@ -466,11 +545,21 @@ private fun RadioScreenBody(
                     ),
             ) {
                 RadioTopBar(
-                    onBack = onBack,
-                    sleepLabel = sleepState.label,
-                    sleepActive = sleepState.active,
-                    onCycleSleep = app.sleepTimer::cycle,
+                    onBack = {
+                        if (nasFind != null) nasFind = null else onBack()
+                    },
                     onBlackScreen = { screenBlack = true },
+                    hueSyncReady = hueSyncReady,
+                    hueSyncEnabled = hueSyncEnabled,
+                    onToggleHueSync = {
+                        val next = app.settingsRepository.toggleHueSync()
+                        if (next == null) {
+                            hueStatus = "Set up Hue in Settings → Integrations"
+                        } else {
+                            hueSyncEnabled = next
+                            hueStatus = if (next) "Hue sync on" else "Hue sync off"
+                        }
+                    },
                     compact = true,
                 )
                 StationListPane(
@@ -495,15 +584,16 @@ private fun RadioScreenBody(
             ) {
                 // BBC artwork as full-bleed atmosphere
                 if (!artworkUrl.isNullOrBlank()) {
+                    val liteVisuals = LocalLiteVisuals.current
                     AsyncImage(
                         model = artworkUrl,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
-                            .graphicsLayer { alpha = 0.42f }
+                            .graphicsLayer { alpha = if (liteVisuals) 0.28f else 0.42f }
                             .then(
-                                if (android.os.Build.VERSION.SDK_INT >= 31) {
+                                if (!liteVisuals && android.os.Build.VERSION.SDK_INT >= 31) {
                                     Modifier.blur(32.dp)
                                 } else {
                                     Modifier
@@ -606,12 +696,10 @@ private fun RadioScreenBody(
                                 nowPlaying = nowPlaying,
                                 loading = metadataLoading,
                                 onArtistClick = { artist ->
-                                    MusicNavRequests.requestArtist(artist)
-                                    onOpenMusic()
+                                    openLibraryFind(artist, asTrack = false)
                                 },
                                 onTrackClick = { track ->
-                                    MusicNavRequests.requestTrack(track)
-                                    onOpenMusic()
+                                    openLibraryFind(track, asTrack = true)
                                 },
                             )
                             StatusPill(
@@ -629,7 +717,19 @@ private fun RadioScreenBody(
                                         accent = station.accent,
                                         focusRequester = playFocus,
                                         onClick = {
-                                            if (player.isPlaying) {
+                                            if (com.vizvag.shieldvideo.playback.remote.RemoteTargetStore.isControllingRemote()) {
+                                                val device = com.vizvag.shieldvideo.playback.remote.RemoteTargetStore.current()
+                                                    ?: return@PlayPauseButton
+                                                scope.launch {
+                                                    val action = if (playing) {
+                                                        com.vizvag.shieldvideo.playback.remote.TransportAction.Pause
+                                                    } else {
+                                                        com.vizvag.shieldvideo.playback.remote.TransportAction.Play
+                                                    }
+                                                    app.remoteClient.transport(device, action)
+                                                        .onSuccess { playing = !playing }
+                                                }
+                                            } else if (player.isPlaying) {
                                                 player.pause()
                                             } else {
                                                 player.volume = 1f
@@ -668,18 +768,39 @@ private fun RadioScreenBody(
                             tracks = recentTracks,
                             accent = station.accent,
                             onArtistClick = { artist ->
-                                MusicNavRequests.requestArtist(artist)
-                                onOpenMusic()
+                                openLibraryFind(artist, asTrack = false)
                             },
                             onTrackClick = { track ->
-                                MusicNavRequests.requestTrack(track)
-                                onOpenMusic()
+                                openLibraryFind(track, asTrack = true)
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 22.dp),
                         )
                     }
+                }
+                nasFind?.let { find ->
+                    RadioNasFindPanel(
+                        find = find,
+                        artists = libraryArtists,
+                        albums = libraryAlbums,
+                        tracks = libraryTracks,
+                        libraryReady = libraryReady,
+                        accent = station.accent,
+                        onClose = { nasFind = null },
+                        onPlayAlbum = { albumId ->
+                            scope.launch {
+                                val list = app.musicModule.libraryRepository.getTracksByAlbum(albumId)
+                                playOnMusic(list)
+                            }
+                        },
+                        onPlayTrack = { track -> playOnMusic(listOf(track)) },
+                        onPlayArtistTracks = { list -> playOnMusic(list) },
+                        onQueryChange = { nasFind = it },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .zIndex(4f),
+                    )
                 }
             }
         }
@@ -699,6 +820,17 @@ private fun RadioScreenBody(
                     showStopAfterDialog = false
                 },
                 onDismiss = { showStopAfterDialog = false },
+            )
+        }
+        hueStatus?.let { msg ->
+            Text(
+                text = msg,
+                color = AudioAccent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 72.dp),
             )
         }
         if (screenBlack) {
@@ -1025,28 +1157,16 @@ private fun RecentTracksRow(
 }
 @Composable
 private fun rememberRadioPlayer(): ExoPlayer {
-    val context = LocalContext.current.applicationContext
-    val player = remember {
-        ExoPlayer.Builder(context).build().apply {
-            volume = 1f
-            playWhenReady = true
-        }
-    }
-    DisposableEffect(player) {
-        onDispose {
-            player.stop()
-            player.release()
-        }
-    }
-    return player
+    val app = com.vizvag.shieldvideo.ShieldVideoApp.instance
+    return app.radioPlayback.player
 }
 @Composable
 private fun RadioTopBar(
     onBack: () -> Unit,
-    sleepLabel: String? = null,
-    sleepActive: Boolean = false,
-    onCycleSleep: (() -> Unit)? = null,
     onBlackScreen: (() -> Unit)? = null,
+    hueSyncReady: Boolean = false,
+    hueSyncEnabled: Boolean = false,
+    onToggleHueSync: (() -> Unit)? = null,
     compact: Boolean = false,
 ) {
     Row(
@@ -1095,12 +1215,18 @@ private fun RadioTopBar(
                 )
             }
         }
-        if (onCycleSleep != null) {
-            SleepTimerButton(
-                active = sleepActive,
-                label = sleepLabel,
-                onCycle = onCycleSleep,
-            )
+        if (hueSyncReady && onToggleHueSync != null) {
+            IconActionButton(
+                selected = hueSyncEnabled,
+                onClick = onToggleHueSync,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Lightbulb,
+                    contentDescription = if (hueSyncEnabled) "Hue sync on" else "Hue sync off",
+                    tint = if (hueSyncEnabled) AudioAccent else Color.White,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
         }
         if (onBlackScreen != null) {
             IconActionButton(selected = false, onClick = onBlackScreen) {
@@ -1676,6 +1802,17 @@ private fun GraphicEqualizerBackdrop(
     playing: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val liteVisuals = LocalLiteVisuals.current
+    if (liteVisuals) {
+        Box(
+            modifier = modifier.background(
+                Brush.verticalGradient(
+                    listOf(accent.copy(alpha = 0.08f), Color.Transparent),
+                ),
+            ),
+        )
+        return
+    }
     val infinite = rememberInfiniteTransition(label = "eq")
     val phase by infinite.animateFloat(
         initialValue = 0f,

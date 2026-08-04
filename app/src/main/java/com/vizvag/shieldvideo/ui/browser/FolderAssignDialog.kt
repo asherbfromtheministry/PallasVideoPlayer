@@ -3,7 +3,9 @@ package com.vizvag.shieldvideo.ui.browser
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +40,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -208,6 +211,7 @@ private fun AssignCandidateRow(
     val focusRequester = remember { FocusRequester() }
     var focused by remember { mutableStateOf(false) }
     val feedback = rememberTvFeedback()
+    val interaction = remember { MutableInteractionSource() }
     val kind = when (match.mediaType) {
         "movie" -> "Movie"
         else -> "TV show"
@@ -248,7 +252,13 @@ private fun AssignCandidateRow(
                     false
                 }
             }
-            .focusable()
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .focusable(interactionSource = interaction)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -289,6 +299,7 @@ private fun AssignChip(
 ) {
     var focused by remember { mutableStateOf(false) }
     val feedback = rememberTvFeedback()
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = modifier
             .height(48.dp)
@@ -316,7 +327,13 @@ private fun AssignChip(
                     false
                 }
             }
-            .focusable()
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .focusable(interactionSource = interaction)
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
     ) {

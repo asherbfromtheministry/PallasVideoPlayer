@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -107,14 +108,17 @@ fun GroupWheelPicker(
     displayNames: Map<String, String> = emptyMap(),
     hiddenGroups: Set<String> = emptySet(),
     onLongPressOptions: ((String) -> Unit)? = null,
-    /** Group picked up for reordering — Up/Down carry it, OK drops it. */
+    /** Group picked up for reordering — Up/Down step, Left/Right ends, OK drops it. */
     movingGroupKey: String? = null,
     onMoveStep: ((groupKey: String, delta: Int) -> Unit)? = null,
+    onMoveJumpToEdge: ((groupKey: String, toTop: Boolean) -> Unit)? = null,
     onMoveDone: (() -> Unit)? = null,
     guideSize: IptvGuideSize = IptvGuideSize.Medium,
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
-    requestFocus: Boolean = true
+    requestFocus: Boolean = true,
+    /** When false, parent draws the glass panel (for shared expand/collapse shell). */
+    drawChrome: Boolean = true,
 ) {
     val metrics = remember(guideSize) { guideSize.metrics() }
     CylinderWheel(
@@ -122,14 +126,17 @@ fun GroupWheelPicker(
         listIdentity = groups.size to groups.firstOrNull(),
         initialIndex = groups.indexOfFirst { it.equals(selectedGroup, true) }.takeIf { it >= 0 } ?: 0,
         footerHint = if (movingGroupKey != null) {
-            "UP/DOWN move group · OK / BACK drop it here"
+            "UP/DOWN step · LEFT top · RIGHT bottom · OK / BACK drop"
         } else {
-            "SCROLL · OK open channels · HOLD OK options"
+            ""
         },
         title = "GROUPS",
         moveMode = if (movingGroupKey != null && onMoveStep != null && onMoveDone != null) {
             WheelMoveMode(
                 onStep = { delta -> onMoveStep(movingGroupKey, delta) },
+                onJumpToEdge = onMoveJumpToEdge?.let { jump ->
+                    { toTop -> jump(movingGroupKey, toTop) }
+                },
                 onDone = onMoveDone
             )
         } else {
@@ -138,7 +145,8 @@ fun GroupWheelPicker(
         modifier = modifier,
         requestFocus = requestFocus,
         externalFocusRequester = focusRequester,
-        dockToBottom = false,
+        dockToBottom = true,
+        drawChrome = drawChrome,
         itemHeight = metrics.wheelItemHeight,
         keyFor = { index -> groups.getOrElse(index) { "g-$index" } },
         onConfirmIndex = { index -> groups.getOrNull(index)?.let(onConfirm) },
@@ -153,12 +161,7 @@ fun GroupWheelPicker(
             val hidden = key in hiddenGroups
             WheelTextItem(
                 title = name,
-                subtitle = when {
-                    hidden -> "Hidden — hold OK to show"
-                    highlighted -> "Open channel wheel"
-                    active -> "Current group"
-                    else -> null
-                },
+                subtitle = if (hidden) "Hidden — hold OK to show" else null,
                 highlighted = highlighted,
                 active = active,
                 dimmed = hidden,
@@ -185,26 +188,51 @@ fun ChannelWheelPicker(
     epgVersion: Int = 0,
     /** Change to re-center the wheel on [selectedChannelId] (e.g. after fullscreen zapping). */
     recenterKey: Any? = null,
-    /** Channel picked up for reordering — Up/Down carry it, OK drops it. */
+    /** Channel picked up for reordering — Up/Down step, Left/Right ends, OK drops it. */
     movingChannelId: String? = null,
     onMoveStep: ((channelId: String, delta: Int) -> Unit)? = null,
+    onMoveJumpToEdge: ((channelId: String, toTop: Boolean) -> Unit)? = null,
     onMoveDone: (() -> Unit)? = null,
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
-    requestFocus: Boolean = true
+    requestFocus: Boolean = true,
+    /** When false, parent draws the glass panel (for shared expand/collapse shell). */
+    drawChrome: Boolean = true,
 ) {
     val metrics = remember(guideSize) { guideSize.metrics() }
     val rowsState = rememberUpdatedState(rows)
     var epgSlotOffset by remember { mutableIntStateOf(0) }
-    val nowMs = remember(epgSlotOffset, rows.size, showEpg) { System.currentTimeMillis() }
+    val epgSlotOffsetState = rememberUpdatedState(epgSlotOffset)
+    // Live clock so the NOW line / airing highlight advance while the guide stays open.
+    var liveNowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    // Freeze the timeline origin when paging into future slots so Right/Left doesn't jump.
+    var windowBaseMs by remember { mutableLongStateOf(liveNowMs) }
+    LaunchedEffect(showEpg) {
+        if (!showEpg) return@LaunchedEffect
+        while (true) {
+            val now = System.currentTimeMillis()
+            liveNowMs = now
+            if (epgSlotOffsetState.value == 0) windowBaseMs = now
+            delay(30_000)
+        }
+    }
+    LaunchedEffect(epgSlotOffset) {
+        val now = System.currentTimeMillis()
+        liveNowMs = now
+        if (epgSlotOffset == 0) windowBaseMs = now
+    }
+    val nowMs = liveNowMs
     // Window always starts on :00 / :15 / :30 / :45 — never e.g. 23:09.
-    val windowStartMs = floorToQuarterHour(nowMs) + epgSlotOffset * EpgSlotMs
+    val windowStartMs = floorToQuarterHour(windowBaseMs) + epgSlotOffset * EpgSlotMs
     val windowMs = metrics.epgWindowMs
     val slotLabel = if (epgSlotOffset <= 0) "NOW" else "+${epgSlotOffset * 30}m"
     val stripStartInset = metrics.logoSize + 8.dp + metrics.nameColumnWidth + 8.dp
 
     LaunchedEffect(rows.firstOrNull()?.channel?.id, rows.size, groupTitle, showEpg, guideSize) {
         epgSlotOffset = 0
+        val now = System.currentTimeMillis()
+        liveNowMs = now
+        windowBaseMs = now
     }
 
     val moving = movingChannelId != null
@@ -213,13 +241,16 @@ fun ChannelWheelPicker(
         listIdentity = Triple(rows.firstOrNull()?.channel?.id, rows.size, recenterKey),
         initialIndex = rows.indexOfFirst { it.channel.id == selectedChannelId }.takeIf { it >= 0 } ?: 0,
         footerHint = when {
-            moving -> "UP/DOWN move channel · OK / BACK drop it here"
+            moving -> "UP/DOWN step · LEFT top · RIGHT bottom · OK / BACK drop"
             showEpg -> "SCROLL · OK play · RIGHT later · LEFT earlier / groups"
             else -> "SCROLL · OK play · LEFT groups · HOLD OK options"
         },
         moveMode = if (movingChannelId != null && onMoveStep != null && onMoveDone != null) {
             WheelMoveMode(
                 onStep = { delta -> onMoveStep(movingChannelId, delta) },
+                onJumpToEdge = onMoveJumpToEdge?.let { jump ->
+                    { toTop -> jump(movingChannelId, toTop) }
+                },
                 onDone = onMoveDone
             )
         } else {
@@ -245,6 +276,7 @@ fun ChannelWheelPicker(
         requestFocus = requestFocus,
         externalFocusRequester = focusRequester,
         dockToBottom = true,
+        drawChrome = drawChrome,
         itemHeight = if (showEpg) metrics.guideItemHeight else metrics.wheelItemHeight,
         keyFor = { index -> rowsState.value.getOrNull(index)?.channel?.id ?: "c-$index" },
         onConfirmIndex = { index ->
@@ -315,9 +347,10 @@ fun ChannelWheelPicker(
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-/** Reorder mode: Up/Down carry the centered item, OK / Back drop it. */
+/** Reorder mode: Up/Down step, Left/Right jump to ends, OK / Back drop. */
 data class WheelMoveMode(
     val onStep: (Int) -> Unit,
+    val onJumpToEdge: ((toTop: Boolean) -> Unit)? = null,
     val onDone: () -> Unit
 )
 
@@ -341,6 +374,7 @@ private fun CylinderWheel(
     requestFocus: Boolean = true,
     externalFocusRequester: FocusRequester? = null,
     dockToBottom: Boolean = false,
+    drawChrome: Boolean = true,
     itemHeight: Dp,
     itemContent: @Composable (
         index: Int,
@@ -428,6 +462,20 @@ private fun CylinderWheel(
         }
     }
 
+    fun jumpWheel(toTop: Boolean) {
+        val last = itemCountState.value - 1
+        if (last < 0) return
+        val target = if (toTop) 0 else last
+        val current = nearestCenterIndex(listState) ?: centeredIndex
+        if (target == current) return
+        centeredIndex = target
+        scrollJob?.cancel()
+        scrollJob = scope.launch {
+            listState.scrollToItem(target)
+            centeredIndex = nearestCenterIndex(listState) ?: target
+        }
+    }
+
     fun confirmCentered() {
         val index = nearestCenterIndex(listState) ?: centeredIndex
         if (index in 0 until itemCountState.value) onConfirmState.value(index)
@@ -439,8 +487,8 @@ private fun CylinderWheel(
         if (index in 0 until itemCountState.value) handler(index)
     }
 
-    Column(
-        modifier = modifier
+    val chromeModifier = if (drawChrome) {
+        Modifier
             .clip(panelShape)
             .background(
                 Brush.horizontalGradient(
@@ -448,6 +496,13 @@ private fun CylinderWheel(
                 )
             )
             .border(1.dp, Color.White.copy(alpha = 0.14f), panelShape)
+    } else {
+        Modifier
+    }
+
+    Column(
+        modifier = modifier
+            .then(chromeModifier)
             .focusRequester(focusRequester)
             .onFocusChanged { wheelFocused = it.isFocused }
             .focusable()
@@ -466,6 +521,16 @@ private fun CylinderWheel(
                         event.key == Key.DirectionDown && event.type == KeyEventType.KeyDown -> {
                             move.onStep(1)
                             stepWheel(1)
+                            true
+                        }
+                        event.key == Key.DirectionLeft && event.type == KeyEventType.KeyDown -> {
+                            move.onJumpToEdge?.invoke(true)
+                            jumpWheel(true)
+                            true
+                        }
+                        event.key == Key.DirectionRight && event.type == KeyEventType.KeyDown -> {
+                            move.onJumpToEdge?.invoke(false)
+                            jumpWheel(false)
                             true
                         }
                         (isSelect || event.key == Key.Back) && event.type == KeyEventType.KeyUp -> {
@@ -596,7 +661,7 @@ private fun CylinderWheel(
                     .background(
                         when {
                             moveMode != null -> AccentWarm.copy(alpha = 0.20f)
-                            wheelFocused -> CyanAccent.copy(alpha = 0.14f)
+                            wheelFocused -> Color.White.copy(alpha = 0.10f)
                             else -> Color.White.copy(alpha = 0.06f)
                         }
                     )
@@ -643,17 +708,19 @@ private fun CylinderWheel(
             }
         }
 
-        Text(
-            text = footerHint,
-            color = TextMuted,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 1.sp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 6.dp),
-            textAlign = TextAlign.Center
-        )
+        if (footerHint.isNotBlank()) {
+            Text(
+                text = footerHint,
+                color = TextMuted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 6.dp),
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
@@ -674,7 +741,7 @@ private fun Modifier.wheelRowChrome(highlighted: Boolean, active: Boolean): Modi
         .clip(shape)
         .background(
             when {
-                highlighted -> CyanAccent.copy(alpha = 0.22f)
+                highlighted -> Color.White.copy(alpha = 0.14f)
                 active -> AccentWarm.copy(alpha = 0.24f)
                 else -> Color.Transparent
             }
@@ -750,7 +817,7 @@ private fun WheelEpgTimeHeader(
         ) {
             Text(
                 text = title,
-                color = CyanAccent,
+                color = TextCream,
                 fontSize = headerSp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.2.sp,
@@ -760,7 +827,7 @@ private fun WheelEpgTimeHeader(
             )
             Text(
                 text = "EPG $slotLabel · RIGHT later",
-                color = CyanAccent,
+                color = TextMuted,
                 fontSize = headerSp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -1161,14 +1228,18 @@ fun ChannelOptionsSheet(
     onFavorite: () -> Unit,
     onRename: () -> Unit,
     onMove: () -> Unit,
+    onMoveToTop: () -> Unit,
+    onMoveToBottom: () -> Unit,
     onFullscreen: () -> Unit,
     onOpenExternal: () -> Unit,
     onDismiss: () -> Unit
 ) {
     // Ignore OK/click for a beat after open in case a late KeyUp still arrives.
     var armed by remember { mutableStateOf(false) }
+    var moveMenu by remember { mutableStateOf(false) }
     LaunchedEffect(row.channel.id) {
         armed = false
+        moveMenu = false
         delay(280)
         armed = true
     }
@@ -1177,26 +1248,43 @@ fun ChannelOptionsSheet(
     }
 
     androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (moveMenu) moveMenu = false else onDismiss()
+        },
         title = {
-            Text(row.channel.name, color = Color.White, fontWeight = FontWeight.Bold)
+            Text(
+                if (moveMenu) "Move channel" else row.channel.name,
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                OptionRow("Assign EPG…") { run(onAssignEpg) }
-                OptionRow("Record…") { run(onRecord) }
-                OptionRow(if (row.favorite) "Remove favorite" else "Add favorite") { run(onFavorite) }
-                OptionRow("Rename channel") { run(onRename) }
-                if (canMove) {
-                    OptionRow("Move channel…") { run(onMove) }
+                if (moveMenu) {
+                    OptionRow("Reorder with D-pad…") { run(onMove) }
+                    OptionRow("Move to top") { run(onMoveToTop) }
+                    OptionRow("Move to bottom") { run(onMoveToBottom) }
+                    OptionRow("Back") { if (armed) moveMenu = false }
+                } else {
+                    OptionRow("Assign EPG…") { run(onAssignEpg) }
+                    OptionRow("Record…") { run(onRecord) }
+                    OptionRow(if (row.favorite) "Remove favorite" else "Add favorite") { run(onFavorite) }
+                    OptionRow("Rename channel") { run(onRename) }
+                    if (canMove) {
+                        OptionRow("Move channel…") { if (armed) moveMenu = true }
+                    }
+                    OptionRow("Fullscreen") { run(onFullscreen) }
+                    OptionRow("Open in VLC") { run(onOpenExternal) }
                 }
-                OptionRow("Fullscreen") { run(onFullscreen) }
-                OptionRow("Open in VLC") { run(onOpenExternal) }
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = { run(onDismiss) }) {
-                Text("Close", color = CyanAccent)
+            androidx.compose.material3.TextButton(
+                onClick = {
+                    if (moveMenu) moveMenu = false else run(onDismiss)
+                }
+            ) {
+                Text(if (moveMenu) "Back" else "Close", color = CyanAccent)
             }
         },
         containerColor = Color(0xF022261E)
@@ -1212,6 +1300,7 @@ fun GroupOptionsSheet(
     onRename: () -> Unit,
     onMove: () -> Unit,
     onToggleHidden: () -> Unit,
+    onAutoMatchEpg: () -> Unit,
     onDismiss: () -> Unit
 ) {
     // A long-press release must not immediately activate the first option.
@@ -1246,6 +1335,12 @@ fun GroupOptionsSheet(
                             onOrder(mode)
                             onDismiss()
                         }
+                    }
+                }
+                OptionRow("AI match EPG…") {
+                    run {
+                        onAutoMatchEpg()
+                        onDismiss()
                     }
                 }
                 OptionRow("Rename group…") { run(onRename) }

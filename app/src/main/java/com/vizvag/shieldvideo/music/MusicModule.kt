@@ -12,6 +12,7 @@ import com.vizvag.shieldvideo.music.data.local.MusicDatabase
 import com.vizvag.shieldvideo.music.data.lyrics.LyricsRepository
 import com.vizvag.shieldvideo.music.data.metadata.AlbumArtLookup
 import com.vizvag.shieldvideo.music.data.metadata.CoverArtCache
+import com.vizvag.shieldvideo.music.data.metadata.PlaylistCoverStore
 import com.vizvag.shieldvideo.music.data.settings.MusicSettingsBridge
 import com.vizvag.shieldvideo.music.data.synology.SynologyApiClient
 import com.vizvag.shieldvideo.music.player.PlayerController
@@ -24,7 +25,7 @@ import java.util.concurrent.TimeUnit
 
 class MusicModule(
     context: Context,
-    settingsRepository: SettingsRepository,
+    val settingsRepository: SettingsRepository,
     appScope: CoroutineScope,
 ) {
     private val appContext = context.applicationContext
@@ -76,6 +77,7 @@ class MusicModule(
         synologyApiClient = synologyApiClient,
         settingsRepository = settingsRepository,
         smbRepository = com.vizvag.shieldvideo.data.smb.SmbRepository(),
+        onlineLyricsClient = com.vizvag.shieldvideo.music.data.lyrics.OnlineLyricsClient(okHttpClient),
     )
 
     val albumArtLookup = AlbumArtLookup(okHttpClient)
@@ -84,6 +86,14 @@ class MusicModule(
         context = appContext,
         synologyApiClient = synologyApiClient,
         libraryRepository = libraryRepository,
+    )
+
+    val playlistCoverStore = PlaylistCoverStore(
+        context = appContext,
+        queueManager = queueManager,
+        coverArtCache = coverArtCache,
+        albumArtLookup = albumArtLookup,
+        scope = appScope,
     )
 }
 
@@ -97,6 +107,7 @@ class MusicViewModelFactory(
                 libraryRepository = musicModule.libraryRepository,
                 libraryCache = musicModule.libraryCache,
                 musicSettings = musicModule.musicSettings,
+                settingsRepository = musicModule.settingsRepository,
                 synologyApiClient = musicModule.synologyApiClient,
                 musicIndex = musicModule.musicIndex,
                 streamUrlBuilder = musicModule.streamUrlBuilder,
@@ -104,6 +115,7 @@ class MusicViewModelFactory(
                 playerController = musicModule.playerController,
                 albumArtLookup = musicModule.albumArtLookup,
                 coverArtCache = musicModule.coverArtCache,
+                playlistCoverStore = musicModule.playlistCoverStore,
                 lyricsRepository = musicModule.lyricsRepository,
             ) as T
         }

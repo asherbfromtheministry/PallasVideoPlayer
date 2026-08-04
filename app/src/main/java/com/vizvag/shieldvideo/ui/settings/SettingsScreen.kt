@@ -85,6 +85,7 @@ import androidx.compose.ui.window.Dialog
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.nas.NasRepository
 import com.vizvag.shieldvideo.data.index.VideoIndexController
+import com.vizvag.shieldvideo.data.iptv.EpgAiProvider
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.settings.ClockCorner
 import com.vizvag.shieldvideo.data.settings.ConnectionMode
@@ -107,10 +108,12 @@ private enum class SettingsTab(val label: String) {
     NAS("NAS"),
     Library("Library"),
     Playback("Playback"),
+    Display("Display"),
     LiveTv("Live TV"),
+    YouTube("YouTube"),
     Radio("Radio"),
     Integrations("Integrations"),
-    Backup("Backup")
+    Backup("Backup"),
 }
 
 @Composable
@@ -134,6 +137,19 @@ fun SettingsScreen(
                 )
             }
             viewModel.update { it.copy(iptvRecordingLocalTreeUri = uri.toString()) }
+        }
+    }
+    val youtubeSubsCsvLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        }.onSuccess { text ->
+            if (text != null) viewModel.importSubscriptionsCsv(text)
+            else viewModel.setYoutubeAuthMessage("Could not read that file")
+        }.onFailure { e ->
+            viewModel.setYoutubeAuthMessage(e.message ?: "Could not read CSV")
         }
     }
     var showLeaveConfirm by remember { mutableStateOf(false) }
@@ -163,6 +179,7 @@ fun SettingsScreen(
 
     LaunchedEffect(selectedTab) {
         // Keep focus on the active tab after OK (requester moves with selection).
+        // Give composition a beat so tab-specific content FocusRequesters attach first.
         delay(40)
         runCatching { tabFocusRequester.requestFocus() }
     }
@@ -181,7 +198,7 @@ fun SettingsScreen(
 
     fun focusContent() {
         runCatching { contentFocusRequester.requestFocus() }
-            .onFailure { focusManager.moveFocus(FocusDirection.Down) }
+            .onFailure { focusManager.moveFocus(FocusDirection.Right) }
     }
 
     BackHandler { requestLeave() }
@@ -232,7 +249,7 @@ fun SettingsScreen(
                         letterSpacing = (-0.4).sp
                     )
                     Text(
-                        text = "NAS · Library · Playback · Live TV · Radio · more",
+                        text = "NAS · Library · Playback · Display · Live TV · YouTube · Radio · more",
                         color = TextMuted,
                         fontSize = 11.sp,
                         letterSpacing = 0.2.sp,
@@ -286,15 +303,35 @@ fun SettingsScreen(
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     val contentScrollState = rememberScrollState()
+                    val contentFocusScope = rememberCoroutineScope()
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(contentScrollState)
                     ) {
+                        // Entry target for D-pad Right from the tab rail. Immediately hops to the
+                        // first real control so focus is never stuck on an invisible 1dp box.
+                        // YouTube attaches contentFocusRequester to its first field instead.
                         Box(
                             modifier = Modifier
-                                .focusRequester(contentFocusRequester)
-                                .focusable()
+                                .then(
+                                    if (selectedTab != SettingsTab.YouTube) {
+                                        Modifier.focusRequester(contentFocusRequester)
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                                .onFocusChanged { focusState ->
+                                    if (focusState.isFocused) {
+                                        contentFocusScope.launch {
+                                            delay(1)
+                                            if (!focusManager.moveFocus(FocusDirection.Down)) {
+                                                focusTabs()
+                                            }
+                                        }
+                                    }
+                                }
+                                .focusable(enabled = selectedTab != SettingsTab.YouTube)
                                 .fillMaxWidth()
                                 .height(1.dp)
                                 .onPreviewKeyEvent { event ->
@@ -344,6 +381,10 @@ fun SettingsScreen(
                                 onOpenNotificationAccess = { NotificationAccessHelper.openSettings(context) },
                                 viewModel = viewModel
                             )
+                            SettingsTab.Display -> DisplaySettingsTab(
+                                draft = draft,
+                                viewModel = viewModel,
+                            )
                             SettingsTab.LiveTv -> LiveTvSettingsTab(
                                 draft = draft,
                                 state = state,
@@ -356,6 +397,29 @@ fun SettingsScreen(
                                     )
                                 },
                                 viewModel = viewModel
+                            )
+                            SettingsTab.YouTube -> YouTubeSettingsTab(
+                                draft = draft,
+                                state = state,
+                                fieldColors = fieldColors,
+                                viewModel = viewModel,
+                                contentFocusRequester = contentFocusRequester,
+                                onMoveFocusToTabs = ::focusTabs,
+                                onPickSubscriptionsCsv = {
+                                    youtubeSubsCsvLauncher.launch(
+                                        arrayOf("text/*", "text/csv", "application/csv", "*/*")
+                                    )
+                                },
+                                onImportFromDownloads = {
+                                    val text = readSubscriptionsCsvFromDevice(context)
+                                    if (text != null) {
+                                        viewModel.importSubscriptionsCsv(text)
+                                    } else {
+                                        viewModel.setYoutubeAuthMessage(
+                                            "No subscriptions.csv in Download/ — push it to the TV first"
+                                        )
+                                    }
+                                },
                             )
                             SettingsTab.Radio -> RadioSettingsTab(
                                 draft = draft,
@@ -732,7 +796,7 @@ private fun LibrarySettingsTab(
     }
     Spacer(modifier = Modifier.height(6.dp))
     Text(
-        text = "Default: ${NasPaths.labelFor(draft.defaultShare).ifBlank { "—" }}",
+        text = "Default: ${NasPaths.labelFor(draft.defaultShare).ifBlank { "—" }} — home landing focuses this folder",
         color = TextMuted,
         fontSize = 11.sp
     )
@@ -994,6 +1058,106 @@ private fun PlaybackSettingsTab(
 }
 
 @Composable
+private fun DisplaySettingsTab(
+    draft: AppSettings,
+    viewModel: SettingsViewModel,
+) {
+    SectionHint("Visual load for Music / Radio on this device.")
+
+    Text("Visual effects", color = TextMuted, fontWeight = FontWeight.Bold)
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(
+        text = if (draft.liteVisuals) {
+            "Blur, ambient motion, and looping EQ animation are off. Best for Chromecast HD / low-power boxes."
+        } else {
+            "Blur, ambient motion, and looping EQ animation are on. Best for Shield / stronger boxes."
+        },
+        color = TextMuted,
+        fontSize = 11.sp,
+    )
+    Spacer(modifier = Modifier.height(10.dp))
+    TvFocusButton(
+        onClick = { viewModel.update { it.copy(liteVisuals = !it.liteVisuals) } },
+        selected = draft.liteVisuals,
+    ) {
+        Text(
+            text = if (draft.liteVisuals) "Reduced visuals" else "Full visuals",
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+    Text(
+        text = "Tap to toggle · Save in the header to apply.",
+        color = TextMuted,
+        fontSize = 11.sp,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+
+    Spacer(modifier = Modifier.height(22.dp))
+    Text("Home & side nav", color = TextMuted, fontWeight = FontWeight.Bold)
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(
+        text = "Choose which players appear on the home screen and side nav.",
+        color = TextMuted,
+        fontSize = 11.sp,
+    )
+    Spacer(modifier = Modifier.height(10.dp))
+    HomeTileToggle(
+        label = "Radio",
+        shown = draft.homeShowRadio,
+        onToggle = { viewModel.update { it.copy(homeShowRadio = !it.homeShowRadio) } },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    HomeTileToggle(
+        label = "Music",
+        shown = draft.homeShowMusic,
+        onToggle = { viewModel.update { it.copy(homeShowMusic = !it.homeShowMusic) } },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    HomeTileToggle(
+        label = "Library",
+        shown = draft.homeShowLibrary,
+        onToggle = { viewModel.update { it.copy(homeShowLibrary = !it.homeShowLibrary) } },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    HomeTileToggle(
+        label = "YouTube",
+        shown = draft.homeShowYouTube,
+        onToggle = { viewModel.update { it.copy(homeShowYouTube = !it.homeShowYouTube) } },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    HomeTileToggle(
+        label = "Live TV",
+        shown = draft.homeShowLiveTv,
+        onToggle = { viewModel.update { it.copy(homeShowLiveTv = !it.homeShowLiveTv) } },
+    )
+    Text(
+        text = "Save in the header to apply on the home screen.",
+        color = TextMuted,
+        fontSize = 11.sp,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+}
+
+@Composable
+private fun HomeTileToggle(
+    label: String,
+    shown: Boolean,
+    onToggle: () -> Unit,
+) {
+    TvFocusButton(
+        onClick = onToggle,
+        selected = shown,
+    ) {
+        Text(
+            text = if (shown) "$label: shown" else "$label: hidden",
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
 private fun LiveTvSettingsTab(
     draft: AppSettings,
     state: SettingsUiState,
@@ -1029,6 +1193,62 @@ private fun LiveTvSettingsTab(
             Text("Compact rows", color = Color.White, fontWeight = FontWeight.SemiBold)
         }
     }
+    Text(
+        text = "AI EPG matching uses Gemini or OpenAI to map names like “UK: FHD BBC ONE” → the right XMLTV channel. Hold OK on a group → AI match EPG… (All channels = whole playlist).",
+        color = TextMuted,
+        fontSize = 12.sp,
+        modifier = Modifier.padding(top = 8.dp)
+    )
+
+    Spacer(modifier = Modifier.height(12.dp))
+    Text("AI EPG matching", color = TextMuted, fontWeight = FontWeight.Bold)
+    Spacer(modifier = Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        EpgAiProvider.entries.forEach { provider ->
+            TvFocusButton(
+                onClick = { viewModel.update { it.copy(iptvEpgAiProvider = provider) } },
+                selected = draft.iptvEpgAiProvider == provider,
+                compact = true
+            ) {
+                Text(
+                    if (provider == EpgAiProvider.GEMINI) "Gemini" else "OpenAI",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+    Spacer(modifier = Modifier.height(6.dp))
+    TvSettingsField(
+        label = if (draft.iptvEpgAiProvider == EpgAiProvider.GEMINI) {
+            "Gemini API key (aistudio.google.com)"
+        } else {
+            "OpenAI API key"
+        },
+        value = draft.iptvEpgAiApiKey,
+        colors = fieldColors,
+        isPassword = true,
+        onChange = { value -> viewModel.update { it.copy(iptvEpgAiApiKey = value) } }
+    )
+    if (draft.iptvEpgAiProvider == EpgAiProvider.OPENAI) {
+        Spacer(modifier = Modifier.height(6.dp))
+        TvSettingsField(
+            label = "OpenAI base URL",
+            value = draft.iptvEpgAiOpenAiBaseUrl,
+            colors = fieldColors,
+            onChange = { value -> viewModel.update { it.copy(iptvEpgAiOpenAiBaseUrl = value) } }
+        )
+    }
+    Text(
+        text = if (draft.iptvEpgAiApiKey.isBlank()) {
+            "No key set — AI match will ask for one. Free Gemini key: Google AI Studio."
+        } else {
+            "Key saved with Settings → Save. Then Live TV → hold group → AI match EPG…"
+        },
+        color = TextMuted,
+        fontSize = 11.sp,
+        modifier = Modifier.padding(top = 4.dp)
+    )
 
     Spacer(modifier = Modifier.height(16.dp))
     Text("Recording storage", color = TextMuted, fontWeight = FontWeight.Bold)
@@ -1214,6 +1434,158 @@ private fun LiveTvSettingsTab(
         state.lockedGroupsText,
         fieldColors
     ) { viewModel.setLockedGroupsText(it) }
+}
+
+@Composable
+private fun YouTubeSettingsTab(
+    draft: AppSettings,
+    state: SettingsUiState,
+    fieldColors: TextFieldColors,
+    viewModel: SettingsViewModel,
+    contentFocusRequester: FocusRequester,
+    onMoveFocusToTabs: () -> Unit,
+    onPickSubscriptionsCsv: () -> Unit,
+    onImportFromDownloads: () -> Unit,
+) {
+    SectionHint(
+        "Piped login (not Google), then Import Takeout subscriptions.csv. " +
+            "Default API: ${com.vizvag.shieldvideo.data.youtube.YoutubeDefaults.DEFAULT_PIPED_API_URL}"
+    )
+    TvSettingsField(
+        label = "Piped API base URL",
+        value = draft.youtubePipedApiUrl,
+        colors = fieldColors,
+        modifier = Modifier
+            .focusRequester(contentFocusRequester)
+            .tvBringIntoView()
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft) {
+                    onMoveFocusToTabs()
+                    true
+                } else {
+                    false
+                }
+            },
+        onChange = { value -> viewModel.update { it.copy(youtubePipedApiUrl = value) } },
+    )
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = if (draft.isYoutubeLoggedIn) {
+            "Piped account · signed in"
+        } else {
+            "Piped account · signed out"
+        },
+        color = CyanAccent,
+        fontWeight = FontWeight.Bold,
+        fontSize = 11.sp,
+    )
+    Spacer(Modifier.height(8.dp))
+    TvSettingsField(
+        label = "Username",
+        value = draft.youtubePipedUsername,
+        colors = fieldColors,
+        modifier = Modifier.tvBringIntoView(),
+        onChange = { value -> viewModel.update { it.copy(youtubePipedUsername = value) } },
+    )
+    TvSettingsField(
+        label = "Password",
+        value = state.youtubePassword,
+        colors = fieldColors,
+        isPassword = true,
+        passwordVisible = state.youtubePasswordVisible,
+        onTogglePasswordVisible = viewModel::toggleYoutubePasswordVisible,
+        modifier = Modifier.tvBringIntoView(),
+        onChange = { value -> viewModel.setYoutubePassword(value) },
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (draft.isYoutubeLoggedIn) {
+            TvFocusButton(
+                onClick = viewModel::logoutPiped,
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text("Log out", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+            TvFocusButton(
+                onClick = onImportFromDownloads,
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text(
+                    text = if (state.youtubeAuthBusy) "…" else "Import from Downloads",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            TvFocusButton(
+                onClick = onPickSubscriptionsCsv,
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text(
+                    text = "Pick CSV",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        } else {
+            TvFocusButton(
+                onClick = viewModel::loginPiped,
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text(
+                    text = if (state.youtubeAuthBusy) "…" else "Log in",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            TvFocusButton(
+                onClick = viewModel::registerPiped,
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text("Register", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+    if (draft.isYoutubeLoggedIn) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "Import from Downloads = /Download/subscriptions.csv (Google Takeout).",
+            color = TextMuted,
+            fontSize = 11.sp,
+        )
+    }
+    val authMessage = state.youtubeAuthMessage
+    if (authMessage != null) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = authMessage,
+            color = if (draft.isYoutubeLoggedIn && !authMessage.contains("fail", ignoreCase = true)) {
+                Accent
+            } else {
+                Color(0xFFFF8A80)
+            },
+            fontSize = 12.sp,
+        )
+    }
+}
+
+private fun readSubscriptionsCsvFromDevice(context: android.content.Context): String? {
+    val candidates = listOf(
+        java.io.File("/sdcard/Download/subscriptions.csv"),
+        java.io.File("/storage/emulated/0/Download/subscriptions.csv"),
+        java.io.File(context.getExternalFilesDir(null), "subscriptions.csv"),
+        java.io.File(context.filesDir, "subscriptions.csv"),
+    )
+    for (file in candidates) {
+        val text = runCatching {
+            if (file.isFile && file.canRead()) file.readText() else null
+        }.getOrNull()
+        if (!text.isNullOrBlank()) return text
+    }
+    return null
 }
 
 @Composable
@@ -1415,12 +1787,12 @@ private fun IntegrationsSettingsTab(
     fieldColors: TextFieldColors,
     viewModel: SettingsViewModel
 ) {
-    SectionHint("Home Assistant handoff and Trakt / TMDB metadata.")
+    SectionHint("Home Assistant handoff, Philips Hue Music/Radio sync, LAN remote control, and Trakt / TMDB metadata.")
 
     Text("Home Assistant handoff", color = TextMuted, fontWeight = FontWeight.Bold)
     Spacer(modifier = Modifier.height(6.dp))
     Text(
-        text = "Set this Shield to lounge or bedroom so Assist can move playback between TVs.",
+        text = "Device id identifies this TV in HA and for LAN remote discovery. Use a quick pick or type any id (e.g. kitchen).",
         color = TextMuted,
         fontSize = 11.sp
     )
@@ -1442,6 +1814,9 @@ private fun IntegrationsSettingsTab(
         }
     }
     Spacer(modifier = Modifier.height(8.dp))
+    TvSettingsField("Device id", draft.deviceId, fieldColors) { value ->
+        viewModel.update { it.copy(deviceId = value) }
+    }
     TvSettingsField("HA webhook URL", draft.haWebhookUrl, fieldColors) { value ->
         viewModel.update { it.copy(haWebhookUrl = value) }
     }
@@ -1456,10 +1831,117 @@ private fun IntegrationsSettingsTab(
         Text("Sleep timer → HA standby", color = Color.White, fontWeight = FontWeight.SemiBold)
     }
     Text(
-        text = "When the sleep timer ends, POSTs to …/pallas_sleep with device lounge/bedroom so HA can turn the Shield off.",
+        text = "When the sleep timer ends, POSTs to …/pallas_sleep with {\"device\":\"<device id>\",\"action\":\"standby\"} so HA can turn this TV off.",
         color = TextMuted,
         fontSize = 11.sp
     )
+
+    Spacer(modifier = Modifier.height(12.dp))
+    Text("Philips Hue (Music / Radio)", color = TextMuted, fontWeight = FontWeight.Bold)
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(
+        text = "Flash selected Hue lights with Music or Radio audio energy. Press the bridge link button, then Pair. Lightbulb toggles in Music and Radio top bars.",
+        color = TextMuted,
+        fontSize = 11.sp
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    TvFocusButton(
+        onClick = {
+            viewModel.update { it.copy(hueEnabled = !it.hueEnabled) }
+        },
+        selected = draft.hueEnabled,
+        compact = true
+    ) {
+        Text("Music / Radio Hue sync", color = Color.White, fontWeight = FontWeight.SemiBold)
+    }
+    Spacer(modifier = Modifier.height(8.dp))
+    TvSettingsField("Hue bridge IP", draft.hueBridgeIp, fieldColors) { value ->
+        viewModel.update { it.copy(hueBridgeIp = value) }
+    }
+    Text(
+        text = if (draft.hueUsername.isNotBlank()) {
+            "Paired (token saved)"
+        } else {
+            "Not paired"
+        },
+        color = if (draft.hueUsername.isNotBlank()) CyanAccent else TextMuted,
+        fontSize = 14.sp
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        TvFocusButton(
+            onClick = { if (!state.hueBusy) viewModel.pairHueBridge() },
+            compact = true
+        ) {
+            Text(
+                text = if (state.hueBusy) "Working…" else "Pair bridge",
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        TvFocusButton(
+            onClick = { if (!state.hueBusy) viewModel.refreshHueLights() },
+            compact = true
+        ) {
+            Text("Refresh lights", color = Color.White, fontWeight = FontWeight.SemiBold)
+        }
+    }
+    state.hueMessage?.let { msg ->
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(text = msg, color = TextMuted, fontSize = 12.sp)
+    }
+    if (state.hueLights.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("Lights", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+        Spacer(modifier = Modifier.height(6.dp))
+        state.hueLights.chunked(3).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { light ->
+                    val selected = draft.hueLightIds.contains(light.id)
+                    TvFocusButton(
+                        onClick = { viewModel.toggleHueLight(light.id) },
+                        selected = selected,
+                        compact = true
+                    ) {
+                        Text(
+                            text = light.name,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+        if (draft.hueLightIds.isNotEmpty()) {
+            Text(
+                text = "${draft.hueLightIds.size} selected — Save, then play Music",
+                color = CyanAccent,
+                fontSize = 12.sp
+            )
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+    Text("LAN remote control", color = TextMuted, fontWeight = FontWeight.Bold)
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(
+        text = "Phones/tablets on the same Wi‑Fi scan for this TV automatically. Set a Device id (lounge / bedroom) so the room name is clear. No backup or token needed.",
+        color = TextMuted,
+        fontSize = 11.sp
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    TvFocusButton(
+        onClick = {
+            viewModel.update { it.copy(allowRemoteControl = !it.allowRemoteControl) }
+        },
+        selected = draft.allowRemoteControl,
+        compact = true
+    ) {
+        Text("Allow remote control", color = Color.White, fontWeight = FontWeight.SemiBold)
+    }
 
     Spacer(modifier = Modifier.height(12.dp))
     Text("Trakt / TMDB", color = TextMuted, fontWeight = FontWeight.Bold)
@@ -1558,7 +2040,7 @@ private fun BackupSettingsTab(
 
     Spacer(modifier = Modifier.height(12.dp))
     Text(
-        "The backup includes NAS credentials, API keys/tokens, IPTV playlists, custom radio stations, favorites, channel order and names, EPG assignments, measured badges, and parental settings.",
+        "The backup includes NAS credentials, API keys/tokens, IPTV playlists, YouTube Piped API URL, custom radio stations, favorites, channel order and names, EPG assignments, measured badges, and parental settings.",
         color = TextMuted,
         fontSize = 11.sp
     )

@@ -49,11 +49,14 @@ fun BrowserScreen(
     viewModel: BrowserViewModel,
     onOpenSettings: () -> Unit,
     onOpenLiveTv: () -> Unit = {},
+    onOpenYouTube: () -> Unit = {},
     onOpenRadio: () -> Unit = {},
     onOpenMusic: () -> Unit = {}
 ) {
     val state by viewModel.state.collectAsState()
     val folderAssign by viewModel.folderAssign.collectAsState()
+    val folderClearOptions by viewModel.folderClearOptions.collectAsState()
+    val itemOptions by viewModel.itemOptions.collectAsState()
     val archiveExtract by viewModel.archiveExtract.collectAsState()
     val lifecycleOwner = LocalLifecycleOwner.current
     var showAccessHint by remember { mutableStateOf(false) }
@@ -107,24 +110,7 @@ fun BrowserScreen(
     }
 
     fun onItemLongClick(item: MediaCardItem) {
-        if (item.entry.isDirectory) {
-            val hasTraktArt = !item.posterUrl.isNullOrBlank() || !item.fanartUrl.isNullOrBlank()
-            if (hasTraktArt && !item.metadataCleared) {
-                viewModel.clearItemMetadata(item)
-            } else {
-                viewModel.openFolderAssign(item)
-            }
-            return
-        }
-        if (NasPaths.isArchiveFile(item.entry.name)) {
-            viewModel.openArchiveExtract(item)
-            return
-        }
-        if (item.metadataCleared) {
-            viewModel.restoreItemMetadata(item)
-        } else {
-            viewModel.clearItemMetadata(item)
-        }
+        viewModel.openItemOptions(item)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -141,6 +127,7 @@ fun BrowserScreen(
             onSelectShare = viewModel::selectShare,
             recordingFolder = recordingFolderForRail(state.settings),
             onLiveTv = onOpenLiveTv,
+            onYouTube = onOpenYouTube,
             onRadio = onOpenRadio,
             onMusic = onOpenMusic,
             sleepTimerActive = sleepState.active,
@@ -150,6 +137,7 @@ fun BrowserScreen(
             canGoUp = state.pathStack.isNotEmpty(),
             onGoUp = viewModel::goUp,
             destination = RailDestination.Browser,
+            players = RailPlayerVisibility.from(state.settings),
         )
 
         Column(modifier = Modifier.weight(1f).fillMaxSize()) {
@@ -228,7 +216,9 @@ fun BrowserScreen(
                 val toastMessage = state.message?.takeIf { msg ->
                     msg.contains("metadata", ignoreCase = true) ||
                         msg.startsWith("Extracted ", ignoreCase = true) ||
-                        msg.contains("Extract already", ignoreCase = true)
+                        msg.contains("Extract already", ignoreCase = true) ||
+                        msg.startsWith("Deleted ", ignoreCase = true) ||
+                        msg.startsWith("Delete failed", ignoreCase = true)
                 }
                 if (toastMessage != null) {
                     LaunchedEffect(toastMessage) {
@@ -294,22 +284,43 @@ fun BrowserScreen(
             onRebuildIndex = viewModel::rebuildVideoIndex,
             onSearch = viewModel::runSearch,
             onOpenResult = viewModel::openSearchResult,
-            onLongClickResult = { item ->
-                if (item.entry.isDirectory) {
-                    val hasTraktArt = !item.posterUrl.isNullOrBlank() || !item.fanartUrl.isNullOrBlank()
-                    if (hasTraktArt && !item.metadataCleared) {
-                        viewModel.clearItemMetadata(item)
-                    } else {
-                        viewModel.openFolderAssign(item)
-                    }
-                } else if (NasPaths.isArchiveFile(item.entry.name)) {
-                    viewModel.openArchiveExtract(item)
-                } else if (item.metadataCleared) {
-                    viewModel.restoreItemMetadata(item)
-                } else {
-                    viewModel.clearItemMetadata(item)
-                }
-            }
+            onLongClickResult = { item -> viewModel.openItemOptions(item) }
+        )
+    }
+
+    itemOptions.item?.let { item ->
+        BrowserItemOptionsDialog(
+            item = item,
+            confirmingDelete = itemOptions.confirmingDelete,
+            onAssignMetadata = { viewModel.openFolderAssign(item) },
+            onClearIncludingContents = {
+                viewModel.clearItemMetadata(item, includeDescendants = true)
+            },
+            onClearFolderOnly = {
+                viewModel.clearItemMetadata(item, includeDescendants = false)
+            },
+            onClearOrRestoreMetadata = {
+                if (item.metadataCleared) viewModel.restoreItemMetadata(item)
+                else viewModel.clearItemMetadata(item)
+            },
+            onExtractArchive = { viewModel.openArchiveExtract(item) },
+            onRequestDelete = viewModel::requestDeleteFromOptions,
+            onConfirmDelete = viewModel::confirmDeleteItem,
+            onCancelDelete = viewModel::cancelDeleteFromOptions,
+            onDismiss = viewModel::dismissItemOptions,
+        )
+    }
+
+    folderClearOptions.folder?.let { folder ->
+        FolderClearOptionsDialog(
+            folder = folder,
+            onClearIncludingContents = {
+                viewModel.clearItemMetadata(folder, includeDescendants = true)
+            },
+            onClearFolderOnly = {
+                viewModel.clearItemMetadata(folder, includeDescendants = false)
+            },
+            onDismiss = viewModel::dismissFolderClearOptions,
         )
     }
 

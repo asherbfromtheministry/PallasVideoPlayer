@@ -63,9 +63,8 @@ class HttpNasRepository {
                     if (name.isBlank() || name == "." || name == "..") continue
                     val isDir = file.optBoolean("isdir", false)
                     val absPath = file.optString("path").trim('/')
-                    val relative = absPath
-                        .removePrefix(shareName.trim('/'))
-                        .trim('/')
+                    // DSM share casing can differ from the configured name (`Download` vs `download`).
+                    val relative = stripSharePrefix(absPath, shareName)
                     val size = file.optJSONObject("additional")?.optLong("size") ?: 0L
                     val entry = SmbEntry(
                         name = name,
@@ -118,6 +117,50 @@ class HttpNasRepository {
             val encodedSid = URLEncoder.encode(sid, Charsets.UTF_8.name())
             val base = baseUrl(settings)
             "$base/webapi/entry.cgi?api=SYNO.FileStation.Download&version=2&method=download&path=$encodedPath&_sid=$encodedSid"
+        }
+    }
+
+    /** Delete a file or folder via File Station (recursive for directories). */
+    suspend fun delete(
+        settings: AppSettings,
+        shareName: String,
+        relativePath: String,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val path = absoluteFolder(shareName, relativePath)
+            if (path.trim('/') == shareName.trim('/')) {
+                throw IllegalArgumentException("Refusing to delete share root")
+            }
+            val start = apiGet(
+                settings,
+                mapOf(
+                    "api" to "SYNO.FileStation.Delete",
+                    "version" to "2",
+                    "method" to "start",
+                    "path" to "[\"$path\"]",
+                    "recursive" to "true",
+                )
+            )
+            val taskId = start.optJSONObject("data")?.optString("taskid").orEmpty()
+            if (taskId.isBlank()) return@runCatching Unit
+            repeat(40) {
+                val status = apiGet(
+                    settings,
+                    mapOf(
+                        "api" to "SYNO.FileStation.Delete",
+                        "version" to "2",
+                        "method" to "status",
+                        "taskid" to taskId,
+                    )
+                )
+                val data = status.optJSONObject("data")
+                if (data?.optBoolean("finished", false) == true) {
+                    if (data.optBoolean("success", true)) return@runCatching Unit
+                    throw IllegalStateException("File Station delete failed")
+                }
+                Thread.sleep(250)
+            }
+            Unit
         }
     }
 
@@ -327,7 +370,22 @@ class HttpNasRepository {
 
     private fun absoluteFolder(shareName: String, path: String): String {
         val share = shareName.trim('/')
-        val relative = path.trim('/').replace('\\', '/')
+        // Paths from list() are share-relative; tolerate a duplicated/cased share prefix.
+        val relative = stripSharePrefix(path, share)
         return if (relative.isBlank()) "/$share" else "/$share/$relative"
+    }
+
+    companion object {
+        /** `/Download/Show` + share `download` → `Show` (case-insensitive). */
+        fun stripSharePrefix(path: String, shareName: String): String {
+            var p = path.trim('/').replace('\\', '/')
+            val share = shareName.trim('/')
+            if (share.isBlank() || p.isBlank()) return p
+            if (p.equals(share, ignoreCase = true)) return ""
+            if (p.startsWith("$share/", ignoreCase = true)) {
+                p = p.substring(share.length + 1).trim('/')
+            }
+            return p
+        }
     }
 }

@@ -7,11 +7,22 @@ import com.vizvag.shieldvideo.data.settings.ConnectionMode
 import com.vizvag.shieldvideo.data.smb.SmbEntry
 import com.vizvag.shieldvideo.data.smb.SmbRepository
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 class NasRepository(
     private val smbRepository: SmbRepository = SmbRepository(),
     private val httpRepository: HttpNasRepository = HttpNasRepository()
 ) {
+    /** Share-relative folder path → has playable media (session cache). */
+    private val playableFolderCache = ConcurrentHashMap<String, Boolean>()
+
     suspend fun listShares(settings: AppSettings): Result<List<String>> =
         when (settings.connectionMode) {
             ConnectionMode.HTTP -> httpRepository.listShares(settings)
@@ -51,31 +62,28 @@ class NasRepository(
         shareName: String,
         path: String
     ): Result<List<SmbEntry>> =
-        list(settings, shareName, path, allowedExtensions = emptySet())
-            .map { entries -> entries.filter { it.isDirectory } }
+        list(
+            settings,
+            shareName,
+            path,
+            allowedExtensions = emptySet(),
+            hideEmptyFolders = false,
+        ).map { entries -> entries.filter { it.isDirectory } }
 
+    /**
+     * @param hideEmptyFolders when true (browse UI), omit directories that have no video/archive
+     *   files and no descendant folders that do either.
+     */
     suspend fun list(
         settings: AppSettings,
         shareName: String,
         path: String,
-        allowedExtensions: Set<String>? = null
+        allowedExtensions: Set<String>? = null,
+        hideEmptyFolders: Boolean = true,
     ): Result<List<SmbEntry>> {
         val browseExts = allowedExtensions
             ?: (NasPaths.videoExtensions + NasPaths.archiveExtensions)
-        val listed = when (settings.connectionMode) {
-            ConnectionMode.SMB3 -> smbRepository.list(
-                settings,
-                shareName,
-                path,
-                browseExts,
-            )
-            ConnectionMode.HTTP -> httpRepository.list(
-                settings,
-                shareName,
-                path,
-                browseExts,
-            )
-        }
+        val listed = listRaw(settings, shareName, path, browseExts)
         return listed.map { entries ->
             val visible = when {
                 // Caller asked for a custom set (e.g. images / dirs-only) — leave as-is.
@@ -91,9 +99,121 @@ class NasRepository(
                             (!hasVideo && NasPaths.isArchiveFile(entry.name))
                     }
                 }
+            }.filterNot(::isIgnoredDirectory)
+
+            if (!hideEmptyFolders || allowedExtensions != null) {
+                visible
+            } else {
+                // Fresh check each browse so deletes/extracts update empty-folder visibility.
+                playableFolderCache.clear()
+                filterOutEmptyFolders(settings, shareName, visible)
             }
-            visible.filterNot(::isIgnoredDirectory)
         }
+    }
+
+    private suspend fun listRaw(
+        settings: AppSettings,
+        shareName: String,
+        path: String,
+        allowedExtensions: Set<String>,
+    ): Result<List<SmbEntry>> =
+        when (settings.connectionMode) {
+            ConnectionMode.SMB3 -> smbRepository.list(
+                settings,
+                shareName,
+                path,
+                allowedExtensions,
+            )
+            ConnectionMode.HTTP -> httpRepository.list(
+                settings,
+                shareName,
+                path,
+                allowedExtensions,
+            )
+        }
+
+    /**
+     * Keep files; keep folders only when they contain playable media or a descendant that does.
+     */
+    private suspend fun filterOutEmptyFolders(
+        settings: AppSettings,
+        shareName: String,
+        entries: List<SmbEntry>,
+    ): List<SmbEntry> = coroutineScope {
+        val files = entries.filter { !it.isDirectory }
+        val dirs = entries.filter { it.isDirectory }
+        if (dirs.isEmpty()) return@coroutineScope entries
+
+        val gate = Semaphore(6)
+        val keepPaths = dirs.map { dir ->
+            async(Dispatchers.IO) {
+                gate.withPermit {
+                    val keep = folderHasPlayableMedia(settings, shareName, dir.path, depth = 0)
+                    if (keep) dir.path else null
+                }
+            }
+        }.awaitAll().filterNotNull().toHashSet()
+
+        files + dirs.filter { it.path in keepPaths }
+    }
+
+    private suspend fun folderHasPlayableMedia(
+        settings: AppSettings,
+        shareName: String,
+        folderPath: String,
+        depth: Int,
+    ): Boolean {
+        val cacheKey = "${settings.connectionMode}|${shareName.lowercase()}|${folderPath.lowercase()}"
+        playableFolderCache[cacheKey]?.let { return it }
+
+        // Deep unknown trees: keep visible rather than hide a large library mid-scan.
+        if (depth >= MAX_EMPTY_FOLDER_DEPTH) {
+            playableFolderCache[cacheKey] = true
+            return true
+        }
+
+        val browseExts = NasPaths.videoExtensions + NasPaths.archiveExtensions
+        val children = listRaw(settings, shareName, folderPath, browseExts)
+            .getOrNull()
+            ?.filterNot(::isIgnoredDirectory)
+            ?: run {
+                // Listing failed — keep the folder so browse is not over-aggressive.
+                playableFolderCache[cacheKey] = true
+                return true
+            }
+
+        if (children.any { !it.isDirectory && isPlayableBrowseFile(it.name) }) {
+            playableFolderCache[cacheKey] = true
+            return true
+        }
+
+        val subdirs = children.filter { it.isDirectory }
+        if (subdirs.isEmpty()) {
+            playableFolderCache[cacheKey] = false
+            return false
+        }
+
+        // Short-circuit on first hit; check a few in parallel for latency.
+        val gate = Semaphore(4)
+        val found = coroutineScope {
+            subdirs.map { sub ->
+                async(Dispatchers.IO) {
+                    gate.withPermit {
+                        folderHasPlayableMedia(settings, shareName, sub.path, depth + 1)
+                    }
+                }
+            }.awaitAll().any { it }
+        }
+        playableFolderCache[cacheKey] = found
+        return found
+    }
+
+    private fun isPlayableBrowseFile(name: String): Boolean =
+        (NasPaths.isVideoFile(name) && !NasPaths.isProgressSidecar(name)) ||
+            NasPaths.isArchiveFile(name)
+
+    companion object {
+        private const val MAX_EMPTY_FOLDER_DEPTH = 5
     }
 
     /**
@@ -120,6 +240,23 @@ class NasRepository(
             relativeArchivePath = relativeArchivePath,
             onProgress = onProgress,
         )
+    }
+
+    /** Delete a file or folder on the NAS (recursive for directories). */
+    suspend fun deleteEntry(
+        settings: AppSettings,
+        shareName: String,
+        relativePath: String,
+        isDirectory: Boolean,
+    ): Result<Unit> {
+        val path = relativePath.trim('/').replace('\\', '/')
+        if (path.isBlank()) {
+            return Result.failure(IllegalArgumentException("Refusing to delete share root"))
+        }
+        return when (settings.connectionMode) {
+            ConnectionMode.SMB3 -> smbRepository.delete(settings, shareName, path, isDirectory)
+            ConnectionMode.HTTP -> httpRepository.delete(settings, shareName, path)
+        }
     }
 
     suspend fun playbackUri(
@@ -158,7 +295,7 @@ class NasRepository(
 
             while (queue.isNotEmpty()) {
                 val (path, depth) = queue.removeFirst()
-                val listed = list(settings, share, path).getOrNull() ?: continue
+                val listed = list(settings, share, path, hideEmptyFolders = false).getOrNull() ?: continue
                 for (entry in listed) {
                     val key = "$share/${entry.path}".lowercase()
                     if (!seen.add(key)) continue
@@ -211,7 +348,7 @@ class NasRepository(
 
                 while (queue.isNotEmpty() && hits.size < maxResults) {
                     val (path, depth) = queue.removeFirst()
-                    val listed = list(settings, share, path).getOrNull() ?: continue
+                    val listed = list(settings, share, path, hideEmptyFolders = false).getOrNull() ?: continue
                     for (entry in listed) {
                         if (hits.size >= maxResults) break
                         val key = "$share/${entry.path}".lowercase()

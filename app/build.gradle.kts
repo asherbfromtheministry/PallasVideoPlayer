@@ -24,8 +24,8 @@ android {
         applicationId = "com.vizvag.shieldvideo"
         minSdk = 28
         targetSdk = 34
-        versionCode = 200
-        versionName = "2.4.84"
+        versionCode = 224
+        versionName = "2.5.8"
 
         // Personalized defaults from personal.defaults.properties when present.
         // The "clean" build type blanks every one so a distributable APK ships
@@ -37,10 +37,12 @@ android {
         buildConfigField("String", "DEFAULT_NAS_HOST", "\"${personal("DEFAULT_NAS_HOST")}\"")
         buildConfigField("String", "DEFAULT_NAS_USER", "\"${personal("DEFAULT_NAS_USER")}\"")
         buildConfigField("String", "DEFAULT_HA_WEBHOOK", "\"${personal("DEFAULT_HA_WEBHOOK")}\"")
+        buildConfigField("String", "DEFAULT_HUE_BRIDGE_IP", "\"${personal("DEFAULT_HUE_BRIDGE_IP")}\"")
         buildConfigField("String", "DEFAULT_TRAKT_USERNAME", "\"${personal("DEFAULT_TRAKT_USERNAME")}\"")
         buildConfigField("String", "DEFAULT_BACKGROUND_FOLDER", "\"${personal("DEFAULT_BACKGROUND_FOLDER")}\"")
         buildConfigField("String", "DEFAULT_IPTV_M3U", "\"${personal("DEFAULT_IPTV_M3U")}\"")
         buildConfigField("String", "DEFAULT_IPTV_EPG", "\"${personal("DEFAULT_IPTV_EPG")}\"")
+        buildConfigField("String", "DEFAULT_IPTV_EPG_AI_KEY", "\"${personal("DEFAULT_IPTV_EPG_AI_KEY")}\"")
         buildConfigField("String", "DEFAULT_MUSIC_PATH", "\"${personal("DEFAULT_MUSIC_PATH", "/music")}\"")
     }
 
@@ -66,10 +68,12 @@ android {
             buildConfigField("String", "DEFAULT_NAS_HOST", "\"\"")
             buildConfigField("String", "DEFAULT_NAS_USER", "\"\"")
             buildConfigField("String", "DEFAULT_HA_WEBHOOK", "\"\"")
+            buildConfigField("String", "DEFAULT_HUE_BRIDGE_IP", "\"\"")
             buildConfigField("String", "DEFAULT_TRAKT_USERNAME", "\"\"")
             buildConfigField("String", "DEFAULT_BACKGROUND_FOLDER", "\"\"")
             buildConfigField("String", "DEFAULT_IPTV_M3U", "\"\"")
             buildConfigField("String", "DEFAULT_IPTV_EPG", "\"\"")
+            buildConfigField("String", "DEFAULT_IPTV_EPG_AI_KEY", "\"\"")
             buildConfigField("String", "DEFAULT_MUSIC_PATH", "\"\"")
         }
     }
@@ -128,10 +132,14 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("net.jthink:jaudiotagger:3.0.1")
 
-    val media3 = "1.4.1"
+    val media3 = "1.5.0"
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
+    implementation("androidx.media3:media3-exoplayer-dash:$media3")
     implementation("androidx.media3:media3-ui:$media3")
+    implementation("androidx.media3:media3-transformer:$media3")
+    // Software AC-3 / E-AC-3 / DTS when the device has no hardware decoder (Chromecast, etc.).
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.5.0+1")
 
     testImplementation("junit:junit:4.13.2")
 

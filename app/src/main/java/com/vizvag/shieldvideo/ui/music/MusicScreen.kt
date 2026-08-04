@@ -41,16 +41,23 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Brightness2
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Search
@@ -59,7 +66,10 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -96,8 +106,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.style.TextAlign
@@ -116,9 +129,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.vizvag.shieldvideo.ShieldVideoApp
 import com.vizvag.shieldvideo.music.MusicViewModelFactory
+import com.vizvag.shieldvideo.music.data.SearchResults
 import com.vizvag.shieldvideo.music.data.local.AlbumWithArtist
 import com.vizvag.shieldvideo.music.data.local.ArtistEntity
 import com.vizvag.shieldvideo.music.data.local.TrackEntity
+import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.music.data.lyrics.LyricLine
 import com.vizvag.shieldvideo.music.data.lyrics.LrcParser
 import com.vizvag.shieldvideo.music.data.metadata.MetadataResolver
@@ -128,9 +143,9 @@ import com.vizvag.shieldvideo.music.ui.AlbumArt
 import com.vizvag.shieldvideo.music.ui.viewmodel.MusicViewModel
 import com.vizvag.shieldvideo.music.data.settings.NasSettings
 import com.vizvag.shieldvideo.ui.components.IconActionButton
-import com.vizvag.shieldvideo.ui.components.SleepTimerButton
 import com.vizvag.shieldvideo.ui.browser.AppWithNavRail
 import com.vizvag.shieldvideo.ui.browser.RailDestination
+import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.data.nas.NasPaths
@@ -138,6 +153,7 @@ import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.ui.theme.AudioAccent
 import com.vizvag.shieldvideo.ui.theme.AudioAccentWarm
 import com.vizvag.shieldvideo.ui.theme.AppBackground
+import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import com.vizvag.shieldvideo.ui.theme.AudioScreenTheme
@@ -186,6 +202,7 @@ fun MusicScreen(
     onOpenBrowser: () -> Unit = onBack,
     onSelectShare: (String) -> Unit = {},
     onOpenLiveTv: () -> Unit = {},
+    onOpenYouTube: () -> Unit = {},
     onOpenRadio: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
@@ -198,6 +215,7 @@ fun MusicScreen(
                 onOpenBrowser = onOpenBrowser,
                 onSelectShare = onSelectShare,
                 onOpenLiveTv = onOpenLiveTv,
+                onOpenYouTube = onOpenYouTube,
                 onOpenRadio = onOpenRadio,
                 onOpenSettings = onOpenSettings,
             )
@@ -213,6 +231,7 @@ private fun ImmersiveMusicScreen(
     onOpenBrowser: () -> Unit,
     onSelectShare: (String) -> Unit,
     onOpenLiveTv: () -> Unit,
+    onOpenYouTube: () -> Unit,
     onOpenRadio: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -224,11 +243,13 @@ private fun ImmersiveMusicScreen(
 
     val settings by viewModel.settings.collectAsState()
     val playerState by viewModel.playerState.collectAsState()
+    val controllingRemote by viewModel.controllingRemote.collectAsState()
     val coverUrl by viewModel.coverUrl.collectAsState()
     val trackArtUrl by viewModel.trackArtUrl.collectAsState()
     val trackTags by viewModel.trackTags.collectAsState()
     val queue by viewModel.queue.collectAsState()
     val queueIndex by viewModel.queueIndex.collectAsState()
+    val playlistCovers by viewModel.playlistCoverCache.collectAsState()
     val artists by viewModel.artists.collectAsState()
     val albums by viewModel.albums.collectAsState()
     val tracks by viewModel.tracks.collectAsState()
@@ -237,16 +258,23 @@ private fun ImmersiveMusicScreen(
     val lyrics by viewModel.lyrics.collectAsState()
     val lyricsPath by viewModel.lyricsPath.collectAsState()
     val lyricsVisible by viewModel.lyricsVisible.collectAsState()
+    val lyricsStatus by viewModel.lyricsStatus.collectAsState()
     val artDetails by viewModel.artDetails.collectAsState()
+    val hueSyncReady by viewModel.hueSyncReady.collectAsState()
+    val hueSyncEnabled by viewModel.hueSyncEnabled.collectAsState()
 
     var panel by remember { mutableStateOf(Panel.None) }
-    var browseMode by remember { mutableStateOf(BrowseMode.Artists) }
+    var browseMode by remember { mutableStateOf(BrowseMode.Folders) }
     var folderPath by remember { mutableStateOf<String?>(null) }
     var screenBlack by remember { mutableStateOf(false) }
+    var searchOpen by remember { mutableStateOf(false) }
+    var searchAddTarget by remember { mutableStateOf<BrowseAddTarget?>(null) }
     val browseFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
     val blackFocus = remember { FocusRequester() }
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val searchResults by viewModel.searchResults.collectAsState()
 
     val musicPaths = remember(settings.musicPaths) {
         NasSettings.normalizePaths(settings.musicPaths)
@@ -265,6 +293,8 @@ private fun ImmersiveMusicScreen(
     var albumTitleFilter by remember { mutableStateOf<String?>(null) }
     /** Albums that include this performer (track artist), when they're not a library artist row. */
     var performerAlbumFilter by remember { mutableStateOf<String?>(null) }
+    /** Albums credited to this album artist (player album-artist click). */
+    var albumArtistAlbumFilter by remember { mutableStateOf<String?>(null) }
     /** Songs matching this title (player / radio track-name click). */
     var songTitleFilter by remember { mutableStateOf<String?>(null) }
     /** Artists matching this name (radio artist click). */
@@ -300,37 +330,69 @@ private fun ImmersiveMusicScreen(
         }
     }
 
+    fun openBrowsePanel() {
+        searchOpen = false
+        if (artistDrill == null &&
+            albumYearFilter == null &&
+            albumTitleFilter == null &&
+            performerAlbumFilter == null &&
+            albumArtistAlbumFilter == null &&
+            songTitleFilter == null &&
+            artistNameFilter == null
+        ) {
+            browseMode = BrowseMode.Folders
+        }
+        panel = Panel.Browse
+    }
+
+    fun openQueuePanel() {
+        searchOpen = false
+        panel = Panel.Queue
+    }
+
+    fun openSearchPanel() {
+        panel = Panel.None
+        searchOpen = true
+    }
+
     fun openBrowseArtist(artist: ArtistEntity) {
+        searchOpen = false
         browseMode = BrowseMode.Artists
         artistDrill = artist
         albumYearFilter = null
         albumTitleFilter = null
         performerAlbumFilter = null
+        albumArtistAlbumFilter = null
         songTitleFilter = null
         artistNameFilter = null
         panel = Panel.Browse
     }
 
     fun openBrowseYear(year: Int) {
+        searchOpen = false
         browseMode = BrowseMode.Albums
         artistDrill = null
         albumYearFilter = year
         albumTitleFilter = null
         performerAlbumFilter = null
+        albumArtistAlbumFilter = null
         songTitleFilter = null
         artistNameFilter = null
         panel = Panel.Browse
     }
 
-    fun openBrowseAlbum(albumTitle: String) {
+    fun openBrowseAlbum(albumTitle: String, artistName: String? = null) {
         val name = albumTitle.trim()
         if (name.isEmpty()) return
-        android.util.Log.i("PallasMusic", "openBrowseAlbum query='$name'")
+        val artist = artistName?.trim()?.takeIf { it.isNotEmpty() && !isVariousArtistsName(it) }
+        android.util.Log.i("PallasMusic", "openBrowseAlbum query='$name' artist='${artist.orEmpty()}'")
+        searchOpen = false
         browseMode = BrowseMode.Albums
         artistDrill = null
         albumYearFilter = null
         albumTitleFilter = name
         performerAlbumFilter = null
+        albumArtistAlbumFilter = artist
         songTitleFilter = null
         artistNameFilter = null
         panel = Panel.Browse
@@ -340,11 +402,28 @@ private fun ImmersiveMusicScreen(
         val name = performer.trim()
         if (name.isEmpty() || isVariousArtistsName(name)) return
         android.util.Log.i("PallasMusic", "openBrowsePerformer query='$name'")
+        searchOpen = false
         browseMode = BrowseMode.Albums
         artistDrill = null
         albumYearFilter = null
         albumTitleFilter = null
         performerAlbumFilter = name
+        albumArtistAlbumFilter = null
+        songTitleFilter = null
+        artistNameFilter = null
+        panel = Panel.Browse
+    }
+
+    fun openBrowseAlbumArtist(albumArtist: String) {
+        val name = albumArtist.trim()
+        if (name.isEmpty() || isVariousArtistsName(name)) return
+        searchOpen = false
+        browseMode = BrowseMode.Albums
+        artistDrill = null
+        albumYearFilter = null
+        albumTitleFilter = null
+        performerAlbumFilter = null
+        albumArtistAlbumFilter = name
         songTitleFilter = null
         artistNameFilter = null
         panel = Panel.Browse
@@ -354,11 +433,13 @@ private fun ImmersiveMusicScreen(
         val name = songTitle.trim()
         if (name.isEmpty()) return
         android.util.Log.i("PallasMusic", "openBrowseSongTitle query='$name'")
+        searchOpen = false
         browseMode = BrowseMode.Albums
         artistDrill = null
         albumYearFilter = null
         albumTitleFilter = null
         performerAlbumFilter = null
+        albumArtistAlbumFilter = null
         songTitleFilter = name
         artistNameFilter = null
         panel = Panel.Browse
@@ -368,24 +449,38 @@ private fun ImmersiveMusicScreen(
         val name = artistName.trim()
         if (name.isEmpty() || isVariousArtistsName(name)) return
         android.util.Log.i("PallasMusic", "openBrowseArtistName query='$name'")
+        searchOpen = false
         browseMode = BrowseMode.Artists
         artistDrill = null
         albumYearFilter = null
         albumTitleFilter = null
         performerAlbumFilter = null
+        albumArtistAlbumFilter = null
         songTitleFilter = null
         artistNameFilter = name
         panel = Panel.Browse
     }
 
+    fun openSearch(query: String) {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        if (q.equals("Nothing playing", ignoreCase = true)) return
+        if (q.equals("Browse to start listening", ignoreCase = true)) return
+        if (q.equals("Unknown artist", ignoreCase = true)) return
+        if (MetadataResolver.isPlaceholderArtist(q)) return
+        openSearchPanel()
+        viewModel.search(q)
+    }
+
     // Consume Radio→Music handoffs when Music becomes active.
     LaunchedEffect(Unit) {
-        MusicNavRequests.takeArtist()?.let { openBrowseArtistName(it) }
-        MusicNavRequests.takeTrack()?.let { openBrowseSongTitle(it) }
+        MusicNavRequests.takeSearch()?.let { openSearch(it) }
     }
 
     fun leave() {
-        viewModel.stopPlayback()
+        if (!viewModel.isRemoteSession()) {
+            viewModel.stopPlayback()
+        }
         onBack()
     }
 
@@ -398,35 +493,58 @@ private fun ImmersiveMusicScreen(
             onVolume = { viewModel.playerController.player.volume = it },
             onStop = {
                 screenBlack = false
-                viewModel.playerController.stop()
+                if (!viewModel.isRemoteSession()) {
+                    viewModel.playerController.stop()
+                }
             },
         )
         onDispose {
             app.sleepTimer.unbindPlayback()
-            viewModel.stopPlayback()
+            // Do not stopPlayback here — remounts (e.g. remote nav) were killing audio.
+            // ON_STOP / leave() enforce quit = silence.
         }
     }
 
-    DisposableEffect(lifecycleOwner) {
+    // Keep screen on only while *this* device is playing music locally — never for remote control.
+    val keepScreenOnLocal = controllingRemote == null && playerState.isPlaying
+    DisposableEffect(lifecycleOwner, view, keepScreenOnLocal) {
+        val window = (view.context as? android.app.Activity)?.window
+        if (keepScreenOnLocal) {
+            window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            view.keepScreenOn = true
+        } else {
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            view.keepScreenOn = false
+        }
         val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> view.keepScreenOn = true
-                Lifecycle.Event.ON_PAUSE -> view.keepScreenOn = false
-                Lifecycle.Event.ON_STOP -> viewModel.stopPlayback()
-                else -> Unit
+            if (event == Lifecycle.Event.ON_STOP) {
+                window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                view.keepScreenOn = false
+                // Don't stop the TV when this tablet Music UI backgrounds.
+                if (!viewModel.isRemoteSession()) {
+                    viewModel.stopPlayback()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             view.keepScreenOn = false
-            viewModel.stopPlayback()
         }
     }
 
     BackHandler(enabled = !modalBlocksBack()) {
         when {
             screenBlack -> screenBlack = false
+            searchOpen -> {
+                if (searchAddTarget != null) {
+                    searchAddTarget = null
+                } else {
+                    searchOpen = false
+                    viewModel.clearSearch()
+                }
+            }
             infoOpen -> infoOpen = false
             confirmLeave -> confirmLeave = false
             panel == Panel.Browse && artistDrill != null -> artistDrill = null
@@ -470,12 +588,14 @@ private fun ImmersiveMusicScreen(
             onSelectShare = onSelectShare,
             recordingFolder = recordingFolder,
             onLiveTv = onOpenLiveTv,
+            onYouTube = onOpenYouTube,
             onRadio = onOpenRadio,
             onMusic = {},
             sleepTimerActive = sleepState.active,
             sleepTimerLabel = sleepState.label,
             onCycleSleepTimer = app.sleepTimer::cycle,
             onSettings = onOpenSettings,
+            players = RailPlayerVisibility.from(appSettings),
         ) {
             Box(
                 modifier = Modifier.fillMaxSize().background(AppBackground),
@@ -499,6 +619,7 @@ private fun ImmersiveMusicScreen(
         onSelectShare = onSelectShare,
         recordingFolder = recordingFolder,
         onLiveTv = onOpenLiveTv,
+        onYouTube = onOpenYouTube,
         onRadio = onOpenRadio,
         onMusic = {},
         sleepTimerActive = sleepState.active,
@@ -507,6 +628,7 @@ private fun ImmersiveMusicScreen(
         onSettings = onOpenSettings,
         showRail = !screenBlack,
         railFocusEnabled = panel == Panel.None && !screenBlack,
+        players = RailPlayerVisibility.from(appSettings),
     ) {
     Box(modifier = Modifier.fillMaxSize().background(AppBackground)) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -536,6 +658,7 @@ private fun ImmersiveMusicScreen(
                             albumYearFilter = null
                             albumTitleFilter = null
                             performerAlbumFilter = null
+                            albumArtistAlbumFilter = null
                             songTitleFilter = null
                             artistNameFilter = null
                             browseMode = it
@@ -572,13 +695,22 @@ private fun ImmersiveMusicScreen(
                         folderScrollPositions = folderScrollPositions,
                         folderReturnFocus = folderReturnFocus,
                         artistDrill = artistDrill,
-                        onArtistDrill = { artistDrill = it },
+                        onArtistDrill = { artist ->
+                            when {
+                                artist == null -> artistDrill = null
+                                artist.id.startsWith("performer:") ->
+                                    openBrowsePerformer(artist.name)
+                                else -> artistDrill = artist
+                            }
+                        },
                         albumYearFilter = albumYearFilter,
                         onClearAlbumYearFilter = { albumYearFilter = null },
                         albumTitleFilter = albumTitleFilter,
                         onClearAlbumTitleFilter = { albumTitleFilter = null },
                         performerAlbumFilter = performerAlbumFilter,
                         onClearPerformerAlbumFilter = { performerAlbumFilter = null },
+                        albumArtistAlbumFilter = albumArtistAlbumFilter,
+                        onClearAlbumArtistAlbumFilter = { albumArtistAlbumFilter = null },
                         songTitleFilter = songTitleFilter,
                         onClearSongTitleFilter = { songTitleFilter = null },
                         artistNameFilter = artistNameFilter,
@@ -668,84 +800,25 @@ private fun ImmersiveMusicScreen(
                         )
                     }
 
-                    fun resolvePlayingArtist(): ArtistEntity? {
-                        val track = playing ?: return null
-                        // What the user clicked on screen (track artist), never albumArtist first.
-                        val wanted = sequenceOf(
-                            display.artist,
-                            trackTags?.artist,
-                            track.artistName,
-                        ).mapNotNull { it?.trim()?.takeIf { n -> n.isNotBlank() } }
-                            .firstOrNull { !MetadataResolver.isPlaceholderArtist(it) }
-
-                        if (wanted != null && !isVariousArtistsName(wanted)) {
-                            artists.firstOrNull { it.name.equals(wanted, ignoreCase = true) }
-                                ?.let { return it }
-                            artists.firstOrNull {
-                                it.name.startsWith(wanted, ignoreCase = true) ||
-                                    wanted.startsWith(it.name, ignoreCase = true)
-                            }?.let { return it }
-                        }
-
-                        val byId = artists.firstOrNull { it.id == track.artistId }
-                        if (byId != null) {
-                            // Motown comps: artistId is Often "Various Artists" while UI shows Diana Ross.
-                            if (wanted != null &&
-                                isVariousArtistsName(byId.name) &&
-                                !byId.name.equals(wanted, ignoreCase = true)
-                            ) {
-                                return null
-                            }
-                            return byId
-                        }
-                        return libraryAlbum?.let { album ->
-                            artists.firstOrNull { it.id == album.artistId }
-                                ?.takeUnless {
-                                    wanted != null &&
-                                        isVariousArtistsName(it.name) &&
-                                        !it.name.equals(wanted, ignoreCase = true)
-                                }
-                        }
+                    fun openSearchFromPlayer(query: String) {
+                        openSearch(query)
                     }
 
                     fun openArtistFromPlayer() {
-                        val wanted = display.artist.trim().takeIf { it.isNotBlank() }
-                            ?.takeUnless { MetadataResolver.isPlaceholderArtist(it) }
-                            ?: return
-                        if (isVariousArtistsName(wanted)) {
-                            resolvePlayingArtist()?.let { openBrowseArtist(it) }
-                            return
-                        }
-                        resolvePlayingArtist()?.let {
-                            openBrowseArtist(it)
-                            return
-                        }
-                        // Performer only appears on comps — still open their albums, not VA.
-                        openBrowsePerformer(wanted)
+                        val wanted = display.artist.trim().takeIf { it.isNotBlank() } ?: return
+                        openSearchFromPlayer(wanted)
                     }
 
                     fun openAlbumArtistFromPlayer() {
-                        val wanted = albumArtistLine?.trim()?.takeIf { it.isNotBlank() }
-                            ?.takeUnless { MetadataResolver.isPlaceholderArtist(it) }
-                            ?: return
-                        if (isVariousArtistsName(wanted)) {
-                            openBrowsePerformer(wanted)
-                            return
-                        }
-                        artists.firstOrNull { it.name.equals(wanted, ignoreCase = true) }
-                            ?.let {
-                                openBrowseArtist(it)
-                                return
-                            }
-                        openBrowseArtistName(wanted)
+                        val wanted = albumArtistLine?.trim()?.takeIf { it.isNotBlank() } ?: return
+                        openSearchFromPlayer(wanted)
                     }
 
                     fun openAlbumFromPlayer() {
-                        // Search for the label on screen — not libraryAlbum.title (often = track name).
                         val albumName = display.albumTitle?.trim()?.takeIf { it.isNotBlank() }
                             ?: return
                         if (albumName.equals(display.title, ignoreCase = true)) return
-                        openBrowseAlbum(albumName)
+                        openSearchFromPlayer(albumName)
                     }
 
                     fun openYearFromPlayer() {
@@ -755,8 +828,7 @@ private fun ImmersiveMusicScreen(
 
                     fun openTitleFromPlayer() {
                         val name = display.title.trim().takeIf { it.isNotBlank() } ?: return
-                        if (name.equals("Nothing playing", ignoreCase = true)) return
-                        openBrowseSongTitle(name)
+                        openSearchFromPlayer(name)
                     }
 
                     val formatBadge = remember(playing?.nasPath, playing?.mimeType, trackTags?.codec) {
@@ -793,8 +865,11 @@ private fun ImmersiveMusicScreen(
                         formatBadge = formatBadge,
                         lyrics = lyrics,
                         lyricsVisible = lyricsVisible,
-                        controlsEnabled = panel == Panel.None && !infoOpen && !confirmLeave,
-                        metaEnabled = playing != null && !infoOpen && !confirmLeave,
+                        lyricsStatus = lyricsStatus,
+                        onAcceptOnlineLyrics = viewModel::acceptOnlineLyrics,
+                        onDeclineOnlineLyrics = viewModel::declineOnlineLyrics,
+                        controlsEnabled = panel == Panel.None && !infoOpen && !confirmLeave && !searchOpen,
+                        metaEnabled = playing != null && !infoOpen && !confirmLeave && !searchOpen,
                         playFocusRequester = playFocus,
                         onTogglePlay = viewModel::togglePlayPause,
                         onPrev = viewModel::skipPrevious,
@@ -808,8 +883,10 @@ private fun ImmersiveMusicScreen(
                         onYearClick = ::openYearFromPlayer,
                     )
 
-                    // Chrome lives on the player pane so it shifts with Browse/Queue panels
-                    val chromeFocusable = panel == Panel.None
+                    // Chrome lives on the player pane so it shifts with Browse/Queue panels.
+                    // Icons stay enabled so Search / Browse / Queue can switch each other.
+                    val chromeFocusable = panel == Panel.None && !searchOpen
+                    val chromeIconsEnabled = !infoOpen && !confirmLeave
                     Row(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -866,14 +943,36 @@ private fun ImmersiveMusicScreen(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             IconActionButton(
-                                selected = panel == Panel.Browse,
-                                enabled = chromeFocusable,
+                                selected = searchOpen,
+                                enabled = chromeIconsEnabled,
                                 onClick = {
-                                    panel = if (panel == Panel.Browse) Panel.None else Panel.Browse
+                                    if (searchOpen) {
+                                        searchOpen = false
+                                    } else {
+                                        openSearchPanel()
+                                    }
                                 },
                             ) {
                                 Icon(
                                     Icons.Filled.Search,
+                                    "Search",
+                                    tint = if (searchOpen) chrome.accent else Color.White,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
+                            IconActionButton(
+                                selected = panel == Panel.Browse,
+                                enabled = chromeIconsEnabled,
+                                onClick = {
+                                    if (panel == Panel.Browse) {
+                                        panel = Panel.None
+                                    } else {
+                                        openBrowsePanel()
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    Icons.Filled.LibraryMusic,
                                     "Browse",
                                     tint = if (panel == Panel.Browse) chrome.accent else Color.White,
                                     modifier = Modifier.size(24.dp),
@@ -881,29 +980,66 @@ private fun ImmersiveMusicScreen(
                             }
                             IconActionButton(
                                 selected = panel == Panel.Queue,
-                                enabled = chromeFocusable,
+                                enabled = chromeIconsEnabled,
                                 onClick = {
-                                    panel = if (panel == Panel.Queue) Panel.None else Panel.Queue
+                                    if (panel == Panel.Queue) {
+                                        panel = Panel.None
+                                    } else {
+                                        openQueuePanel()
+                                    }
                                 },
                             ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.QueueMusic,
-                                    "Queue",
-                                    tint = if (panel == Panel.Queue) chrome.accent else Color.White,
-                                    modifier = Modifier.size(24.dp),
-                                )
+                                val queueCount = queue.size
+                                val trackPos = if (queueCount == 0) 0
+                                else (queueIndex + 1).coerceIn(1, queueCount)
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.QueueMusic,
+                                        "Queue",
+                                        tint = if (panel == Panel.Queue) chrome.accent else Color.White,
+                                        modifier = Modifier.size(if (queueCount > 0) 20.dp else 24.dp),
+                                    )
+                                    if (queueCount > 0) {
+                                        Text(
+                                            text = "$trackPos/$queueCount",
+                                            color = if (panel == Panel.Queue) {
+                                                chrome.accent.copy(alpha = 0.85f)
+                                            } else {
+                                                Color.White.copy(alpha = 0.5f)
+                                            },
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            letterSpacing = (-0.3).sp,
+                                            maxLines = 1,
+                                            lineHeight = 10.sp,
+                                        )
+                                    }
+                                }
                             }
-                            IconActionButton(
-                                selected = lyricsVisible,
-                                enabled = chromeFocusable,
-                                onClick = viewModel::toggleLyrics,
-                            ) {
-                                Icon(
-                                    Icons.Filled.Lyrics,
-                                    "Lyrics",
-                                    tint = if (lyricsVisible) chrome.accent else Color.White,
-                                    modifier = Modifier.size(24.dp),
-                                )
+                            run {
+                                val hasLyrics = lyrics.isNotEmpty()
+                                val lyricsBusy = lyricsStatus == MusicViewModel.LyricsStatus.Loading ||
+                                    lyricsStatus == MusicViewModel.LyricsStatus.FetchingOnline ||
+                                    lyricsStatus == MusicViewModel.LyricsStatus.OfferOnline
+                                IconActionButton(
+                                    selected = lyricsVisible && (hasLyrics || lyricsBusy),
+                                    enabled = chromeFocusable,
+                                    onClick = viewModel::toggleLyrics,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Lyrics,
+                                        "Lyrics",
+                                        tint = when {
+                                            lyricsVisible -> chrome.accent
+                                            hasLyrics || lyricsBusy -> Color.White
+                                            else -> Color(0xFF6E6E72)
+                                        },
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                }
                             }
                             IconActionButton(
                                 selected = infoOpen,
@@ -917,12 +1053,20 @@ private fun ImmersiveMusicScreen(
                                     modifier = Modifier.size(24.dp),
                                 )
                             }
-                            SleepTimerButton(
-                                active = sleepState.active,
-                                label = sleepState.label,
-                                onCycle = app.sleepTimer::cycle,
-                                enabled = chromeFocusable,
-                            )
+                            if (hueSyncReady) {
+                                IconActionButton(
+                                    selected = hueSyncEnabled,
+                                    enabled = chromeFocusable,
+                                    onClick = viewModel::toggleHueSync,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Lightbulb,
+                                        if (hueSyncEnabled) "Hue sync on" else "Hue sync off",
+                                        tint = if (hueSyncEnabled) chrome.accent else Color.White,
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                }
+                            }
                             IconActionButton(
                                 selected = false,
                                 enabled = chromeFocusable,
@@ -957,14 +1101,14 @@ private fun ImmersiveMusicScreen(
                         positionMs = playerState.positionMs,
                         durationMs = playerState.durationMs.takeIf { it > 0 }
                             ?: playerState.track?.durationMs ?: 0L,
-                        nowPlayingAlbumArt = coverUrl,
-                        resolveCoverUrl = viewModel::resolveLocalCoverModel,
+                        coverCache = playlistCovers,
+                        resolveTrackDuration = viewModel::resolveQueueTrackDuration,
                         onPlayIndex = viewModel::playQueueIndex,
                         onRemove = viewModel::removeFromPlaylist,
                         onMove = viewModel::movePlaylistItem,
                         onShuffle = viewModel::shufflePlaylist,
                         onClear = viewModel::clearPlaylist,
-                        onBrowse = { panel = Panel.Browse },
+                        onBrowse = ::openBrowsePanel,
                         onClose = { panel = Panel.None },
                         listFocusRequester = queueFocus,
                         modifier = Modifier
@@ -1001,6 +1145,77 @@ private fun ImmersiveMusicScreen(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 100.dp),
+            )
+        }
+
+        if (searchOpen) {
+            MusicSearchOverlay(
+                query = searchQuery,
+                results = searchResults,
+                onQueryChange = viewModel::search,
+                onClose = {
+                    searchOpen = false
+                    searchAddTarget = null
+                    viewModel.clearSearch()
+                },
+                onPlayArtist = { artist ->
+                    searchAddTarget = BrowseAddTarget.Artist(artist)
+                },
+                onOpenArtist = { artist ->
+                    searchOpen = false
+                    searchAddTarget = null
+                    viewModel.clearSearch()
+                    if (artist.id.startsWith("performer:")) {
+                        openBrowsePerformer(artist.name)
+                    } else {
+                        openBrowseArtist(artist)
+                    }
+                },
+                onPlayAlbum = { album ->
+                    searchAddTarget = BrowseAddTarget.Album(album.albumId, album.title)
+                },
+                onOpenAlbum = { album ->
+                    searchOpen = false
+                    searchAddTarget = null
+                    viewModel.clearSearch()
+                    openBrowseAlbum(album.title, album.artistName)
+                },
+                onPlayTrack = { track ->
+                    searchAddTarget = BrowseAddTarget.Track(track)
+                },
+            )
+        }
+
+        searchAddTarget?.let { target ->
+            PlaylistAddSheet(
+                title = target.label,
+                onReplace = {
+                    when (target) {
+                        is BrowseAddTarget.Artist ->
+                            viewModel.addArtistToPlaylist(target.artist, replace = true)
+                        is BrowseAddTarget.Album ->
+                            viewModel.addAlbumToPlaylist(target.albumId, replace = true)
+                        is BrowseAddTarget.Track ->
+                            viewModel.addTrackToPlaylist(target.track, replace = true)
+                        else -> Unit
+                    }
+                    searchAddTarget = null
+                    searchOpen = false
+                    viewModel.clearSearch()
+                },
+                onAppend = {
+                    when (target) {
+                        is BrowseAddTarget.Artist ->
+                            viewModel.addArtistToPlaylist(target.artist, replace = false)
+                        is BrowseAddTarget.Album ->
+                            viewModel.addAlbumToPlaylist(target.albumId, replace = false)
+                        is BrowseAddTarget.Track ->
+                            viewModel.addTrackToPlaylist(target.track, replace = false)
+                        else -> Unit
+                    }
+                    searchAddTarget = null
+                },
+                onDismiss = { searchAddTarget = null },
             )
         }
 
@@ -1053,6 +1268,458 @@ private fun MusicBlackScreenOverlay(
     )
 }
 
+@Composable
+private fun MusicSearchOverlay(
+    query: String,
+    results: SearchResults,
+    onQueryChange: (String) -> Unit,
+    onClose: () -> Unit,
+    onPlayArtist: (ArtistEntity) -> Unit,
+    onOpenArtist: (ArtistEntity) -> Unit,
+    onPlayAlbum: (AlbumWithArtist) -> Unit,
+    onOpenAlbum: (AlbumWithArtist) -> Unit,
+    onPlayTrack: (TrackEntity) -> Unit,
+) {
+    val keyboard = LocalSoftwareKeyboardController.current
+    val closeFocus = remember { FocusRequester() }
+    val queryBarFocus = remember { FocusRequester() }
+    val editFieldFocus = remember { FocusRequester() }
+    val firstResultFocus = remember { FocusRequester() }
+    var editingQuery by remember { mutableStateOf(false) }
+    val hasResults = results.artists.isNotEmpty() ||
+        results.albums.isNotEmpty() ||
+        results.tracks.isNotEmpty()
+
+    fun stopEditing() {
+        editingQuery = false
+        keyboard?.hide()
+    }
+
+    LaunchedEffect(Unit) {
+        keyboard?.hide()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { keyboard?.hide() }
+    }
+
+    LaunchedEffect(editingQuery) {
+        if (editingQuery) {
+            delay(48)
+            runCatching { editFieldFocus.requestFocus() }
+            keyboard?.show()
+        } else {
+            keyboard?.hide()
+        }
+    }
+
+    LaunchedEffect(query, hasResults, editingQuery) {
+        if (editingQuery) return@LaunchedEffect
+        keyboard?.hide()
+        delay(48)
+        when {
+            query.isNotBlank() && hasResults -> runCatching { firstResultFocus.requestFocus() }
+            else -> runCatching { queryBarFocus.requestFocus() }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+        ),
+    ) {
+        BackHandler {
+            if (editingQuery) {
+                stopEditing()
+            } else {
+                onClose()
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.82f))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.96f)
+                    .fillMaxHeight(0.92f)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(CardSurface)
+                    .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(18.dp))
+                    .padding(horizontal = 22.dp, vertical = 18.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (editingQuery) {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = onQueryChange,
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(editFieldFocus),
+                            label = { Text("Search artists, albums, songs") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(
+                                onSearch = { stopEditing() },
+                            ),
+                            textStyle = TextStyle(
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontFamily = PallasFontFamily,
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AudioAccent,
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                                focusedLabelColor = AudioAccent,
+                                unfocusedLabelColor = AudioTextMuted,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = AudioAccent,
+                            ),
+                        )
+                    } else {
+                        MusicSearchQueryBar(
+                            query = query,
+                            modifier = Modifier.weight(1f),
+                            focusRequester = queryBarFocus,
+                            onActivate = { editingQuery = true },
+                        )
+                    }
+                    TextButton(
+                        onClick = onClose,
+                        modifier = Modifier.focusRequester(closeFocus),
+                    ) {
+                        Text("Close", color = AudioAccent)
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+
+                val blank = query.isBlank()
+                val empty = !blank && !hasResults
+
+                when {
+                    blank -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "OK on the search bar to type",
+                                color = AudioTextMuted,
+                                fontSize = 16.sp,
+                                fontFamily = PallasFontFamily,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                    empty -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "No matches for “$query”",
+                                color = AudioTextMuted,
+                                fontSize = 16.sp,
+                            )
+                        }
+                    }
+                    else -> {
+                        val firstArtist = results.artists.isNotEmpty()
+                        val firstAlbum = !firstArtist && results.albums.isNotEmpty()
+                        val firstTrack = !firstArtist && !firstAlbum && results.tracks.isNotEmpty()
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            MusicSearchColumn(
+                                title = "Artists",
+                                count = results.artists.size,
+                                icon = Icons.Filled.Person,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                itemsIndexed(results.artists, key = { _, it -> it.id }) { index, artist ->
+                                    MusicSearchResultRow(
+                                        title = artist.name,
+                                        subtitle = buildString {
+                                            if (artist.albumCount > 0) {
+                                                append("${artist.albumCount} album")
+                                                if (artist.albumCount != 1) append('s')
+                                            }
+                                            if (artist.trackCount > 0) {
+                                                if (isNotEmpty()) append(" · ")
+                                                append("${artist.trackCount} track")
+                                                if (artist.trackCount != 1) append('s')
+                                            }
+                                        }.ifBlank { null },
+                                        onClick = { onPlayArtist(artist) },
+                                        onOpen = { onOpenArtist(artist) },
+                                        focusRequester = if (firstArtist && index == 0) {
+                                            firstResultFocus
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                            }
+                            MusicSearchColumn(
+                                title = "Albums",
+                                count = results.albums.size,
+                                icon = Icons.Filled.Album,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                itemsIndexed(
+                                    results.albums,
+                                    key = { _, it -> it.albumId + "\u0000" + it.artistName },
+                                ) { index, album ->
+                                    MusicSearchResultRow(
+                                        title = album.title,
+                                        subtitle = buildString {
+                                            append(
+                                                results.albumArtists[album.albumId]
+                                                    ?: album.artistName,
+                                            )
+                                            album.year?.let { append(" · $it") }
+                                        },
+                                        onClick = { onPlayAlbum(album) },
+                                        onOpen = { onOpenAlbum(album) },
+                                        focusRequester = if (firstAlbum && index == 0) {
+                                            firstResultFocus
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                            }
+                            MusicSearchColumn(
+                                title = "Songs",
+                                count = results.tracks.size,
+                                icon = Icons.Filled.MusicNote,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                itemsIndexed(results.tracks, key = { _, it -> it.id }) { index, track ->
+                                    MusicSearchResultRow(
+                                        title = track.title,
+                                        subtitle = buildString {
+                                            append(track.artistName)
+                                            if (track.albumTitle.isNotBlank()) {
+                                                append(" · ")
+                                                append(track.albumTitle)
+                                            }
+                                        },
+                                        onClick = { onPlayTrack(track) },
+                                        focusRequester = if (firstTrack && index == 0) {
+                                            firstResultFocus
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MusicSearchQueryBar(
+    query: String,
+    onActivate: () -> Unit,
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val label = query.ifBlank { "Search artists, albums, songs" }
+    val textColor = if (query.isBlank()) AudioTextMuted else Color.White
+    Row(
+        modifier = modifier
+            .heightIn(min = 56.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = when {
+                    focused -> AudioAccent
+                    else -> Color.White.copy(alpha = 0.25f)
+                },
+                shape = RoundedCornerShape(4.dp),
+            )
+            .background(Color.White.copy(alpha = if (focused) 0.06f else 0.04f))
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onActivate)
+            .onPreviewKeyEvent { event ->
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                if (isSelect && event.type == KeyEventType.KeyUp) {
+                    onActivate()
+                    true
+                } else {
+                    false
+                }
+            }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.Search,
+            contentDescription = null,
+            tint = if (focused) AudioAccent else AudioTextMuted,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = label,
+            color = textColor,
+            fontSize = 16.sp,
+            fontFamily = PallasFontFamily,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (query.isNotBlank()) {
+            Text(
+                text = "OK to edit",
+                color = AudioTextMuted.copy(alpha = if (focused) 0.9f else 0.55f),
+                fontSize = 11.sp,
+                fontFamily = PallasFontFamily,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MusicSearchColumn(
+    title: String,
+    count: Int,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.04f))
+            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+        ) {
+            Icon(icon, contentDescription = null, tint = AudioAccent, modifier = Modifier.size(18.dp))
+            Text(
+                text = title,
+                color = AudioAccent,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = count.toString(),
+                color = AudioTextMuted,
+                fontSize = 13.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        if (count == 0) {
+            Text(
+                text = "No matches",
+                color = AudioTextMuted.copy(alpha = 0.7f),
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+            )
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                content = content,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MusicSearchResultRow(
+    title: String,
+    subtitle: String? = null,
+    onClick: () -> Unit,
+    onOpen: (() -> Unit)? = null,
+    focusRequester: FocusRequester? = null,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (focused) Color.White.copy(alpha = 0.10f) else Color.Transparent)
+            .border(
+                width = if (focused) 2.dp else 0.dp,
+                color = if (focused) FocusRing else Color.Transparent,
+                shape = RoundedCornerShape(6.dp),
+            )
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                when {
+                    onOpen != null &&
+                        event.key == Key.Menu &&
+                        event.type == KeyEventType.KeyUp -> {
+                        onOpen()
+                        true
+                    }
+                    (event.key == Key.DirectionCenter ||
+                        event.key == Key.Enter ||
+                        event.key == Key.NumPadEnter) &&
+                        event.type == KeyEventType.KeyUp -> {
+                        onClick()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    color = AudioTextMuted,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 private enum class TransportFocus { Prev, SeekBack, Play, SeekForward, Next }
 
 @Composable
@@ -1060,6 +1727,9 @@ private fun SyncedLyricsPanel(
     lyrics: List<LyricLine>,
     positionMs: Long,
     scale: Float,
+    status: MusicViewModel.LyricsStatus,
+    onAcceptOnline: () -> Unit,
+    onDeclineOnline: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val index = LrcParser.currentLineIndex(lyrics, positionMs)
@@ -1067,6 +1737,8 @@ private fun SyncedLyricsPanel(
     val sideSize = (15f * scale).coerceIn(12f, 17f).sp
     val listState = rememberLazyListState()
     val density = LocalDensity.current
+    val offerFocus = remember { FocusRequester() }
+    val tryOnlineFocus = remember { FocusRequester() }
 
     BoxWithConstraints(
         modifier = modifier
@@ -1074,17 +1746,112 @@ private fun SyncedLyricsPanel(
             .background(Color.Black.copy(alpha = 0.28f))
             .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(8.dp)),
     ) {
-        if (lyrics.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "No lyrics found",
-                    color = AudioTextMuted,
-                    fontSize = sideSize,
-                    fontFamily = PallasFontFamily,
-                    textAlign = TextAlign.Center,
-                )
+        when {
+            lyrics.isNotEmpty() -> Unit // fall through to synced list below
+            status == MusicViewModel.LyricsStatus.Loading ||
+                status == MusicViewModel.LyricsStatus.FetchingOnline -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        color = AudioAccent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        if (status == MusicViewModel.LyricsStatus.FetchingOnline) {
+                            "Looking up online…"
+                        } else {
+                            "Loading lyrics…"
+                        },
+                        color = AudioTextMuted,
+                        fontSize = sideSize,
+                        fontFamily = PallasFontFamily,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                return@BoxWithConstraints
             }
-            return@BoxWithConstraints
+            status == MusicViewModel.LyricsStatus.OfferOnline -> {
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(40)
+                    runCatching { offerFocus.requestFocus() }
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        "No local lyrics",
+                        color = Color.White.copy(alpha = 0.88f),
+                        fontSize = sideSize,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = PallasFontFamily,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Look up lyrics online?",
+                        color = AudioTextMuted,
+                        fontSize = (13f * scale).coerceIn(11f, 15f).sp,
+                        fontFamily = PallasFontFamily,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    ModePill(
+                        label = "Yes — online",
+                        selected = false,
+                        focusRequester = offerFocus,
+                        onClick = onAcceptOnline,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    ModePill(
+                        label = "No thanks",
+                        selected = false,
+                        onClick = onDeclineOnline,
+                    )
+                }
+                return@BoxWithConstraints
+            }
+            else -> {
+                LaunchedEffect(status) {
+                    if (status == MusicViewModel.LyricsStatus.NotFound) {
+                        kotlinx.coroutines.delay(40)
+                        runCatching { tryOnlineFocus.requestFocus() }
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        "No lyrics found",
+                        color = AudioTextMuted,
+                        fontSize = sideSize,
+                        fontFamily = PallasFontFamily,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    ModePill(
+                        label = "Try online",
+                        selected = false,
+                        focusRequester = tryOnlineFocus,
+                        onClick = onAcceptOnline,
+                    )
+                }
+                return@BoxWithConstraints
+            }
         }
 
         val panelHeight = maxHeight
@@ -1309,6 +2076,7 @@ private fun TrackInfoSheet(
         else -> null
     }
     val lyricsLabel = when {
+        lyricsPath == "online:lrclib" -> "Online · LRCLIB"
         !lyricsPath.isNullOrBlank() -> lyricsPath.replace('\\', '/')
         !expectedLyricsPath.isNullOrBlank() ->
             "Not found · expected ${expectedLyricsPath.replace('\\', '/')}"
@@ -1739,6 +2507,9 @@ private fun ImmersiveStage(
     formatBadge: String?,
     lyrics: List<LyricLine>,
     lyricsVisible: Boolean,
+    lyricsStatus: MusicViewModel.LyricsStatus,
+    onAcceptOnlineLyrics: () -> Unit,
+    onDeclineOnlineLyrics: () -> Unit,
     controlsEnabled: Boolean,
     metaEnabled: Boolean,
     playFocusRequester: FocusRequester,
@@ -1771,8 +2542,16 @@ private fun ImmersiveStage(
         transportFocusEpoch++
     }
 
-    LaunchedEffect(trackId, controlsEnabled, keepTransport, transportFocusEpoch) {
+    LaunchedEffect(trackId, controlsEnabled, keepTransport, transportFocusEpoch, lyricsVisible, lyricsStatus) {
         if (!controlsEnabled) return@LaunchedEffect
+        if (lyricsVisible && (
+                lyricsStatus == MusicViewModel.LyricsStatus.OfferOnline ||
+                    lyricsStatus == MusicViewModel.LyricsStatus.FetchingOnline ||
+                    lyricsStatus == MusicViewModel.LyricsStatus.NotFound
+                )
+        ) {
+            return@LaunchedEffect
+        }
         kotlinx.coroutines.delay(48)
         runCatching {
             when (keepTransport) {
@@ -1812,6 +2591,7 @@ private fun ImmersiveStage(
 
         Box(Modifier.fillMaxSize().background(Color(0xFF050507)))
         if (backgroundArt != null) {
+            val liteVisuals = LocalLiteVisuals.current
             AsyncImage(
                 model = backgroundArt,
                 contentDescription = null,
@@ -1821,9 +2601,15 @@ private fun ImmersiveStage(
                     .graphicsLayer {
                         scaleX = 1.1f
                         scaleY = 1.1f
-                        alpha = 0.42f
+                        alpha = if (liteVisuals) 0.28f else 0.42f
                     }
-                    .then(if (Build.VERSION.SDK_INT >= 31) Modifier.blur(32.dp) else Modifier),
+                    .then(
+                        if (!liteVisuals && Build.VERSION.SDK_INT >= 31) {
+                            Modifier.blur(32.dp)
+                        } else {
+                            Modifier
+                        },
+                    ),
             )
         }
         Box(
@@ -1999,6 +2785,9 @@ private fun ImmersiveStage(
                         lyrics = lyrics,
                         positionMs = position,
                         scale = scale,
+                        status = lyricsStatus,
+                        onAcceptOnline = onAcceptOnlineLyrics,
+                        onDeclineOnline = onDeclineOnlineLyrics,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f, fill = true)
@@ -2060,7 +2849,6 @@ private fun ImmersiveStage(
                     val btnGap = (18.dp * scale).coerceAtLeast(10.dp)
                     TransportButton(
                         enabled = controlsEnabled,
-                        highlighted = keepTransport == TransportFocus.Prev,
                         focusRequester = prevFocus,
                         onFocused = { keepTransport = TransportFocus.Prev },
                         onClick = {
@@ -2079,7 +2867,6 @@ private fun ImmersiveStage(
                     Spacer(Modifier.width(btnGap))
                     TransportButton(
                         enabled = controlsEnabled,
-                        highlighted = keepTransport == TransportFocus.SeekBack,
                         focusRequester = seekBackFocus,
                         onFocused = { keepTransport = TransportFocus.SeekBack },
                         onClick = {
@@ -2096,9 +2883,7 @@ private fun ImmersiveStage(
                         )
                     }
                     Spacer(Modifier.width(btnGap))
-                    val playHighlighted = keepTransport == TransportFocus.Play
                     var playFocused by remember { mutableStateOf(false) }
-                    val playShowFocus = playFocused || playHighlighted
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
@@ -2111,8 +2896,8 @@ private fun ImmersiveStage(
                                 ),
                             )
                             .border(
-                                width = if (playShowFocus) 3.dp else 2.dp,
-                                color = if (playShowFocus) {
+                                width = if (playFocused) 3.dp else 2.dp,
+                                color = if (playFocused) {
                                     FocusRing
                                 } else {
                                     Color.White.copy(alpha = 0.35f)
@@ -2146,7 +2931,6 @@ private fun ImmersiveStage(
                     Spacer(Modifier.width(btnGap))
                     TransportButton(
                         enabled = controlsEnabled,
-                        highlighted = keepTransport == TransportFocus.SeekForward,
                         focusRequester = seekForwardFocus,
                         onFocused = { keepTransport = TransportFocus.SeekForward },
                         onClick = {
@@ -2165,7 +2949,6 @@ private fun ImmersiveStage(
                     Spacer(Modifier.width(btnGap))
                     TransportButton(
                         enabled = controlsEnabled,
-                        highlighted = keepTransport == TransportFocus.Next,
                         focusRequester = nextFocus,
                         onFocused = { keepTransport = TransportFocus.Next },
                         onClick = {
@@ -2192,13 +2975,11 @@ private fun TransportButton(
     enabled: Boolean,
     onClick: () -> Unit,
     size: Dp,
-    highlighted: Boolean = false,
     focusRequester: FocusRequester? = null,
     onFocused: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val showFocus = focused || highlighted
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -2207,13 +2988,13 @@ private fun TransportButton(
             .clip(CircleShape)
             .background(
                 when {
-                    showFocus -> Color.White.copy(alpha = 0.22f)
+                    focused -> Color.White.copy(alpha = 0.22f)
                     else -> Color.White.copy(alpha = 0.10f)
                 },
             )
             .border(
-                width = if (showFocus) 2.dp else 1.dp,
-                color = if (showFocus) FocusRing else Color.White.copy(alpha = 0.2f),
+                width = if (focused) 2.dp else 1.dp,
+                color = if (focused) FocusRing else Color.White.copy(alpha = 0.2f),
                 shape = CircleShape,
             )
             .onFocusChanged {
@@ -2268,6 +3049,8 @@ private fun BrowseDrawer(
     onClearAlbumTitleFilter: () -> Unit,
     performerAlbumFilter: String?,
     onClearPerformerAlbumFilter: () -> Unit,
+    albumArtistAlbumFilter: String?,
+    onClearAlbumArtistAlbumFilter: () -> Unit,
     songTitleFilter: String?,
     onClearSongTitleFilter: () -> Unit,
     artistNameFilter: String? = null,
@@ -2289,15 +3072,25 @@ private fun BrowseDrawer(
     val libraryEmpty = artists.isEmpty() && albums.isEmpty() && tracks.isEmpty()
     val songSearchWaiting = tracksPending
     val artistSearchWaiting = artistsPending
-    val albumSearchWaiting = albumsPending || (tracksPending && (albumTitleFilter != null || performerAlbumFilter != null))
+    val albumSearchWaiting = albumsPending || (tracksPending && (
+        albumTitleFilter != null ||
+            performerAlbumFilter != null ||
+            albumArtistAlbumFilter != null
+        ))
     val albumsForBrowse = remember(
         albums,
         tracks,
         albumYearFilter,
         albumTitleFilter,
         performerAlbumFilter,
+        albumArtistAlbumFilter,
     ) {
         when {
+            albumArtistAlbumFilter != null && albumTitleFilter != null ->
+                albumsForAlbumArtist(albums, tracks, albumArtistAlbumFilter)
+                    .filter { it.title.equals(albumTitleFilter, ignoreCase = true) }
+            albumArtistAlbumFilter != null ->
+                albumsForAlbumArtist(albums, tracks, albumArtistAlbumFilter)
             performerAlbumFilter != null ->
                 albumsForPerformer(albums, tracks, performerAlbumFilter)
             else ->
@@ -2308,7 +3101,7 @@ private fun BrowseDrawer(
                     year = albumYearFilter,
                 )
         }.also { matched ->
-            val label = performerAlbumFilter ?: albumTitleFilter
+            val label = albumArtistAlbumFilter ?: performerAlbumFilter ?: albumTitleFilter
             if (label != null) {
                 android.util.Log.i(
                     "PallasMusic",
@@ -2342,6 +3135,7 @@ private fun BrowseDrawer(
             artistDrill != null &&
             albumTitleFilter == null &&
             performerAlbumFilter == null &&
+            albumArtistAlbumFilter == null &&
             songTitleFilter == null &&
             libraryAddTarget == null,
     ) {
@@ -2355,6 +3149,7 @@ private fun BrowseDrawer(
             (
                 albumTitleFilter != null ||
                     performerAlbumFilter != null ||
+                    albumArtistAlbumFilter != null ||
                     songTitleFilter != null ||
                     artistNameFilter != null
                 ),
@@ -2362,6 +3157,7 @@ private fun BrowseDrawer(
         onClearAlbumTitleFilter()
         onClearAlbumYearFilter()
         onClearPerformerAlbumFilter()
+        onClearAlbumArtistAlbumFilter()
         onClearSongTitleFilter()
         onClearArtistNameFilter()
     }
@@ -2389,6 +3185,7 @@ private fun BrowseDrawer(
                     songTitleFilter != null -> "MATCHING SONGS"
                     artistNameFilter != null -> "MATCHING ARTISTS"
                     performerAlbumFilter != null -> "ARTIST ALBUMS"
+                    albumArtistAlbumFilter != null -> "ALBUM ARTIST"
                     albumTitleFilter != null -> "MATCHING ALBUMS"
                     else -> "BROWSE"
                 },
@@ -2405,6 +3202,7 @@ private fun BrowseDrawer(
         }
         if (albumTitleFilter == null &&
             performerAlbumFilter == null &&
+            albumArtistAlbumFilter == null &&
             songTitleFilter == null &&
             artistNameFilter == null
         ) {
@@ -2534,9 +3332,13 @@ private fun BrowseDrawer(
                     }
                 }
             }
-            // Player album-name or performer click: albums only.
-            albumTitleFilter != null || performerAlbumFilter != null -> {
-                val filterLabel = performerAlbumFilter ?: albumTitleFilter.orEmpty()
+            // Player album-name, performer, or album-artist click: albums only.
+            albumTitleFilter != null ||
+                performerAlbumFilter != null ||
+                albumArtistAlbumFilter != null -> {
+                val filterLabel = albumArtistAlbumFilter
+                    ?: performerAlbumFilter
+                    ?: albumTitleFilter.orEmpty()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2562,6 +3364,7 @@ private fun BrowseDrawer(
                             onClearAlbumTitleFilter()
                             onClearAlbumYearFilter()
                             onClearPerformerAlbumFilter()
+                            onClearAlbumArtistAlbumFilter()
                         },
                     )
                 }
@@ -2573,6 +3376,8 @@ private fun BrowseDrawer(
                                 ?: "Searching library…"
                             performerAlbumFilter != null ->
                                 "No albums featuring “$performerAlbumFilter”"
+                            albumArtistAlbumFilter != null ->
+                                "No albums by “$albumArtistAlbumFilter”"
                             else -> "No albums named “$albumTitleFilter”"
                         },
                         waiting = albumSearchWaiting,
@@ -2631,10 +3436,12 @@ private fun BrowseDrawer(
             )
             artistDrill != null && mode == BrowseMode.Artists -> {
                 val artist = artistDrill!!
-                val artistAlbums by viewModel.libraryAlbumsForArtist(artist.id)
-                    .collectAsState(initial = emptyList())
-                val artistTracks by viewModel.libraryTracksForArtist(artist.id)
-                    .collectAsState(initial = emptyList())
+                val artistAlbums = remember(albums, tracks, artist) {
+                    albumsForArtistBrowse(albums, tracks, artist)
+                }
+                val artistTracks = remember(tracks, artist) {
+                    tracksForArtistBrowse(tracks, artist)
+                }
                 ArtistAlbumsBrowse(
                     artist = artist,
                     albums = artistAlbums,
@@ -2664,12 +3471,13 @@ private fun BrowseDrawer(
                 )
             }
             mode == BrowseMode.Artists -> {
-                val artistsForBrowse = remember(artists, artistNameFilter) {
+                val artistsForBrowse = remember(artists, tracks, artistNameFilter) {
+                    val merged = artistsWithPerformers(artists, tracks)
                     val q = artistNameFilter?.trim()?.takeIf { it.isNotEmpty() }
                     if (q == null) {
-                        artists
+                        merged
                     } else {
-                        artists.filter {
+                        merged.filter {
                             it.name.equals(q, ignoreCase = true) ||
                                 it.name.contains(q, ignoreCase = true)
                         }
@@ -2806,8 +3614,11 @@ private fun BrowseDrawer(
                     ) { album, _ ->
                         BrowseRow(
                             title = album.title,
-                            subtitle = listOfNotNull(album.artistName, album.year?.toString())
-                                .joinToString(" · "),
+                            subtitle = listOfNotNull(
+                                album.artistName,
+                                album.year?.toString(),
+                                album.trackCount.takeIf { it > 0 }?.let { "$it songs" },
+                            ).joinToString(" · "),
                             onClick = {
                                 libraryAddTarget = BrowseAddTarget.Album(album.albumId, album.title)
                             },
@@ -2821,7 +3632,9 @@ private fun BrowseDrawer(
         }
         Text(
             when {
-                albumTitleFilter != null || performerAlbumFilter != null ->
+                albumTitleFilter != null ||
+                    performerAlbumFilter != null ||
+                    albumArtistAlbumFilter != null ->
                     "OK · Clear or append full album · Back clears"
                 songTitleFilter != null ->
                     "OK plays · Hold OK for add · Back clears"
@@ -2969,6 +3782,148 @@ private fun estimatedBitrateKbps(fileSize: Long, durationMs: Long): Int? {
     return ((fileSize * 8.0) / seconds / 1000.0).toInt().takeIf { it in 32..10_000 }
 }
 
+/** Album artists plus track-only performers (compilations), like Audio Station artist search. */
+private fun artistsWithPerformers(
+    artists: List<ArtistEntity>,
+    tracks: List<TrackEntity>,
+): List<ArtistEntity> {
+    val result = LinkedHashMap<String, ArtistEntity>()
+    for (a in artists) {
+        val name = a.name.trim()
+        if (name.isEmpty() || isVariousArtistsName(name)) continue
+        result[name.lowercase()] = a
+    }
+    for ((key, group) in tracks.groupBy { it.artistName.trim().lowercase() }) {
+        if (key.isEmpty() || key in result) continue
+        val sample = group.first().artistName.trim()
+        if (sample.isEmpty() ||
+            isVariousArtistsName(sample) ||
+            MetadataResolver.isPlaceholderArtist(sample)
+        ) {
+            continue
+        }
+        val albumKeys = group.map {
+            it.nasPath.replace('\\', '/').substringBeforeLast('/') to
+                it.albumTitle.trim().lowercase()
+        }.distinct()
+        result[key] = ArtistEntity(
+            id = "performer:$key",
+            name = sample,
+            sortKey = key,
+            albumCount = albumKeys.size,
+            trackCount = group.size,
+        )
+    }
+    return result.values.sortedBy { it.sortKey }
+}
+
+/** Albums credited to this album artist (ID3 album artist / album row artist). */
+private fun albumsForAlbumArtist(
+    albums: List<AlbumWithArtist>,
+    tracks: List<TrackEntity>,
+    albumArtist: String,
+): List<AlbumWithArtist> {
+    val wanted = albumArtist.trim()
+    if (wanted.isEmpty() || isVariousArtistsName(wanted)) return emptyList()
+
+    fun folderOf(path: String): String =
+        path.replace('\\', '/').substringBeforeLast('/').trimEnd('/').lowercase()
+
+    fun trackAlbumArtist(t: TrackEntity): String =
+        t.albumArtist?.trim()?.takeIf { it.isNotBlank() } ?: t.artistName.trim()
+
+    fun trackMatches(t: TrackEntity): Boolean {
+        val aa = trackAlbumArtist(t)
+        if (aa.equals(wanted, ignoreCase = true)) return true
+        if (aa.startsWith("$wanted ", ignoreCase = true)) return true
+        if (aa.startsWith("$wanted &", ignoreCase = true)) return true
+        return false
+    }
+
+    val fromTracks = tracks
+        .asSequence()
+        .filter(::trackMatches)
+        .groupBy { folderOf(it.nasPath) to it.albumTitle.trim().lowercase() }
+        .filterKeys { (folder, title) -> folder.isNotBlank() && title.isNotBlank() }
+        .map { (key, group) ->
+            val (folder, _) = key
+            val sample = group.first()
+            val title = sample.albumTitle.trim()
+            val existing = albums
+                .filter { album ->
+                    album.title.equals(title, ignoreCase = true) &&
+                        (
+                            album.folderPath?.let { folderOf(it) } == folder ||
+                                group.any { it.albumId == album.albumId }
+                            )
+                }
+                .maxByOrNull { it.trackCount }
+            AlbumWithArtist(
+                albumId = existing?.albumId ?: sample.albumId,
+                title = existing?.title ?: title,
+                artistId = existing?.artistId ?: sample.artistId,
+                artistName = wanted,
+                year = existing?.year ?: group.mapNotNull { it.year }.maxOrNull(),
+                genre = existing?.genre ?: sample.genre,
+                coverPath = existing?.coverPath,
+                trackCount = group.size,
+                folderPath = existing?.folderPath
+                    ?: sample.nasPath.replace('\\', '/').substringBeforeLast('/'),
+            )
+        }
+
+    val fromAlbumTable = albums.filter { it.artistName.equals(wanted, ignoreCase = true) }
+
+    return (fromTracks + fromAlbumTable)
+        .distinctBy { folderOf(it.folderPath.orEmpty()) + "\u0000" + it.title.lowercase() }
+        .sortedWith(compareBy({ it.title.lowercase() }, { it.year ?: 0 }))
+}
+
+/** Albums for artist drill — by artist id, album-artist name, or performer. */
+private fun albumsForArtistBrowse(
+    albums: List<AlbumWithArtist>,
+    tracks: List<TrackEntity>,
+    artist: ArtistEntity,
+): List<AlbumWithArtist> {
+    val byId = albums.filter { it.artistId == artist.id }
+    val byAlbumArtist = albumsForAlbumArtist(albums, tracks, artist.name)
+    val byPerformer = if (artist.id.startsWith("performer:")) {
+        albumsForPerformer(albums, tracks, artist.name)
+    } else {
+        emptyList()
+    }
+    return (byId + byAlbumArtist + byPerformer)
+        .distinctBy { it.albumId + "\u0000" + (it.folderPath.orEmpty().lowercase()) }
+        .sortedWith(compareBy({ it.title.lowercase() }, { it.year ?: 0 }))
+}
+
+private fun tracksForArtistBrowse(
+    tracks: List<TrackEntity>,
+    artist: ArtistEntity,
+): List<TrackEntity> {
+    val wanted = artist.name.trim()
+    if (wanted.isEmpty()) return emptyList()
+    return tracks.filter { track ->
+        track.artistId == artist.id ||
+            track.albumArtist?.trim().equals(wanted, ignoreCase = true) == true ||
+            track.artistName.trim().equals(wanted, ignoreCase = true) ||
+            (
+                artist.id.startsWith("performer:") &&
+                    (
+                        track.artistName.trim().equals(wanted, ignoreCase = true) ||
+                            track.artistName.trim().contains(wanted, ignoreCase = true)
+                        )
+                )
+    }.sortedWith(
+        compareBy(
+            { it.albumTitle.lowercase() },
+            { it.discNumber ?: 1 },
+            { it.trackNumber ?: Int.MAX_VALUE },
+            { it.title.lowercase() },
+        ),
+    )
+}
+
 /** Albums that include tracks by this performer (not albumArtist / Various Artists). */
 private fun albumsForPerformer(
     albums: List<AlbumWithArtist>,
@@ -3031,7 +3986,7 @@ private fun isVariousArtistsName(name: String): Boolean {
         n.startsWith("various artist")
 }
 
-/** One row per album folder + title. Never one row per track or per track-artist. */
+/** One row per album title (+ year). Never one row per track or track-artist. */
 private fun albumsMatchingName(
     albums: List<AlbumWithArtist>,
     tracks: List<TrackEntity>,
@@ -3041,44 +3996,34 @@ private fun albumsMatchingName(
     val q = titleQuery?.trim()?.takeIf { it.isNotEmpty() }
     if (q == null) {
         val list = if (year == null) albums else albums.filter { it.year == year }
-        return list.sortedWith(
-            compareBy({ it.artistName.lowercase() }, { it.title.lowercase() }),
+        return collapsePhysicalAlbums(list).sortedWith(
+            compareBy({ it.title.lowercase() }, { it.artistName.lowercase() }),
         )
     }
 
-    fun folderOf(path: String): String =
-        path.replace('\\', '/').substringBeforeLast('/').trimEnd('/')
-
-    fun folderOf(t: TrackEntity): String = folderOf(t.nasPath)
-
-    fun rootKey(folder: String): String =
-        com.vizvag.shieldvideo.music.data.albumRootFolder(folder).lowercase()
-
-    // One physical album = album-root folder (CD1/CD2/… collapse to parent).
-    val fromTracks = tracks
-        .asSequence()
-        .filter { it.albumTitle.equals(q, ignoreCase = true) }
-        .groupBy { rootKey(folderOf(it)) }
-        .filterKeys { it.isNotBlank() }
-        .map { (root, group) ->
+    val matchingTracks = tracks.filter { it.albumTitle.equals(q, ignoreCase = true) }
+    val fromTracks = matchingTracks
+        .groupBy { t ->
+            val y = t.year?.takeIf { it > 0 }?.toString().orEmpty()
+            "t:${q.lowercase()}|y:$y"
+        }
+        .map { (_, group) ->
             val existing = albums
-                .filter { album ->
-                    album.title.equals(q, ignoreCase = true) &&
-                        (
-                            album.folderPath?.let { rootKey(it) } == root ||
-                                group.any { it.albumId == album.albumId }
-                            )
-                }
+                .filter { it.title.equals(q, ignoreCase = true) }
                 .maxByOrNull { it.trackCount }
             val artistLabel = group
                 .mapNotNull { t ->
-                    t.albumArtist?.takeIf { it.isNotBlank() } ?: t.artistName.takeIf { it.isNotBlank() }
+                    t.albumArtist?.takeIf { it.isNotBlank() }
+                        ?: t.artistName.takeIf { it.isNotBlank() }
                 }
                 .groupingBy { it }
                 .eachCount()
                 .maxByOrNull { it.value }
                 ?.key
                 ?: queueArtist(group.first())
+            val distinctArtists = group.map {
+                (it.albumArtist?.takeIf { a -> a.isNotBlank() } ?: it.artistName).lowercase()
+            }.distinct()
             val rootPath = com.vizvag.shieldvideo.music.data.albumRootFolder(
                 group.first().nasPath.replace('\\', '/').substringBeforeLast('/'),
             )
@@ -3086,7 +4031,10 @@ private fun albumsMatchingName(
                 albumId = existing?.albumId ?: group.first().albumId,
                 title = q,
                 artistId = existing?.artistId ?: group.first().artistId,
-                artistName = existing?.artistName ?: artistLabel,
+                artistName = when {
+                    distinctArtists.size > 1 -> "Various Artists"
+                    else -> existing?.artistName ?: artistLabel
+                },
                 year = existing?.year ?: group.mapNotNull { it.year }.maxOrNull(),
                 genre = existing?.genre ?: group.first().genre,
                 coverPath = existing?.coverPath,
@@ -3097,29 +4045,14 @@ private fun albumsMatchingName(
             )
         }
 
-    // Albums table rows with this title — collapse disc folders to one row.
     val fromTable = albums
         .filter { it.title.equals(q, ignoreCase = true) }
-        .groupBy { album ->
-            album.folderPath?.let { rootKey(it) }?.takeIf { it.isNotBlank() }
-                ?: album.albumId.lowercase()
-        }
-        .map { (_, group) ->
-            val best = group.maxBy { it.trackCount }
-            val totalTracks = group.sumOf { it.trackCount }
-            best.copy(
-                title = q,
-                trackCount = maxOf(best.trackCount, totalTracks),
-                folderPath = best.folderPath?.let {
-                    com.vizvag.shieldvideo.music.data.albumRootFolder(it)
-                },
-            )
-        }
+        .let(::collapsePhysicalAlbums)
 
     var list = (fromTable + fromTracks)
         .groupBy { album ->
-            album.folderPath?.let { rootKey(it) }?.takeIf { it.isNotBlank() }
-                ?: (album.artistName.lowercase() + "\u0000" + album.title.lowercase())
+            val y = album.year?.takeIf { it > 0 }?.toString().orEmpty()
+            "t:${album.title.trim().lowercase()}|y:$y"
         }
         .map { (_, group) ->
             val best = group.maxBy { it.trackCount }
@@ -3130,8 +4063,34 @@ private fun albumsMatchingName(
         list = list.filter { it.year == year }
     }
     return list.sortedWith(
-        compareBy({ it.artistName.lowercase() }, { it.title.lowercase() }),
+        compareBy({ it.title.lowercase() }, { it.artistName.lowercase() }),
     )
+}
+
+/** Collapse VA split albumIds that share title (+ year). */
+private fun collapsePhysicalAlbums(albums: List<AlbumWithArtist>): List<AlbumWithArtist> {
+    if (albums.isEmpty()) return albums
+    return albums
+        .groupBy { album ->
+            val t = album.title.trim().lowercase()
+            val y = album.year?.takeIf { it > 0 }?.toString().orEmpty()
+            if (t.isBlank()) "id:${album.albumId.lowercase()}" else "t:$t|y:$y"
+        }
+        .map { (_, group) ->
+            val best = group.maxBy { it.trackCount }
+            val artists = group.map { it.artistName.trim() }.filter { it.isNotEmpty() }.distinct()
+            best.copy(
+                trackCount = group.sumOf { it.trackCount.coerceAtLeast(1) }
+                    .coerceAtLeast(best.trackCount),
+                artistName = when {
+                    artists.size <= 1 -> best.artistName
+                    artists.any { isVariousArtistsName(it) } ->
+                        artists.first { isVariousArtistsName(it) }
+                    else -> "Various Artists"
+                },
+                year = group.mapNotNull { it.year }.maxOrNull() ?: best.year,
+            )
+        }
 }
 
 
@@ -3160,20 +4119,46 @@ private fun <T> JumpableList(
     }
     val scope = rememberCoroutineScope()
 
-    val keys = remember(items, jumpMode) {
+    val displayItems = remember(items, jumpMode) {
         when (jumpMode) {
-            LibraryJumpMode.Alpha -> presentLetters(items.map(letterOf))
-            LibraryJumpMode.Artist -> presentLetters(items.map(artistLetterOf))
-            LibraryJumpMode.Year -> items.mapNotNull(yearOf).distinct().sortedDescending()
+            LibraryJumpMode.Alpha ->
+                items.sortedWith(
+                    compareBy(
+                        { sortLetter(letterOf(it)) },
+                        { letterOf(it).lowercase() },
+                        { artistLetterOf(it).lowercase() },
+                    ),
+                )
+            LibraryJumpMode.Artist ->
+                items.sortedWith(
+                    compareBy(
+                        { sortLetter(artistLetterOf(it)) },
+                        { artistLetterOf(it).lowercase() },
+                        { letterOf(it).lowercase() },
+                    ),
+                )
+            LibraryJumpMode.Year ->
+                items.sortedWith(
+                    compareByDescending<T> { yearOf(it) ?: Int.MIN_VALUE }
+                        .thenBy { letterOf(it).lowercase() },
+                )
+        }
+    }
+
+    val keys = remember(displayItems, jumpMode) {
+        when (jumpMode) {
+            LibraryJumpMode.Alpha -> presentLetters(displayItems.map(letterOf))
+            LibraryJumpMode.Artist -> presentLetters(displayItems.map(artistLetterOf))
+            LibraryJumpMode.Year -> displayItems.mapNotNull(yearOf).distinct().sortedDescending()
                 .map { it.toString() }
         }
     }
 
     fun scrollToKey(key: String) {
         val index = when (jumpMode) {
-            LibraryJumpMode.Alpha -> items.indexOfFirst { sortLetter(letterOf(it)) == key }
-            LibraryJumpMode.Artist -> items.indexOfFirst { sortLetter(artistLetterOf(it)) == key }
-            LibraryJumpMode.Year -> items.indexOfFirst { yearOf(it)?.toString() == key }
+            LibraryJumpMode.Alpha -> displayItems.indexOfFirst { sortLetter(letterOf(it)) == key }
+            LibraryJumpMode.Artist -> displayItems.indexOfFirst { sortLetter(artistLetterOf(it)) == key }
+            LibraryJumpMode.Year -> displayItems.indexOfFirst { yearOf(it)?.toString() == key }
         }.coerceAtLeast(0)
         scope.launch {
             listState.scrollToItem(index)
@@ -3229,7 +4214,7 @@ private fun <T> JumpableList(
                 .weight(1f)
                 .padding(horizontal = 10.dp),
         ) {
-            itemsIndexed(items, key = { _, item -> itemKey(item) }) { index, item ->
+            itemsIndexed(displayItems, key = { _, item -> itemKey(item) }) { index, item ->
                 row(item, index)
             }
         }
