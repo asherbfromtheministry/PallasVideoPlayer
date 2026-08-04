@@ -123,18 +123,15 @@ Trakt Client ID and TMDB keys are entered in Settings (gear). **Client secret is
 
 ## Devices (local deploy)
 
-Use your own Android TV IPs with ADB. ADB lives at `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe` (or `adb` on PATH).
-
-Local device list, Kitchen wireless-debug notes, and the mandatory NAS APK drop live in gitignored `personal.deploy.md` (copy pattern from that file if missing). Every debug deploy must also overwrite `\\DiskStation\download\APK\PallasVideoPlayer-debug.apk`.
+Install over ADB to your own Android TV / Google TV devices. ADB is usually at `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe` (or `adb` on PATH).
 
 If port `5555` is refused, the device may use **wireless debugging** with a dynamic port — read it from Developer options → Wireless debugging and `adb connect <ip>:<port>`.
 
-**Chromecast notifications:** Android 14 needs `POST_NOTIFICATIONS`. Grant over ADB: `adb shell pm grant com.vizvag.shieldvideo android.permission.POST_NOTIFICATIONS` and `adb shell cmd notification allow_listener com.vizvag.shieldvideo/com.vizvag.shieldvideo.playback.ShieldNotificationListener`.
+**Chromecast / Google TV notifications:** Android 14 needs `POST_NOTIFICATIONS`. Grant over ADB: `adb shell pm grant com.vizvag.shieldvideo android.permission.POST_NOTIFICATIONS` and `adb shell cmd notification allow_listener com.vizvag.shieldvideo/com.vizvag.shieldvideo.playback.ShieldNotificationListener`.
 
 ## Build
 
 ```powershell
-cd c:\temp\videoplayer
 .\gradlew.bat :app:assembleDebug
 ```
 
@@ -153,7 +150,6 @@ A **clean** build is a shareable version with **zero personalization baked in** 
 Build the clean APK:
 
 ```powershell
-cd c:\temp\videoplayer
 .\gradlew.bat :app:assembleClean
 ```
 
@@ -161,26 +157,25 @@ Clean APK path (debug-signed, installs like any other debug build):
 
 `app\build\outputs\apk\clean\app-clean.apk`
 
-The latest clean APK is published to the NAS download share as `\\DiskStation\download\PallasVideoPlayer-clean-v<versionName>.apk`.
+Publish clean builds from [Releases](../../releases) (e.g. `PallasVideoPlayer-clean-v<versionName>.apk`).
 
 ## Update / install on all devices
 
 One-time per device:
 
-- **Shield:** Settings → Device Preferences → About (click Build 7×) → Developer options → enable **Network debugging**
-- **Kitchen Chromecast (Google TV):** Settings → System → About → click Build 7× → Developer options → enable **USB debugging** / **Network debugging** (wording varies)
+- **NVIDIA Shield:** Settings → Device Preferences → About (click Build 7×) → Developer options → enable **Network debugging**
+- **Google TV / Chromecast:** Settings → System → About → click Build 7× → Developer options → enable **USB debugging** / **Network debugging** (wording varies)
 
 Accept the “Allow USB debugging?” prompt on the TV the first time this PC connects.
 
 Then from PowerShell (build + push). Replace the IPs with your TVs:
 
 ```powershell
-cd c:\temp\videoplayer
 .\gradlew.bat :app:assembleDebug
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
-$apk = "c:\temp\videoplayer\app\build\outputs\apk\debug\app-debug.apk"
+$apk = "app\build\outputs\apk\debug\app-debug.apk"
 $devices = @("192.168.x.x", "192.168.x.y")  # your Android TV LAN IPs
 
 foreach ($ip in $devices) {
@@ -198,7 +193,7 @@ Check connections:
 & "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" devices -l
 ```
 
-After first install: open **PallasVideoPlayer** → **gear** → enter NAS credentials → **Test connection** → set Device id if using HA handoff (`lounge` / `bedroom`) → **Save**.
+After first install: open **PallasVideoPlayer** → **gear** → enter NAS credentials → **Test connection** → set Device id if using HA handoff → **Save**.
 
 ## UI
 
@@ -305,28 +300,28 @@ Same Wi‑Fi only. No shared token required.
 
 
 
-Browse/play on one Shield can use **HTTP or SMB**. Cross-TV move streams through a foreground **LAN HTTP proxy** on the target (Pallas authenticates to the NAS over SMB; VLC plays `http://<shield-ip>:…` with Range/resume). Bedroom TV must be awake (the move script turns the Shield on first).
+Browse/play on one TV can use **HTTP or SMB**. Cross-TV move streams through a foreground **LAN HTTP proxy** on the target (Pallas authenticates to the NAS over SMB; VLC plays `http://<tv-ip>:…` with Range/resume). The target TV must be awake.
 
 ### Cross-TV resume (NAS sidecars)
 
-While you watch a NAS video, Pallas writes a tiny sidecar next to the file (e.g. `Movie.mkv` → `Movie.mkv.pallas.json`) over SMB. Other TVs read it when browsing or playing, so resume position and “watched” dimming stay in sync across Lounge / Bedroom / Kitchen. Sidecars never appear in the app browse/search UI. The NAS `shield` user needs write permission on the video shares. Progress is also kept locally; NAS writes are throttled (~30s) and flushed when playback stops.
+While you watch a NAS video, Pallas writes a tiny sidecar next to the file (e.g. `Movie.mkv` → `Movie.mkv.pallas.json`) over SMB. Other TVs read it when browsing or playing, so resume position and “watched” dimming stay in sync across devices. Sidecars never appear in the app browse/search UI. The NAS account used by the app needs write permission on the video shares. Progress is also kept locally; NAS writes are throttled (~30s) and flushed when playback stops.
 
 ```text
-pallas://play?share=download&path=<encoded relative path>&host=<nas-host>&title=&position=
+pallas://play?share=<share>&path=<encoded relative path>&host=<nas-host>&title=&position=
 pallas://stop
 ```
 
-While playing (notification access on), each Shield posts now-playing to your Home Assistant webhook (configure under Settings → Integrations), e.g. `http://<ha-host>:8123/api/webhook/pallas_nowplaying`.
+While playing (notification access on), each TV posts now-playing to your Home Assistant webhook (configure under Settings → Integrations), e.g. `http://<ha-host>:8123/api/webhook/pallas_nowplaying`.
 
-**Per Shield settings:** set Device id under Settings → Integrations (quick picks `lounge` / `bedroom`, or type any id e.g. `kitchen`), Save. Match that id in your HA automations.
+**Per-device settings:** set Device id under Settings → Integrations (quick picks `lounge` / `bedroom`, or any custom id), Save. Match that id in your HA automations.
 
 ### Sleep timer standby (optional)
 
 1. In HA: **Settings → Automations → Create automation → Webhook** — webhook ID `pallas_sleep` (URL `http://<ha>:8123/api/webhook/pallas_sleep`).
-2. On each Shield: **Settings → Integrations** — enable **Sleep timer → HA standby** and Save.
+2. On each TV: **Settings → Integrations** — enable **Sleep timer → HA standby** and Save.
 3. When the sleep timer expires, Pallas stops playback, fades volume, then POSTs `{"device":"<device id>","action":"standby"}` (whatever Device id you set).
 
-Example automation action (replace entity IDs):
+Example automation action (replace entity IDs with your own):
 
 ```yaml
 action:
@@ -337,14 +332,14 @@ action:
         sequence:
           - action: media_player.turn_off
             target:
-              entity_id: media_player.shield_lounge
+              entity_id: media_player.living_room_tv
       - conditions:
           - condition: template
             value_template: "{{ trigger.json.device == 'bedroom' }}"
         sequence:
           - action: media_player.turn_off
             target:
-              entity_id: media_player.shield_bedroom
+              entity_id: media_player.bedroom_tv
 ```
 
-**Voice:** “move the movie to the bedroom” / “move the movie to the lounge”
+**Voice examples:** “move the movie to the bedroom” / “move the movie to the lounge” (match your Device ids and HA automations).
