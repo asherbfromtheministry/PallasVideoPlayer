@@ -56,7 +56,8 @@ Immersive player (blurred album art, track art, indigo/gold chrome). Streams fro
 
 Multiple **M3U** playlists, each with its own **XMLTV** EPG. Opens on last channel fullscreen; Back → guide → category gallery.
 
-- **Groups:** Custom / Alphabetical / Most watched order; rename, move, hide; AI or manual EPG match.
+- **Groups:** Custom / Alphabetical / Most watched order; rename, move, hide.
+- **AI EPG auto-assign:** Enter a Gemini or OpenAI API key under Settings → Live TV. Hold OK on a group → **AI match EPG…** and the model maps unmatched M3U channel names to XMLTV EPG channels (e.g. `UK: FHD BBC ONE` → `BBC One`), then saves the assignments. Per-channel **Assign EPG…** still offers ranked manual suggestions when you prefer to pick yourself.
 - **Guide & zap:** EPG wheel, time scrub, Up/Down zap, Right = previous channel, Left = IPTV + NAS history.
 - **Channel tools:** Favorite, rename, move, Assign EPG, Record, Open in VLC.
 - **Search:** Channels + programme titles; quality badges; recent searches.
@@ -101,7 +102,7 @@ Ad-free via **Innertube** ([Piped](https://github.com/TeamPiped/Piped) fallback)
 - **Synology Video Station / Audio Station** — preferred indexes
 - **Piped** — YouTube browse/auth
 - **BBC Sounds** — radio metadata
-- **Gemini / OpenAI** — AI EPG matching
+- **Gemini / OpenAI** — AI auto-assigns M3U Live TV channels to XMLTV EPG ids (group **AI match EPG…**)
 - **LRCLIB + art APIs** — lyrics and cover art
 - **Cross-TV sidecars** — resume/watched sync via `.pallas.json` on the NAS
 
