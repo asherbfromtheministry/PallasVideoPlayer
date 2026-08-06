@@ -14,6 +14,9 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <uses-feature
         android:name="android.software.leanback"
@@ -78,6 +81,10 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="pallas" android:host="play" />
                 <data android:scheme="pallasvideo" android:host="play" />
+                <data android:scheme="pallas" android:host="radio" />
+                <data android:scheme="pallasvideo" android:host="radio" />
+                <data android:scheme="pallas" android:host="podcast" />
+                <data android:scheme="pallasvideo" android:host="podcast" />
                 <data android:scheme="pallas" android:host="stop" />
                 <data android:scheme="pallasvideo" android:host="stop" />
             </intent-filter>

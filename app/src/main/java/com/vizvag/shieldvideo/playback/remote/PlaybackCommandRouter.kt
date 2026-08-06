@@ -11,13 +11,16 @@ import com.vizvag.shieldvideo.playback.MediaPlayerLauncher
 import com.vizvag.shieldvideo.playback.PlayerLaunchResult
 import com.vizvag.shieldvideo.playback.VlcLauncher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Maps LAN remote commands onto local players (Music, VLC, Live TV, Radio, YouTube).
+ * Maps LAN remote commands onto local players (Music, VLC, Live TV, Radio, YouTube, Podcasts).
  */
 class PlaybackCommandRouter(
     private val app: ShieldVideoApp,
@@ -35,34 +38,27 @@ class PlaybackCommandRouter(
                 .ifBlank { "pallas" }
                 .take(32)
         }
-        // Prefer live VLC only while the session is actually active — a leftover path
-        // must not hide an existing music queue from remotes.
-        if (app.resumeMonitor.isPlayerActive()) {
-            val pos = app.resumeMonitor.readPosition()
-            return RemoteStatus(
-                deviceId = deviceId,
-                mode = RemotePlaybackMode.NasVideo,
-                title = app.resumeMonitor.nowPlayingTitle().orEmpty()
-                    .ifBlank { app.resumeMonitor.activeVideoPath()?.substringAfterLast('/').orEmpty() },
-                isPlaying = app.resumeMonitor.isPlayerPlaying(),
-                positionMs = pos?.first ?: 0L,
-                durationMs = pos?.second ?: 0L,
-            )
-        }
         val musicUi = app.musicModule.playerController.uiState.value
         val queue = app.musicModule.queueManager.queue.value
         val musicTrack = musicUi.track
             ?: app.musicModule.queueManager.currentTrack
             ?: queue.getOrNull(app.musicModule.queueManager.currentIndex.value.coerceAtLeast(0))
-        // Report Music whenever there is a queue/session — even if audio was paused/stopped.
-        if (musicTrack != null || queue.isNotEmpty()) {
-            val track = musicTrack ?: queue.first()
+        val podcast = app.podcastPlayback.state.value
+        val yt = app.youtubePlayback.state.value
+        val radio = app.radioPlayback.state.value
+        val iptv = app.iptvPlayback.state.value
+        val vlcActive = app.resumeMonitor.isPlayerActive()
+        val vlcPlaying = vlcActive && app.resumeMonitor.isPlayerPlaying()
+
+        fun musicStatus(playing: Boolean = musicUi.isPlaying): RemoteStatus {
+            val track = musicTrack ?: queue.firstOrNull()
+                ?: return RemoteStatus(deviceId = deviceId, mode = RemotePlaybackMode.Idle)
             return RemoteStatus(
                 deviceId = deviceId,
                 mode = RemotePlaybackMode.Music,
                 title = track.title,
                 subtitle = track.artistName,
-                isPlaying = musicUi.isPlaying,
+                isPlaying = playing,
                 positionMs = musicUi.positionMs,
                 durationMs = musicUi.durationMs.takeIf { it > 0 } ?: track.durationMs,
                 queue = queue.map {
@@ -78,22 +74,97 @@ class PlaybackCommandRouter(
                     .takeIf { it in queue.indices }
                     ?: queue.indexOfFirst { it.id == track.id }.takeIf { it >= 0 }
                     ?: 0,
+                contentId = track.id,
             )
         }
-        // Stale VLC path with no active session — still report as video for UI, no queue.
-        if (app.resumeMonitor.activeVideoPath() != null) {
-            val pos = app.resumeMonitor.readPosition()
+
+        // 1) Whatever is actually audible wins (never hide live radio behind a leftover music queue).
+        when {
+            vlcPlaying -> {
+                val pos = app.resumeMonitor.readPosition()
+                return RemoteStatus(
+                    deviceId = deviceId,
+                    mode = RemotePlaybackMode.NasVideo,
+                    title = app.resumeMonitor.nowPlayingTitle().orEmpty()
+                        .ifBlank { app.resumeMonitor.activeVideoPath()?.substringAfterLast('/').orEmpty() },
+                    isPlaying = true,
+                    positionMs = pos?.first ?: 0L,
+                    durationMs = pos?.second ?: 0L,
+                )
+            }
+            musicUi.isPlaying -> return musicStatus(playing = true)
+            radio.isPlaying && radio.stationId.isNotBlank() -> return RemoteStatus(
+                deviceId = deviceId,
+                mode = RemotePlaybackMode.Radio,
+                title = radio.title.ifBlank { radio.stationName },
+                subtitle = radio.stationName,
+                isPlaying = true,
+                contentId = radio.stationId,
+            )
+            podcast.isPlaying && podcast.episodeGuid.isNotBlank() -> {
+                app.podcastPlayback.syncPosition()
+                val refreshed = app.podcastPlayback.state.value
+                return RemoteStatus(
+                    deviceId = deviceId,
+                    mode = RemotePlaybackMode.Podcasts,
+                    title = refreshed.episodeTitle,
+                    subtitle = refreshed.showTitle,
+                    isPlaying = true,
+                    positionMs = refreshed.positionMs,
+                    durationMs = refreshed.durationMs,
+                    artworkUrl = refreshed.imageUrl,
+                    contentId = refreshed.episodeGuid,
+                )
+            }
+            yt.isPlaying && yt.videoId.isNotBlank() -> {
+                app.youtubePlayback.refreshPosition()
+                val refreshed = app.youtubePlayback.state.value
+                return RemoteStatus(
+                    deviceId = deviceId,
+                    mode = RemotePlaybackMode.YouTube,
+                    title = refreshed.title,
+                    subtitle = refreshed.uploader,
+                    isPlaying = true,
+                    positionMs = refreshed.positionMs,
+                    durationMs = refreshed.durationMs,
+                    contentId = refreshed.videoId,
+                )
+            }
+            iptv.isPlaying && iptv.channelId.isNotBlank() -> return RemoteStatus(
+                deviceId = deviceId,
+                mode = RemotePlaybackMode.LiveTv,
+                title = iptv.channelName,
+                isPlaying = true,
+                contentId = iptv.channelId,
+            )
+        }
+
+        // 2) Paused / tuned sessions — radio & friends before a dormant music queue.
+        if (radio.stationId.isNotBlank()) {
             return RemoteStatus(
                 deviceId = deviceId,
-                mode = RemotePlaybackMode.NasVideo,
-                title = app.resumeMonitor.nowPlayingTitle().orEmpty()
-                    .ifBlank { app.resumeMonitor.activeVideoPath()?.substringAfterLast('/').orEmpty() },
+                mode = RemotePlaybackMode.Radio,
+                title = radio.title.ifBlank { radio.stationName },
+                subtitle = radio.stationName,
                 isPlaying = false,
-                positionMs = pos?.first ?: 0L,
-                durationMs = pos?.second ?: 0L,
+                contentId = radio.stationId,
             )
         }
-        val yt = app.youtubePlayback.state.value
+        if (podcast.episodeGuid.isNotBlank()) {
+            app.podcastPlayback.syncPosition()
+            val refreshed = app.podcastPlayback.state.value
+            return RemoteStatus(
+                deviceId = deviceId,
+                mode = RemotePlaybackMode.Podcasts,
+                title = refreshed.episodeTitle,
+                subtitle = refreshed.showTitle,
+                isPlaying = refreshed.isPlaying,
+                positionMs = refreshed.positionMs,
+                durationMs = refreshed.durationMs,
+                artworkUrl = refreshed.imageUrl,
+                contentId = refreshed.episodeGuid,
+            )
+        }
         if (yt.videoId.isNotBlank()) {
             app.youtubePlayback.refreshPosition()
             val refreshed = app.youtubePlayback.state.value
@@ -105,25 +176,31 @@ class PlaybackCommandRouter(
                 isPlaying = refreshed.isPlaying,
                 positionMs = refreshed.positionMs,
                 durationMs = refreshed.durationMs,
+                contentId = refreshed.videoId,
             )
         }
-        val radio = app.radioPlayback.state.value
-        if (radio.stationId.isNotBlank()) {
-            return RemoteStatus(
-                deviceId = deviceId,
-                mode = RemotePlaybackMode.Radio,
-                title = radio.title.ifBlank { radio.stationName },
-                subtitle = radio.stationName,
-                isPlaying = radio.isPlaying,
-            )
-        }
-        val iptv = app.iptvPlayback.state.value
         if (iptv.channelId.isNotBlank()) {
             return RemoteStatus(
                 deviceId = deviceId,
                 mode = RemotePlaybackMode.LiveTv,
                 title = iptv.channelName,
                 isPlaying = iptv.isPlaying,
+                contentId = iptv.channelId,
+            )
+        }
+        if (musicTrack != null || queue.isNotEmpty()) {
+            return musicStatus(playing = false)
+        }
+        if (vlcActive || app.resumeMonitor.activeVideoPath() != null) {
+            val pos = app.resumeMonitor.readPosition()
+            return RemoteStatus(
+                deviceId = deviceId,
+                mode = RemotePlaybackMode.NasVideo,
+                title = app.resumeMonitor.nowPlayingTitle().orEmpty()
+                    .ifBlank { app.resumeMonitor.activeVideoPath()?.substringAfterLast('/').orEmpty() },
+                isPlaying = false,
+                positionMs = pos?.first ?: 0L,
+                durationMs = pos?.second ?: 0L,
             )
         }
         return RemoteStatus(deviceId = deviceId, mode = RemotePlaybackMode.Idle)
@@ -143,6 +220,7 @@ class PlaybackCommandRouter(
                         RemotePlaybackMode.LiveTv -> app.iptvPlayback.play()
                         RemotePlaybackMode.Radio -> app.radioPlayback.play()
                         RemotePlaybackMode.YouTube -> app.youtubePlayback.play()
+                        RemotePlaybackMode.Podcasts -> app.podcastPlayback.play()
                         RemotePlaybackMode.Idle -> Unit
                     }
                     TransportAction.Pause -> when (mode) {
@@ -151,6 +229,7 @@ class PlaybackCommandRouter(
                         RemotePlaybackMode.LiveTv -> app.iptvPlayback.pause()
                         RemotePlaybackMode.Radio -> app.radioPlayback.pause()
                         RemotePlaybackMode.YouTube -> app.youtubePlayback.pause()
+                        RemotePlaybackMode.Podcasts -> app.podcastPlayback.pause()
                         RemotePlaybackMode.Idle -> Unit
                     }
                     TransportAction.Toggle -> when (mode) {
@@ -162,15 +241,18 @@ class PlaybackCommandRouter(
                         RemotePlaybackMode.LiveTv -> app.iptvPlayback.toggle()
                         RemotePlaybackMode.Radio -> app.radioPlayback.toggle()
                         RemotePlaybackMode.YouTube -> app.youtubePlayback.toggle()
+                        RemotePlaybackMode.Podcasts -> app.podcastPlayback.toggle()
                         RemotePlaybackMode.Idle -> Unit
                     }
                     TransportAction.Stop -> stopAll()
                     TransportAction.Next -> when (mode) {
                         RemotePlaybackMode.Music -> app.musicModule.playerController.playNext()
+                        RemotePlaybackMode.Podcasts -> skipPodcast(newer = false)
                         else -> Unit
                     }
                     TransportAction.Previous -> when (mode) {
                         RemotePlaybackMode.Music -> app.musicModule.playerController.playPrevious()
+                        RemotePlaybackMode.Podcasts -> skipPodcast(newer = true)
                         else -> Unit
                     }
                     TransportAction.Seek -> when (mode) {
@@ -178,6 +260,7 @@ class PlaybackCommandRouter(
                             app.musicModule.playerController.seekTo(positionMs)
                         RemotePlaybackMode.NasVideo -> app.resumeMonitor.seekPlayer(positionMs)
                         RemotePlaybackMode.YouTube -> app.youtubePlayback.seekTo(positionMs)
+                        RemotePlaybackMode.Podcasts -> app.podcastPlayback.seekTo(positionMs)
                         else -> Unit
                     }
                 }
@@ -191,6 +274,200 @@ class PlaybackCommandRouter(
             is RemotePlayRequest.LiveTv -> playLiveTv(request.channelId)
             is RemotePlayRequest.Radio -> playRadio(request.stationId)
             is RemotePlayRequest.YouTube -> playYouTube(request.videoId)
+            is RemotePlayRequest.Podcast -> playPodcast(request)
+        }
+    }
+
+    /** Phone/tablet asks the TV to open the same player screen (does not stop current audio). */
+    suspend fun navigate(route: String): Result<Unit> = runCatching {
+        val trimmed = route.trim()
+        if (!RemoteUiRouteStore.isMirrorable(trimmed)) {
+            error("Route not mirrorable: $trimmed")
+        }
+        withContext(Dispatchers.Main) {
+            bringAppToForeground(trimmed)
+            RemoteUiRouteStore.set(trimmed)
+            RemoteNavRequests.requestRoute(trimmed)
+        }
+        delay(500)
+        RemoteNavRequests.requestRoute(trimmed)
+    }
+
+    fun podcastSubscriptionsJson(): JSONArray = app.podcastRepository.exportSubscriptionsJson()
+
+    /** Radio station catalog for LAN remotes / HA (`GET /v1/radio/stations`). */
+    fun radioStationsJson(): JSONArray {
+        val settings = app.settingsRepository.load()
+        val stations = settings.customRadioStations.ifEmpty { RadioDefaults.stations() }
+        val arr = JSONArray()
+        stations.forEach { station ->
+            arr.put(
+                JSONObject()
+                    .put("id", station.id)
+                    .put("name", station.name)
+                    .put("tagline", station.tagline)
+                    .put("bbcServiceId", station.bbcServiceId),
+            )
+        }
+        return arr
+    }
+
+    /**
+     * Play a radio station by id, or by display name (exact then contains, case-insensitive).
+     * Used by LAN remotes and `pallas://radio` deep links.
+     */
+    suspend fun playRadioStation(stationId: String = "", stationName: String = ""): Result<Unit> =
+        runCatching {
+            val settings = app.settingsRepository.load()
+            val stations = settings.customRadioStations.ifEmpty { RadioDefaults.stations() }
+            val id = stationId.trim()
+            val name = stationName.trim()
+            val station = when {
+                id.isNotBlank() -> stations.firstOrNull { it.id.equals(id, ignoreCase = true) }
+                    ?: error("Station not found: $id")
+                name.isNotBlank() -> {
+                    stations.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                        ?: stations.firstOrNull {
+                            it.name.contains(name, ignoreCase = true) ||
+                                name.contains(it.name, ignoreCase = true)
+                        }
+                        ?: error("Station not found: $name")
+                }
+                else -> error("Missing stationId or name")
+            }
+            playRadio(station.id)
+        }
+
+    /**
+     * Play a podcast episode by guid (+ optional showId), HA catalog label (`Show · Episode`),
+     * or latest episode of a show name (`pallas://podcast?show=`).
+     */
+    suspend fun playPodcastEpisode(
+        episodeGuid: String = "",
+        showId: String = "",
+        label: String = "",
+        showName: String = "",
+    ): Result<Unit> = runCatching {
+        withContext(Dispatchers.IO) {
+            val guid = episodeGuid.trim()
+            val sid = showId.trim()
+            val lbl = label.trim()
+            val showSpoken = showName.trim()
+            val matched = when {
+                guid.isNotBlank() -> app.podcastRepository.findCachedEpisodeByGuid(guid, sid)
+                    ?: error("Episode not found: $guid")
+                lbl.isNotBlank() -> app.podcastRepository.findCachedEpisodeByLabel(lbl)
+                    ?: error("Episode not found: $lbl")
+                showSpoken.isNotBlank() -> {
+                    val show = app.podcastRepository.findShowBySpokenName(showSpoken)
+                        ?: error("Podcast show not found: $showSpoken")
+                    // Prefer a fresh feed so "latest" means latest.
+                    runCatching {
+                        app.podcastRepository.episodesForShow(show, forceRefresh = true)
+                    }
+                    app.podcastRepository.findLatestEpisodeByShowName(show.title)
+                        ?: error("No episodes for: ${show.title}")
+                }
+                else -> error("Missing guid, label, or show")
+            }
+            val (show, episode) = matched
+            if (episode.audioUrl.isBlank()) error("Episode has no audio URL")
+            playPodcast(
+                RemotePlayRequest.Podcast(
+                    showId = show.id,
+                    episodeGuid = episode.guid,
+                    audioUrl = episode.audioUrl,
+                    episodeTitle = episode.title,
+                    showTitle = show.title,
+                    imageUrl = episode.imageUrl.ifBlank { show.imageUrl },
+                    durationSec = episode.durationSec,
+                ),
+            )
+        }
+    }
+
+    /** Relative seek while a podcast is loaded (`pallas://podcast?skip=`). */
+    suspend fun seekPodcastBy(deltaMs: Long): Result<Unit> = runCatching {
+        withContext(Dispatchers.Main) {
+            if (!app.podcastPlayback.isActive()) {
+                error("No podcast playing")
+            }
+            app.podcastPlayback.seekBy(deltaMs)
+            app.publishPodcastNowPlayingToHa()
+        }
+    }
+
+    /** Force-refresh all RSS feeds on this device (used by remote Refresh). */
+    suspend fun refreshPodcastFeeds(): Result<Int> = runCatching {
+        withContext(Dispatchers.IO) {
+            var shows = app.podcastRepository.subscriptions.value
+            if (shows.isEmpty()) {
+                // Cold device / wiped prefs — re-pull OPML from the saved NAS path (or Downloads).
+                app.podcastRepository.importOpmlPreferNas().getOrElse { throw it }
+                shows = app.podcastRepository.subscriptions.value
+            }
+            shows.forEach { show ->
+                runCatching { app.podcastRepository.episodesForShow(show, forceRefresh = true) }
+            }
+            shows.size
+        }
+    }.also { result ->
+        if (result.isSuccess) {
+            runCatching { app.publishPodcastEpisodesToHa() }
+        }
+    }
+
+    suspend fun podcastEpisodesJson(showId: String?): JSONArray = withContext(Dispatchers.IO) {
+        val shows = app.podcastRepository.subscriptions.value
+        val episodes = if (!showId.isNullOrBlank()) {
+            val show = shows.firstOrNull { it.id == showId }
+                ?: return@withContext JSONArray()
+            // Prefer cache for remotes; fall back to a normal load if never cached.
+            app.podcastRepository.readCachedEpisodes(show).ifEmpty {
+                runCatching {
+                    app.podcastRepository.episodesForShow(show, forceRefresh = false)
+                }.getOrDefault(emptyList())
+            }
+        } else {
+            val cached = coroutineScope {
+                shows.map { show ->
+                    async { app.podcastRepository.readCachedEpisodes(show) }
+                }.awaitAll().flatten()
+            }
+            if (cached.isNotEmpty()) {
+                cached.sortedByDescending { it.publishEpochMs }.take(250)
+            } else {
+                // First open after import: caches are cold — fetch so remotes aren't stuck empty.
+                coroutineScope {
+                    shows.map { show ->
+                        async {
+                            runCatching {
+                                app.podcastRepository.episodesForShow(show, forceRefresh = false)
+                            }.getOrDefault(emptyList())
+                        }
+                    }.awaitAll().flatten()
+                }.sortedByDescending { it.publishEpochMs }.take(250)
+            }
+        }
+        val progress = app.podcastRepository.progress.value
+        JSONArray().also { arr ->
+            episodes.forEach { ep ->
+                val p = progress[ep.guid]
+                arr.put(
+                    JSONObject()
+                        .put("guid", ep.guid)
+                        .put("showId", ep.showId)
+                        .put("title", ep.title)
+                        // Omit description — HTML blobs make the LAN payload huge / slow.
+                        .put("audioUrl", ep.audioUrl)
+                        .put("publishEpochMs", ep.publishEpochMs)
+                        .put("durationSec", ep.durationSec)
+                        .put("imageUrl", ep.imageUrl)
+                        .put("positionMs", p?.positionMs ?: 0L)
+                        .put("durationMs", p?.durationMs ?: 0L)
+                        .put("completed", p?.completed == true),
+                )
+            }
         }
     }
 
@@ -330,6 +607,66 @@ class PlaybackCommandRouter(
         app.youtubePlayback.playStream(info)
     }
 
+    private suspend fun playPodcast(request: RemotePlayRequest.Podcast) {
+        prepareInAppPlayer(RemotePlaybackMode.Podcasts, "podcasts")
+        val show = app.podcastRepository.subscriptions.value
+            .firstOrNull { it.id == request.showId }
+            ?: com.vizvag.shieldvideo.data.podcast.PodcastShow(
+                id = request.showId.ifBlank { "remote" },
+                title = request.showTitle.ifBlank { "Podcast" },
+                feedUrl = "",
+                imageUrl = request.imageUrl,
+            )
+        val fromFeed = if (request.showId.isNotBlank()) {
+            runCatching {
+                app.podcastRepository.episodesForShow(show, forceRefresh = false)
+                    .firstOrNull { it.guid == request.episodeGuid }
+            }.getOrNull()
+        } else {
+            null
+        }
+        val episode = fromFeed ?: com.vizvag.shieldvideo.data.podcast.PodcastEpisode(
+            guid = request.episodeGuid.ifBlank { request.audioUrl },
+            showId = show.id,
+            title = request.episodeTitle.ifBlank { "Episode" },
+            audioUrl = request.audioUrl,
+            durationSec = request.durationSec,
+            imageUrl = request.imageUrl,
+        )
+        if (episode.audioUrl.isBlank()) error("Episode has no audio URL")
+        val start = request.positionMs.takeIf { it > 5_000L }
+            ?: app.podcastRepository.progressFor(episode.guid)
+                ?.takeIf { !it.completed && it.positionMs > 5_000L }
+                ?.positionMs
+            ?: 0L
+        withContext(Dispatchers.Main) {
+            app.podcastPlayback.playEpisode(show, episode, startPositionMs = start)
+        }
+    }
+
+    /** newer=true → previous list item (more recent); newer=false → older episode. */
+    private suspend fun skipPodcast(newer: Boolean) {
+        val current = app.podcastPlayback.state.value
+        if (current.episodeGuid.isBlank()) return
+        val shows = app.podcastRepository.subscriptions.value
+        val merged = ArrayList<com.vizvag.shieldvideo.data.podcast.PodcastEpisode>()
+        shows.forEach { show ->
+            runCatching {
+                merged.addAll(app.podcastRepository.episodesForShow(show, forceRefresh = false))
+            }
+        }
+        val sorted = merged.sortedByDescending { it.publishEpochMs }
+        val idx = sorted.indexOfFirst { it.guid == current.episodeGuid }
+        if (idx < 0) return
+        val nextIdx = if (newer) idx - 1 else idx + 1
+        if (nextIdx !in sorted.indices) return
+        val episode = sorted[nextIdx]
+        val show = shows.firstOrNull { it.id == episode.showId } ?: return
+        withContext(Dispatchers.Main) {
+            app.podcastPlayback.playEpisode(show, episode, startPositionMs = 0L)
+        }
+    }
+
     /**
      * Bring Pallas over VLC (or whatever is fullscreen), stop other players, then show [route].
      * MediaSession stop alone leaves VLC on screen while music already plays underneath.
@@ -379,6 +716,7 @@ class PlaybackCommandRouter(
         app.radioPlayback.stop()
         app.iptvPlayback.stop()
         app.youtubePlayback.stop()
+        app.podcastPlayback.stop()
         app.resumeMonitor.stopPlayer()
         LocalMediaProxyService.stop(app)
         bringAppToForeground()
@@ -389,6 +727,7 @@ class PlaybackCommandRouter(
         if (keep != RemotePlaybackMode.Radio) app.radioPlayback.stop()
         if (keep != RemotePlaybackMode.LiveTv) app.iptvPlayback.stop()
         if (keep != RemotePlaybackMode.YouTube) app.youtubePlayback.stop()
+        if (keep != RemotePlaybackMode.Podcasts) app.podcastPlayback.stop()
         if (keep != RemotePlaybackMode.NasVideo) {
             app.resumeMonitor.stopPlayer()
             LocalMediaProxyService.stop(app)
@@ -398,23 +737,20 @@ class PlaybackCommandRouter(
     private suspend fun resolveTracks(refs: List<MusicTrackRef>): List<TrackEntity> {
         val lib = app.musicModule.libraryRepository
         return refs.mapNotNull { ref ->
-            when {
-                ref.id.isNotBlank() -> lib.getTrack(ref.id)
-                ref.nasPath.isNotBlank() -> {
-                    lib.getTrackByPath(ref.nasPath)
-                        ?: TrackEntity(
-                            id = ref.nasPath,
-                            albumId = "",
-                            artistId = "",
-                            title = ref.title.ifBlank { ref.nasPath.substringAfterLast('/') },
-                            artistName = ref.artistName,
-                            albumTitle = ref.albumTitle,
-                            durationMs = ref.durationMs,
-                            nasPath = ref.nasPath,
-                        )
-                }
-                else -> null
-            }
+            val byId = ref.id.takeIf { it.isNotBlank() }?.let { lib.getTrack(it) }
+            if (byId != null) return@mapNotNull byId
+            val path = ref.nasPath.trim()
+            if (path.isBlank()) return@mapNotNull null
+            lib.getTrackByPath(path) ?: TrackEntity(
+                id = ref.id.ifBlank { path },
+                albumId = "",
+                artistId = "",
+                title = ref.title.ifBlank { path.substringAfterLast('/') },
+                artistName = ref.artistName,
+                albumTitle = ref.albumTitle,
+                durationMs = ref.durationMs,
+                nasPath = path,
+            )
         }
     }
 
@@ -453,6 +789,16 @@ class PlaybackCommandRouter(
                 "iptv", "livetv" -> RemotePlayRequest.LiveTv(body.optString("channelId"))
                 "radio" -> RemotePlayRequest.Radio(body.optString("stationId"))
                 "youtube", "yt" -> RemotePlayRequest.YouTube(body.optString("videoId"))
+                "podcast", "podcasts" -> RemotePlayRequest.Podcast(
+                    showId = body.optString("showId"),
+                    episodeGuid = body.optString("episodeGuid"),
+                    audioUrl = body.optString("audioUrl"),
+                    episodeTitle = body.optString("episodeTitle"),
+                    showTitle = body.optString("showTitle"),
+                    imageUrl = body.optString("imageUrl"),
+                    durationSec = body.optLong("durationSec"),
+                    positionMs = body.optLong("positionMs"),
+                )
                 else -> error("Unknown play type: $type")
             }.also {
                 Log.d(TAG, "Parsed play request type=$type")

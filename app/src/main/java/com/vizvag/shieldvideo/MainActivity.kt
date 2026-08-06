@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Phonelink
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
@@ -86,6 +87,8 @@ import com.vizvag.shieldvideo.playback.PlayerLaunchResult
 import com.vizvag.shieldvideo.playback.ResumeMonitor
 import com.vizvag.shieldvideo.playback.VlcLauncher
 import com.vizvag.shieldvideo.playback.remote.RemoteControlService
+import com.vizvag.shieldvideo.playback.remote.RemoteControllerSessions
+import com.vizvag.shieldvideo.playback.remote.RemoteNavBridge
 import com.vizvag.shieldvideo.playback.remote.RemoteNavRequests
 import com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode
 import com.vizvag.shieldvideo.playback.remote.RemoteStatus
@@ -254,6 +257,7 @@ class MainActivity : ComponentActivity() {
         val app = application as ShieldVideoApp
         runCatching { app.musicModule.playerController.stop() }
         runCatching { app.radioPlayback.stop() }
+        runCatching { app.podcastPlayback.stop() }
         runCatching { app.iptvPlayback.stop() }
         runCatching { app.youtubePlayback.stop() }
         // Keep remote control alive while VLC handoff FGS is streaming (TVs only).
@@ -288,6 +292,73 @@ class MainActivity : ComponentActivity() {
             LocalMediaProxyService.stop(this)
             window.decorView.postDelayed({ finish() }, 300L)
             return true
+        }
+        if (DeepLinkPlayer.isRadioIntent(intent)) {
+            val stationId = DeepLinkPlayer.radioStationIdFrom(intent!!)
+            val stationName = DeepLinkPlayer.radioStationNameFrom(intent)
+            lifecycleScope.launch {
+                val result = app.playbackRouter.playRadioStation(
+                    stationId = stationId.orEmpty(),
+                    stationName = stationName.orEmpty(),
+                )
+                result.onFailure { err ->
+                    Toast.makeText(
+                        this@MainActivity,
+                        err.message ?: "Unable to play radio station",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+            // Keep UI so Radio screen can show; playRadioStation navigates there.
+            return false
+        }
+        if (DeepLinkPlayer.isPodcastIntent(intent)) {
+            val refresh = DeepLinkPlayer.podcastRefreshFrom(intent!!)
+            val skipSec = DeepLinkPlayer.podcastSkipSecondsFrom(intent)
+            val guid = DeepLinkPlayer.podcastGuidFrom(intent)
+            val showId = DeepLinkPlayer.podcastShowIdFrom(intent)
+            val label = DeepLinkPlayer.podcastLabelFrom(intent)
+            val showName = DeepLinkPlayer.podcastShowNameFrom(intent)
+            lifecycleScope.launch {
+                when {
+                    refresh -> {
+                        val result = app.playbackRouter.refreshPodcastFeeds()
+                        result.onFailure { err ->
+                            Toast.makeText(
+                                this@MainActivity,
+                                err.message ?: "Unable to refresh podcasts",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                    skipSec != null -> {
+                        val result = app.playbackRouter.seekPodcastBy(skipSec * 1_000L)
+                        result.onFailure { err ->
+                            Toast.makeText(
+                                this@MainActivity,
+                                err.message ?: "Unable to seek podcast",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                    else -> {
+                        val result = app.playbackRouter.playPodcastEpisode(
+                            episodeGuid = guid.orEmpty(),
+                            showId = showId.orEmpty(),
+                            label = label.orEmpty(),
+                            showName = showName.orEmpty(),
+                        )
+                        result.onFailure { err ->
+                            Toast.makeText(
+                                this@MainActivity,
+                                err.message ?: "Unable to play podcast episode",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            }
+            return false
         }
         if (!DeepLinkPlayer.isPlayIntent(intent)) return false
 
@@ -487,6 +558,13 @@ private fun ShieldVideoAppNav(
 
         val remoteTarget by RemoteTargetStore.target.collectAsState()
         val showRemoteBanner = remoteTarget != null && !iptvFullscreen && !youtubeFullscreen
+        val remoteControllers by RemoteControllerSessions.sessions.collectAsState()
+        val showControlledBanner =
+            !isPhoneOrTablet &&
+                remoteTarget == null &&
+                remoteControllers.isNotEmpty() &&
+                !iptvFullscreen &&
+                !youtubeFullscreen
         val remoteStatus by RemoteStatusPoller.status.collectAsState()
         val remoteBannerScope = rememberCoroutineScope()
         val remoteClient = remember { (context.applicationContext as ShieldVideoApp).remoteClient }
@@ -528,6 +606,12 @@ private fun ShieldVideoAppNav(
                     },
                     onOpenRadio = {
                         navController.navigate("radio") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenPodcasts = {
+                        navController.navigate("podcasts") {
                             popUpTo("home") { inclusive = false }
                             launchSingleTop = true
                         }
@@ -590,6 +674,12 @@ private fun ShieldVideoAppNav(
                             popUpTo("home") { inclusive = false }
                             launchSingleTop = true
                         }
+                    },
+                    onOpenPodcasts = {
+                        navController.navigate("podcasts") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
                     }
                 )
             }
@@ -633,6 +723,13 @@ private fun ShieldVideoAppNav(
                             launchSingleTop = true
                         }
                     },
+                    onOpenPodcasts = {
+                        appContext.musicModule.playerController.stop()
+                        navController.navigate("podcasts") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
                     onOpenSettings = { navController.navigate("settings") },
                 )
             }
@@ -664,6 +761,12 @@ private fun ShieldVideoAppNav(
                     },
                     onOpenMusic = {
                         navController.navigate("music") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenPodcasts = {
+                        navController.navigate("podcasts") {
                             popUpTo("home") { inclusive = false }
                             launchSingleTop = true
                         }
@@ -708,6 +811,12 @@ private fun ShieldVideoAppNav(
                     },
                     onOpenMusic = {
                         navController.navigate("music") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenPodcasts = {
+                        navController.navigate("podcasts") {
                             popUpTo("home") { inclusive = false }
                             launchSingleTop = true
                         }
@@ -770,7 +879,62 @@ private fun ShieldVideoAppNav(
                             launchSingleTop = true
                         }
                     },
+                    onOpenPodcasts = {
+                        navController.navigate("podcasts") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
                     onFullscreenChanged = { iptvFullscreen = it },
+                )
+            }
+            composable("podcasts") {
+                val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext as ShieldVideoApp
+                val appSettings = remember(settingsRevision) { settingsRepository.load() }
+                fun openBrowser(share: String? = null, openSearch: Boolean = false) {
+                    share?.let { BrowseNavRequests.requestShare(it) }
+                    if (openSearch) BrowseNavRequests.requestOpenSearch()
+                    navController.navigate("browser") {
+                        popUpTo("home") { inclusive = false }
+                        launchSingleTop = true
+                    }
+                }
+                com.vizvag.shieldvideo.ui.podcast.PodcastScreen(
+                    appSettings = appSettings,
+                    onBack = {
+                        appContext.podcastPlayback.stop()
+                        navController.popBackStack()
+                    },
+                    onSelectShare = { openBrowser(share = it) },
+                    onOpenLiveTv = {
+                        appContext.podcastPlayback.stop()
+                        navController.navigate("iptv") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenYouTube = {
+                        appContext.podcastPlayback.stop()
+                        navController.navigate("youtube") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenRadio = {
+                        appContext.podcastPlayback.stop()
+                        navController.navigate("radio") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenMusic = {
+                        appContext.podcastPlayback.stop()
+                        navController.navigate("music") {
+                            popUpTo("home") { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
+                    onOpenSettings = { navController.navigate("settings") },
                 )
             }
             composable("multiview") {
@@ -794,6 +958,7 @@ private fun ShieldVideoAppNav(
                         iptvParental,
                         ShieldVideoApp.instance.settingsBackupManager,
                         ShieldVideoApp.instance.youtubeRepository,
+                        ShieldVideoApp.instance.podcastRepository,
                     )
                 )
                 SettingsScreen(
@@ -812,9 +977,11 @@ private fun ShieldVideoAppNav(
                             }
                         }
                     },
-                    onOpenRoom = { _ ->
-                        // Always land on home — don't mirror the TV's current screen.
-                        navController.navigate("home") {
+                    onOpenRoom = { status ->
+                        val route = status?.uiRoute
+                            ?.takeIf { RemoteUiRouteStore.isMirrorable(it) }
+                            ?: "home"
+                        navController.navigate(route) {
                             launchSingleTop = true
                             popUpTo("remote") { inclusive = true }
                         }
@@ -912,12 +1079,52 @@ private fun ShieldVideoAppNav(
                     )
                 }
             }
+
+            if (showControlledBanner) {
+                val names = remoteControllers.joinToString(" · ") { it.name }
+                val label = when (remoteControllers.size) {
+                    1 -> "Controlled by $names"
+                    else -> "Controlled by ${remoteControllers.size}: $names"
+                }
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .zIndex(8f)
+                        .padding(top = 8.dp, start = 10.dp)
+                        .heightIn(max = 28.dp)
+                        .wrapContentWidth()
+                        .widthIn(max = 420.dp)
+                        .background(CardSurface.copy(alpha = 0.92f), RoundedCornerShape(14.dp))
+                        .border(1.dp, Accent.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Phonelink,
+                        contentDescription = null,
+                        tint = Accent,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        text = label,
+                        color = TextCream,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
 
-        // TVs publish the visible screen so remotes can open the same route.
+        // TVs publish the visible screen; phones push their screen to the connected TV.
         LaunchedEffect(backStackEntry?.destination?.route, isPhoneOrTablet) {
+            val route = backStackEntry?.destination?.route
             if (!isPhoneOrTablet) {
-                RemoteUiRouteStore.set(backStackEntry?.destination?.route)
+                RemoteUiRouteStore.set(route)
+            } else if (RemoteTargetStore.isControllingRemote()) {
+                RemoteNavBridge.pushRouteIfControlling(route)
             }
         }
 

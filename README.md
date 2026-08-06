@@ -6,8 +6,8 @@ Android TV app for NVIDIA Shield that browses Synology SMB3 shares and plays fil
 
 These are non-negotiable product laws. Do not “optimize” them away, and do not reintroduce regressions when fixing unrelated bugs.
 
-1. **Quit = silence.** When the user leaves / closes / backgrounds the app (Home, another app, activity `ON_STOP`), **all in-app playback must stop immediately** — Radio ExoPlayer, Music `PlayerController`, Live TV / YouTube / Multiview players. No audio may continue after the app is no longer in the foreground. (NAS video in **external VLC** is separate; `pallas://stop` still stops VLC handoff.)
-2. **Playing = screen stays on.** While Radio, Music, Live TV (preview/fullscreen/multiview), or YouTube is actively playing inside Pallas, the device must **not** fall into screensaver, ambient mode, or display timeout. Use `FLAG_KEEP_SCREEN_ON` / `keepScreenOn` while playing; clear those flags when playback stops or the player UI is torn down. Do **not** stop Radio/Music solely on `ON_PAUSE` (transient); stop on **`ON_STOP`** / leaving the player so screensaver workarounds never leave audio running after quit.
+1. **Quit = silence.** When the user leaves / closes / backgrounds the app (Home, another app, activity `ON_STOP`), **all in-app playback must stop immediately** — Radio ExoPlayer, Music `PlayerController`, Podcasts, Live TV / YouTube / Multiview players. No audio may continue after the app is no longer in the foreground. (NAS video in **external VLC** is separate; `pallas://stop` still stops VLC handoff.)
+2. **Playing = screen stays on.** While Radio, Music, Podcasts, Live TV (preview/fullscreen/multiview), or YouTube is actively playing inside Pallas, the device must **not** fall into screensaver, ambient mode, or display timeout. Use `FLAG_KEEP_SCREEN_ON` / `keepScreenOn` while playing; clear those flags when playback stops or the player UI is torn down. Do **not** stop Radio/Music/Podcasts solely on `ON_PAUSE` (transient); stop on **`ON_STOP`** / leaving the player so screensaver workarounds never leave audio running after quit.
 3. **Overlays trap D-pad focus.** Any full-screen or modal sheet (search, find-on-NAS, options, clear/assign dialogs, leave-confirm, etc.) **must** own the focus tree until dismissed. D-pad / remote focus must **not** move to controls behind the overlay (nav rail, play/pause, station chips, shelves). `zIndex` / drawing on top is **not** enough — use a Compose `Dialog` (preferred; same pattern as Music search / `MusicModalOverlay`) or an explicit focus trap, and set `railFocusEnabled = false` (or equivalent) on chrome behind the sheet while it is open. The user must **Back** / close the overlay to reach anything underneath.
 
 If a change touches playback lifecycle, wake locks, Radio/Music composables, or any modal/overlay, re-read this section and verify these rules still hold.
@@ -30,7 +30,7 @@ Get the latest **clean** APK from [Releases](../../releases) — no personal NAS
 
 ## Features
 
-Android TV app for NVIDIA Shield / Google TV. Browses a Synology NAS, plays video in external VLC, and includes in-app Music, Live TV, Radio, YouTube, and LAN remote control.
+Android TV app for NVIDIA Shield / Google TV. Browses a Synology NAS, plays video in external VLC, and includes in-app Music, Podcasts, Live TV, Radio, YouTube, and LAN remote control.
 
 ### Video player (NAS library)
 
@@ -75,6 +75,15 @@ User-managed internet stations (BBC nationals seeded once; restorable).
 - **Record** to the same storage as Live TV, with timed stop presets.
 - Black screen, Hue sync, sleep timer. Last station remembered. Leaving the app stops radio.
 
+### Podcasts
+
+Immersive player for RSS podcast subscriptions imported from Podcast Addict (or any standard OPML).
+
+- **Import:** Settings → Podcasts → **Import OPML…** — browse NAS or this device, OK on the `.opml` file to import.
+- **Browse:** Home hotspot + left rail (toggle under Display). Opens on **all shows · recent** episode feed; Shows picker can filter to one subscription. Sort **A–Z / Recent / Genre / In progress**; episode sort **Newest / Oldest / Unplayed**; resume progress.
+- **Playback:** In-app ExoPlayer; −15s / +30s; sleep timer; black screen. Quit stops audio; playing keeps the screen on.
+- Included in settings backup (path + subscriptions prefs).
+
 ### YouTube (optional on home/rail)
 
 Ad-free via **Innertube** ([Piped](https://github.com/TeamPiped/Piped) fallback) into ExoPlayer. Search or paste URLs; Piped subscription feed (sort, Takeout CSV import); continue watching (last 20); related while playing.
@@ -83,20 +92,20 @@ Ad-free via **Innertube** ([Piped](https://github.com/TeamPiped/Piped) fallback)
 
 | Feature | What it does |
 |--------|----------------|
-| **Home landing** | Media-room hotspots for enabled players; share plaques; Settings; Remote room picker |
+| **Home landing** | Media-room art hotspots mapped to each prop (Radio, Music, Podcasts, Download/Library, YouTube, Live TV) when enabled in Display; share plaques; Settings; Remote room picker |
 | **Sleep timer** | 15→30→45→60→90→Off across NAS / Live TV / Radio / Music; fade then stop; optional HA standby |
 | **On-screen clock** | Corner-selectable; hidden in Live TV/YouTube fullscreen |
 | **Display** | Full vs Reduced visuals; toggle which players show on home/rail |
 | **Forced landscape** | Phones letterboxed to 16:9 |
-| **LAN remote** | Phone/tablet picks a TV room, then drives it with the same Music/Radio/Live TV/YouTube/Library screens |
+| **LAN remote** | Phone/tablet connects to a TV room, then **mirrors that room**: navigating on the phone opens the same screen on the TV; Podcasts shows the TV’s subscriptions/episodes and plays on the TV. Phone shows a Connected chip; the TV shows **Controlled by …** (supports multiple remotes). Disconnected = local library only. |
 | **Settings backup** | Export/import JSON to a private NAS folder |
-| **Hard rules** | Playing keeps screen on; quit stops all in-app audio |
+| **Hard rules** | Playing keeps screen on; quit stops all in-app audio (including Podcasts) |
 
-**Settings tabs:** NAS · Library · Playback · Display · Live TV · YouTube · Radio · Integrations · Backup
+**Settings tabs:** NAS · Library · Playback · Display · Live TV · YouTube · Radio · Podcasts · Integrations · Backup
 
 ### Other integrations
 
-- **Home Assistant** — now-playing webhook; `pallas://play` / `pallas://stop`; sleep → `pallas_sleep` standby with device id
+- **Home Assistant** — now-playing webhook; radio station + recent podcast catalog webhooks; `pallas://play` / `pallas://radio` / `pallas://podcast` / `pallas://stop`; sleep → `pallas_sleep` standby with device id
 - **Philips Hue** — Music/Radio audio → light pulse; restore on pause/stop
 - **Trakt / TMDB** — video metadata and posters
 - **Synology Video Station / Audio Station** — preferred indexes
@@ -202,10 +211,10 @@ After first install: open **PallasVideoPlayer** → **gear** → enter NAS crede
 - **Motion:** cinematic route transitions, snappy focus springs, staggered list entrances, theater-mesh ambient light
 - **Phones / tiny windows:** forced **landscape**; UI letterboxes into a 16:9 stage that scales to fit. The remote **Connected** banner overlays the stage (compact single row) so it does not shrink the letterbox. Home room hotspots stay aligned to the media-room art.
 - **Sound:** system navigation/click cues plus a soft click tone on select
-- Top icon row: share/folder switcher moved into the **left nav rail** on Browse (shares, recordings, Live TV, YouTube, Radio, Music, sleep, settings, up). **Search** lives on the NAS video browse page (list header), not the shared rail
+- Top icon row: share/folder switcher moved into the **left nav rail** on Browse (shares, recordings, Live TV, YouTube, Radio, Music, Podcasts, sleep, settings, up). **Search** lives on the NAS video browse page (list header), not the shared rail
 - Search: query across folders via Index (fast) or Raw scan; index prefers Synology **Video Station**, falls back to folder walk; auto-updates every 24h
-- Settings: tabbed groups — **NAS** · **Library** · **Playback** · **Display** · **Live TV** · **YouTube** · **Radio** · **Integrations** · **Backup** (Save stays in the header). **Library → Default folder** is what the home landing focuses and opens for the HOME THEATRE tile (and the browser’s starting share). **Playback** includes on-screen **clock corner** (subtle updating time + long date; default bottom right; hidden during Live TV / YouTube fullscreen). **Display → Visual effects** shows your current mode (**Full visuals** or **Reduced visuals**); reduced turns off blur, ambient motion, and looping EQ for weaker devices (Chromecast HD). **Display → Home & side nav** toggles which players appear on home and the left rail (Radio / Music / Library / YouTube / Live TV)
-- Settings backup: **Settings → Backup** selects a private NAS folder and exports/imports `PallasVideoPlayer-settings.json`. The portable backup contains NAS credentials, Trakt/TMDB keys and tokens, IPTV playlists, YouTube Piped API URL, custom radio stations, favorites, custom channel order/names, manual EPG assignments, EPG AI API key/provider, measured stream badges, parental settings, Display (lite visuals), home landing tile visibility, the **LAN remote control token**, and **Philips Hue** Music sync (bridge IP, username, selected lights). Import replaces those values so another TV/phone has the same setup; if this TV already has a Device id (`lounge` / `bedroom`), that id is kept so HA handoff stays correct. Caches and viewing/search history are rebuilt locally. The JSON contains secrets in readable form, so store it only in a private NAS folder. File transfer uses SMB3 on port 445 automatically; when the app is configured for HTTP browsing, this is a temporary in-memory connection and the saved HTTP mode/port are never changed.
+- Settings: tabbed groups — **NAS** · **Library** · **Playback** · **Display** · **Live TV** · **YouTube** · **Radio** · **Podcasts** · **Integrations** · **Backup** (Save stays in the header). **Library → Default folder** is what the home landing focuses and opens for the HOME THEATRE tile (and the browser’s starting share). **Playback** includes on-screen **clock corner** (subtle updating time + long date; default bottom right; hidden during Live TV / YouTube fullscreen). **Display → Visual effects** shows your current mode (**Full visuals** or **Reduced visuals**); reduced turns off blur, ambient motion, and looping EQ for weaker devices (Chromecast HD). **Display → Home & side nav** toggles which players appear on home and the left rail (Radio / Music / Podcasts / Library / YouTube / Live TV)
+- Settings backup: **Settings → Backup** selects a private NAS folder and exports/imports `PallasVideoPlayer-settings.json`. The portable backup contains NAS credentials, Trakt/TMDB keys and tokens, IPTV playlists, YouTube Piped API URL, custom radio stations, podcast OPML path + subscriptions, favorites, custom channel order/names, manual EPG assignments, EPG AI API key/provider, measured stream badges, parental settings, Display (lite visuals), home landing tile visibility, the **LAN remote control token**, and **Philips Hue** Music sync (bridge IP, username, selected lights). Import replaces those values so another TV/phone has the same setup; if this TV already has a Device id (`lounge` / `bedroom`), that id is kept so HA handoff stays correct. Caches and viewing/search history are rebuilt locally. The JSON contains secrets in readable form, so store it only in a private NAS folder. File transfer uses SMB3 on port 445 automatically; when the app is configured for HTTP browsing, this is a temporary in-memory connection and the saved HTTP mode/port are never changed.
 - Browser: hero + Continue Watching / Folders / Videos poster shelves; **folder tiles use Trakt/TMDB art only when every video inside is the same title** (season packs); mixed bins like `Films` and top-level `/video` categories use generic icon tiles; path still navigates with Back / rail Up
 - **`.rar` archives:** shown only when a folder has **no video files**; **Hold OK** opens Extract (into the same folder via File Station; the `.rar` is kept). Short OK does not play in VLC. Extract runs on the NAS; progress is overall volumes done/total for multi-part sets (not per-volume). **Hide** (or Back) while extracting minimizes to a slim top progress bar so you can browse/watch; OK on the bar reopens the dialog
 - Search / Settings: glass chrome, underline tabs, ambient backdrop
@@ -293,7 +302,7 @@ The tablet does **not** get a separate remote UI. Pick a room, then use the **sa
 
 1. On each TV: set **Device id** (`lounge` / `bedroom`) under Settings → Integrations (optional but clearer names) and leave **Allow remote control** on.
 2. Open Pallas on the phone/tablet — home landing first; open **Remote** to list TVs on Wi‑Fi (playing ones first).
-3. Tap a room → returns to **home** with that room selected (banner). Open Music / Radio / Live TV / Library from home to control the TV; leaving Music on the tablet does **not** stop the TV.
+3. Tap a room → returns to **home** with that room selected (banner). Open Music / Radio / Live TV / Library from home to control the TV; leaving Music on the tablet does **not** stop the TV. The TV shows a **Controlled by …** chip listing each connected remote (phone + tablet can both be connected).
 4. While controlling a room, the tablet’s NAS browser lists files for play-to-TV but **skips Trakt/TMDB art enrichment** so it does not burn the shared API rate limit and blank the TV’s posters.
 
 Same Wi‑Fi only. No shared token required.
@@ -308,10 +317,69 @@ While you watch a NAS video, Pallas writes a tiny sidecar next to the file (e.g.
 
 ```text
 pallas://play?share=<share>&path=<encoded relative path>&host=<nas-host>&title=&position=
+pallas://radio?stationId=<id>
+pallas://radio?name=<station name>
+pallas://podcast?guid=<guid>&showId=<showId>
+pallas://podcast?label=<Show · Episode title>
+pallas://podcast?show=<show name>   # latest episode of that subscription
+pallas://podcast?refresh=1
+pallas://podcast?skip=-15
+pallas://podcast?skip=15
 pallas://stop
 ```
 
-While playing (notification access on), each TV posts now-playing to your Home Assistant webhook (configure under Settings → Integrations), e.g. `http://<ha-host>:8123/api/webhook/pallas_nowplaying`.
+
+While playing (notification access on), each TV posts now-playing to your Home Assistant webhook (configure under Settings → Integrations), e.g. `http://<ha-host>:8123/api/webhook/pallas_nowplaying`. **Radio** also posts there (`share: radio`, `path: radio:<stationId>`, `title` = station or BBC track). **Podcasts** post with `share: podcast`, `path: podcast:<guid>`, `title` = `Show · Episode`.
+
+**Radio from Home Assistant:** each TV also POSTs its station list to `…/api/webhook/pallas_radio_stations` (same base URL as now-playing) on launch and when you Save Settings. Body:
+
+```json
+{"device":"lounge","stations":[{"id":"bbc_6music","name":"BBC 6 Music","tagline":"…"}]}
+```
+
+Play a station with Android TV Remote deep link (no Shield IP needed):
+
+```yaml
+action: remote.turn_on
+target:
+  entity_id: remote.shield_lounge
+data:
+  activity: "pallas://radio?name=BBC 6 Music"
+```
+
+Assist (examples): “Play Radio 6 in the Kitchen” / “Play Radio 1 Dance in the Bedroom” / “… in the Lounge”.
+
+Or over LAN (Allow remote control on): `GET http://<shield-ip>:8765/v1/radio/stations` and `POST /v1/play` with `{"type":"radio","stationId":"bbc_6music"}`.
+
+**Podcasts from Home Assistant:** each TV POSTs its recent episode list (from feed cache) to `…/api/webhook/pallas_podcast_episodes` on launch, Settings save, OPML import, and feed refresh. Body:
+
+```json
+{"device":"lounge","episodes":[{"guid":"…","showId":"…","showTitle":"The Show","title":"Episode","label":"The Show · Episode"}]}
+```
+
+Play via deep link (label matches the HA dropdown option), or latest episode by show name:
+
+```yaml
+action: remote.turn_on
+target:
+  entity_id: remote.shield_lounge
+data:
+  activity: "pallas://podcast?label=The Show · Episode"
+# or
+  activity: "pallas://podcast?show=The Upshot"
+```
+
+Assist (examples): “Play the latest The Upshot podcast in the Bedroom” / “… in the Lounge” / “… in the Kitchen”.
+
+Refresh the catalog or seek while playing:
+
+```yaml
+activity: "pallas://podcast?refresh=1"
+# or
+activity: "pallas://podcast?skip=-15"   # also +15
+```
+
+Or LAN: `GET /v1/podcasts/episodes` and `POST /v1/play` with `{"type":"podcast","showId":"…","episodeGuid":"…","audioUrl":"…"}`.
 
 **Per-device settings:** set Device id under Settings → Integrations (quick picks `lounge` / `bedroom`, or any custom id), Save. Match that id in your HA automations.
 

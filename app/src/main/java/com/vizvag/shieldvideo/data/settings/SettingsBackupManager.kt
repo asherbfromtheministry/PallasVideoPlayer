@@ -153,7 +153,8 @@ class SettingsBackupManager(
         private val PORTABLE_PREFS = listOf(
             "iptv_favorites",
             "iptv_channel_custom",
-            "iptv_parental"
+            "iptv_parental",
+            "podcasts",
         )
     }
 }

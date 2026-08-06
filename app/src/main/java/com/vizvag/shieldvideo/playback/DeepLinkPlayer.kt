@@ -8,11 +8,18 @@ import android.net.Uri
  *
  * - pallas://play?uri=<encoded>&title=&position=
  * - pallas://play?share=&path=&host=&title=&position=  (preferred; target builds local URL)
+ * - pallas://radio?stationId=<id>  (or ?name=<station name>)
+ * - pallas://podcast?guid=<guid>&showId=<id>  (or ?label=<Show · Episode>)
+ * - pallas://podcast?show=<show name>  (latest episode of that subscription)
+ * - pallas://podcast?refresh=1
+ * - pallas://podcast?skip=-15  (or ?skip=15) — relative seek in seconds
  * - pallas://stop
  */
 object DeepLinkPlayer {
     private const val HOST_PLAY = "play"
     private const val HOST_STOP = "stop"
+    private const val HOST_RADIO = "radio"
+    private const val HOST_PODCAST = "podcast"
     private val SCHEMES = setOf("pallas", "pallasvideo")
 
     fun isPlayIntent(intent: Intent?): Boolean {
@@ -25,6 +32,49 @@ object DeepLinkPlayer {
         val data = intent?.data ?: return false
         return data.scheme?.lowercase() in SCHEMES &&
             data.host.equals(HOST_STOP, ignoreCase = true)
+    }
+
+    fun isRadioIntent(intent: Intent?): Boolean {
+        val data = intent?.data ?: return false
+        return data.scheme?.lowercase() in SCHEMES &&
+            data.host.equals(HOST_RADIO, ignoreCase = true)
+    }
+
+    fun isPodcastIntent(intent: Intent?): Boolean {
+        val data = intent?.data ?: return false
+        return data.scheme?.lowercase() in SCHEMES &&
+            data.host.equals(HOST_PODCAST, ignoreCase = true)
+    }
+
+    fun radioStationIdFrom(intent: Intent): String? =
+        intent.data?.getQueryParameter("stationId")?.trim()?.takeIf { it.isNotBlank() }
+
+    fun radioStationNameFrom(intent: Intent): String? =
+        intent.data?.getQueryParameter("name")?.trim()?.takeIf { it.isNotBlank() }
+
+    fun podcastGuidFrom(intent: Intent): String? =
+        intent.data?.getQueryParameter("guid")?.trim()?.takeIf { it.isNotBlank() }
+
+    fun podcastShowIdFrom(intent: Intent): String? =
+        intent.data?.getQueryParameter("showId")?.trim()?.takeIf { it.isNotBlank() }
+
+    fun podcastLabelFrom(intent: Intent): String? =
+        intent.data?.getQueryParameter("label")?.trim()?.takeIf { it.isNotBlank() }
+
+    /** Spoken / display show title — plays the latest episode of that subscription. */
+    fun podcastShowNameFrom(intent: Intent): String? =
+        intent.data?.getQueryParameter("show")?.trim()?.takeIf { it.isNotBlank() }
+
+    fun podcastRefreshFrom(intent: Intent): Boolean {
+        val raw = intent.data?.getQueryParameter("refresh")?.trim()?.lowercase().orEmpty()
+        return raw == "1" || raw == "true" || raw == "yes"
+    }
+
+    /** Relative seek in seconds (e.g. -15 / +15). */
+    fun podcastSkipSecondsFrom(intent: Intent): Long? {
+        val raw = intent.data?.getQueryParameter("skip")?.trim().orEmpty()
+        if (raw.isBlank()) return null
+        return raw.toLongOrNull()
     }
 
     fun shareFrom(intent: Intent): String? =

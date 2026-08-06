@@ -36,7 +36,8 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
+import com.vizvag.shieldvideo.ui.components.LocalForcedLandscapeRotated
+import com.vizvag.shieldvideo.ui.components.touchFriendlyVerticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Visibility
@@ -112,6 +113,7 @@ private enum class SettingsTab(val label: String) {
     LiveTv("Live TV"),
     YouTube("YouTube"),
     Radio("Radio"),
+    Podcasts("Podcasts"),
     Integrations("Integrations"),
     Backup("Backup"),
 }
@@ -304,10 +306,11 @@ fun SettingsScreen(
                 ) {
                     val contentScrollState = rememberScrollState()
                     val contentFocusScope = rememberCoroutineScope()
+                    val rotated = LocalForcedLandscapeRotated.current
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(contentScrollState)
+                            .touchFriendlyVerticalScroll(contentScrollState, rotated)
                     ) {
                         // Entry target for D-pad Right from the tab rail. Immediately hops to the
                         // first real control so focus is never stuck on an invisible 1dp box.
@@ -428,6 +431,12 @@ fun SettingsScreen(
                                 viewModel = viewModel,
                                 scrollState = contentScrollState
                             )
+                            SettingsTab.Podcasts -> PodcastSettingsTab(
+                                draft = draft,
+                                state = state,
+                                fieldColors = fieldColors,
+                                viewModel = viewModel,
+                            )
                             SettingsTab.Integrations -> IntegrationsSettingsTab(
                                 draft = draft,
                                 state = state,
@@ -455,7 +464,15 @@ fun SettingsScreen(
     }
 
     val pickerMode = state.folderPickerMode
-    if (pickerMode != null) {
+    if (pickerMode == FolderPickerMode.PODCAST_OPML_FILE) {
+        OpmlFilePickerDialog(
+            settings = draft,
+            nasRepository = nasRepository,
+            initialNasPath = draft.podcastOpmlNasPath,
+            onDismiss = viewModel::dismissFolderPicker,
+            onPick = viewModel::importPickedOpml,
+        )
+    } else if (pickerMode != null) {
         val titleMode = when {
             state.folderPickerForDefault -> FolderPickerMode.BACKGROUND_FOLDER
             else -> pickerMode
@@ -568,12 +585,15 @@ private fun SettingsSectionRail(
     onMoveFocusToHeader: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val railScrollState = rememberScrollState()
+    val rotated = LocalForcedLandscapeRotated.current
     Column(
         verticalArrangement = Arrangement.spacedBy(2.dp),
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF0E0E12))
             .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+            .touchFriendlyVerticalScroll(railScrollState, rotated)
             .padding(vertical = 6.dp, horizontal = 6.dp)
             .onPreviewKeyEvent { event ->
                 when {
@@ -1131,6 +1151,12 @@ private fun DisplaySettingsTab(
         shown = draft.homeShowLiveTv,
         onToggle = { viewModel.update { it.copy(homeShowLiveTv = !it.homeShowLiveTv) } },
     )
+    Spacer(modifier = Modifier.height(8.dp))
+    HomeTileToggle(
+        label = "Podcasts",
+        shown = draft.homeShowPodcasts,
+        onToggle = { viewModel.update { it.copy(homeShowPodcasts = !it.homeShowPodcasts) } },
+    )
     Text(
         text = "Save in the header to apply on the home screen.",
         color = TextMuted,
@@ -1589,6 +1615,84 @@ private fun readSubscriptionsCsvFromDevice(context: android.content.Context): St
 }
 
 @Composable
+private fun PodcastSettingsTab(
+    draft: AppSettings,
+    state: SettingsUiState,
+    fieldColors: TextFieldColors,
+    viewModel: SettingsViewModel,
+) {
+    LaunchedEffect(Unit) { viewModel.refreshPodcastStatus() }
+
+    SectionHint(
+        "Import a Podcast Addict (or standard) OPML. Browse the NAS or this device and OK on the file."
+    )
+
+    TvFocusButton(
+        onClick = viewModel::openPodcastOpmlPicker,
+        compact = true,
+        enabled = !state.podcastBusy,
+        modifier = Modifier.tvBringIntoView(),
+    ) {
+        Text(
+            if (state.podcastBusy) "Importing…" else "Import OPML…",
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+
+    if (draft.podcastOpmlNasPath.isNotBlank()) {
+        Spacer(modifier = Modifier.height(10.dp))
+        Text("Last NAS file", color = TextMuted, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = draft.podcastOpmlNasPath,
+            color = Color.White,
+            fontSize = 13.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+    TvFocusButton(
+        onClick = viewModel::clearPodcastSubscriptions,
+        compact = true,
+        enabled = !state.podcastBusy && state.podcastSubscriptionCount > 0,
+    ) {
+        Text("Clear subscriptions", color = Color.White, fontWeight = FontWeight.SemiBold)
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+    Text(
+        text = buildString {
+            append("${state.podcastSubscriptionCount} subscriptions")
+            if (state.podcastLastImportMs > 0L) {
+                val df = java.text.SimpleDateFormat("d MMM yyyy HH:mm", java.util.Locale.UK)
+                append(" · last import ")
+                append(df.format(java.util.Date(state.podcastLastImportMs)))
+            }
+        },
+        color = TextMuted,
+        fontSize = 12.sp,
+    )
+    if (!state.podcastMessage.isNullOrBlank()) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = state.podcastMessage.orEmpty(),
+            color = Accent,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+    Spacer(modifier = Modifier.height(10.dp))
+    Text(
+        text = "Save in the header to keep the last NAS file path in backup.",
+        color = TextMuted,
+        fontSize = 11.sp,
+    )
+}
+
+@Composable
 private fun RadioSettingsTab(
     draft: AppSettings,
     state: SettingsUiState,
@@ -1798,7 +1902,7 @@ private fun IntegrationsSettingsTab(
     )
     Spacer(modifier = Modifier.height(8.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf("lounge", "bedroom").forEach { id ->
+        listOf("lounge", "bedroom", "kitchen").forEach { id ->
             val selected = draft.deviceId.equals(id, true)
             TvFocusButton(
                 onClick = { viewModel.update { it.copy(deviceId = id) } },

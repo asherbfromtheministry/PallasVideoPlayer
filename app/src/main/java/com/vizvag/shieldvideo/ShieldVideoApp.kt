@@ -21,13 +21,19 @@ import com.vizvag.shieldvideo.playback.IptvRecordingScheduler
 import com.vizvag.shieldvideo.playback.LocalResumeStore
 import com.vizvag.shieldvideo.playback.NasProgressSync
 import com.vizvag.shieldvideo.playback.NasWatchHistoryStore
+import com.vizvag.shieldvideo.playback.NowPlaying
 import com.vizvag.shieldvideo.playback.NowPlayingStore
 import com.vizvag.shieldvideo.playback.ResumeMonitor
 import com.vizvag.shieldvideo.playback.SleepTimerController
+import com.vizvag.shieldvideo.playback.haPodcastEpisodesWebhookUrl
+import com.vizvag.shieldvideo.playback.haRadioStationsWebhookUrl
 import com.vizvag.shieldvideo.playback.haSleepWebhookUrl
+import com.vizvag.shieldvideo.data.radio.RadioDefaults
 import com.vizvag.shieldvideo.playback.iptv.IptvPlaybackController
 import com.vizvag.shieldvideo.data.hue.HueMusicSync
+import com.vizvag.shieldvideo.data.podcast.PodcastRepository
 import com.vizvag.shieldvideo.playback.radio.RadioPlaybackController
+import com.vizvag.shieldvideo.playback.podcast.PodcastPlaybackController
 import com.vizvag.shieldvideo.playback.remote.PlaybackCommandRouter
 import com.vizvag.shieldvideo.playback.remote.RemoteControlClient
 import com.vizvag.shieldvideo.playback.remote.RemoteDeviceDiscovery
@@ -83,6 +89,10 @@ class ShieldVideoApp : Application() {
         private set
     lateinit var radioPlayback: RadioPlaybackController
         private set
+    lateinit var podcastRepository: PodcastRepository
+        private set
+    lateinit var podcastPlayback: PodcastPlaybackController
+        private set
     lateinit var hueSync: HueMusicSync
         private set
     lateinit var iptvPlayback: IptvPlaybackController
@@ -95,6 +105,7 @@ class ShieldVideoApp : Application() {
         private set
     lateinit var remoteDiscovery: RemoteDeviceDiscovery
         private set
+    private lateinit var haPublisher: HaNowPlayingPublisher
 
     private val appJob = SupervisorJob()
     val appScope = CoroutineScope(appJob + Dispatchers.Default)
@@ -119,7 +130,7 @@ class ShieldVideoApp : Application() {
             settingsRepository = settingsRepository,
             progressSync = progressSync,
         )
-        val haPublisher = HaNowPlayingPublisher()
+        haPublisher = HaNowPlayingPublisher()
         sleepTimer = SleepTimerController(
             onExpireFallback = { resumeMonitor.stopPlayer() },
             onStandby = {
@@ -148,6 +159,8 @@ class ShieldVideoApp : Application() {
         musicModule = com.vizvag.shieldvideo.music.MusicModule(this, settingsRepository, appScope)
         musicModule.musicIndex.start(appScope)
         radioPlayback = RadioPlaybackController(this)
+        podcastRepository = PodcastRepository(this, settingsRepository, nasRepository)
+        podcastPlayback = PodcastPlaybackController(this)
         hueSync = HueMusicSync(
             settingsRepository = settingsRepository,
             playerController = musicModule.playerController,
@@ -189,7 +202,118 @@ class ShieldVideoApp : Application() {
                 }
                 iptvRepository.refreshChannelsIfStale(playlist)
             }
+            publishRadioStationsToHa()
+            publishPodcastEpisodesToHa()
         }
+    }
+
+    /** Push radio catalog to HA webhook `pallas_radio_stations` (derived from now-playing URL). */
+    fun publishRadioStationsToHa() {
+        val settings = settingsRepository.load()
+        val url = haRadioStationsWebhookUrl(settings.haWebhookUrl)
+        if (url.isBlank()) return
+        val stations = settings.customRadioStations.ifEmpty { RadioDefaults.stations() }
+        haPublisher.publishRadioStations(
+            webhookUrl = url,
+            deviceId = settings.deviceId,
+            stations = stations.map { Triple(it.id, it.name, it.tagline) },
+        )
+    }
+
+    /** Push recent podcast episodes to HA webhook `pallas_podcast_episodes`. */
+    fun publishPodcastEpisodesToHa() {
+        val settings = settingsRepository.load()
+        val url = haPodcastEpisodesWebhookUrl(settings.haWebhookUrl)
+        if (url.isBlank()) return
+        appScope.launch(Dispatchers.IO) {
+            // Warm disk caches (network only when stale/missing) so HA sees recent episodes.
+            podcastRepository.subscriptions.value.forEach { show ->
+                runCatching { podcastRepository.episodesForShow(show, forceRefresh = false) }
+            }
+            val episodes = podcastRepository.recentEpisodesForHa()
+            if (episodes.isEmpty()) return@launch
+            haPublisher.publishPodcastEpisodes(
+                webhookUrl = url,
+                deviceId = settings.deviceId,
+                episodes = episodes.map { ep ->
+                    mapOf(
+                        "guid" to ep.guid,
+                        "showId" to ep.showId,
+                        "showTitle" to ep.showTitle,
+                        "title" to ep.title,
+                        "label" to ep.label,
+                    )
+                },
+            )
+        }
+    }
+
+    /** Push current radio station/title to the shared now-playing webhook. */
+    fun publishRadioNowPlayingToHa() {
+        val settings = settingsRepository.load()
+        val url = settings.haWebhookUrl.trim()
+        if (url.isBlank()) return
+        val radio = radioPlayback.state.value
+        val title = radio.title.ifBlank { radio.stationName }.trim()
+        if (radio.stationId.isBlank() || title.isBlank()) return
+        haPublisher.publish(
+            webhookUrl = url,
+            session = NowPlaying(
+                deviceId = settings.deviceId,
+                uri = "",
+                path = "radio:${radio.stationId}",
+                share = "radio",
+                host = "",
+                title = title,
+                positionMs = 0L,
+                durationMs = 0L,
+            ),
+            force = true,
+        )
+    }
+
+    fun clearRadioNowPlayingToHa() {
+        val settings = settingsRepository.load()
+        val url = settings.haWebhookUrl.trim()
+        if (url.isBlank()) return
+        haPublisher.clear(url, settings.deviceId)
+    }
+
+    /** Push current podcast episode to the shared now-playing webhook. */
+    fun publishPodcastNowPlayingToHa() {
+        val settings = settingsRepository.load()
+        val url = settings.haWebhookUrl.trim()
+        if (url.isBlank()) return
+        val podcast = podcastPlayback.state.value
+        if (podcast.episodeGuid.isBlank()) return
+        val title = buildString {
+            if (podcast.showTitle.isNotBlank()) append(podcast.showTitle)
+            if (podcast.episodeTitle.isNotBlank()) {
+                if (isNotEmpty()) append(" · ")
+                append(podcast.episodeTitle)
+            }
+        }.ifBlank { return }
+        haPublisher.publish(
+            webhookUrl = url,
+            session = NowPlaying(
+                deviceId = settings.deviceId,
+                uri = podcast.audioUrl,
+                path = "podcast:${podcast.episodeGuid}",
+                share = "podcast",
+                host = "",
+                title = title,
+                positionMs = podcast.positionMs,
+                durationMs = podcast.durationMs,
+            ),
+            force = true,
+        )
+    }
+
+    fun clearPodcastNowPlayingToHa() {
+        val settings = settingsRepository.load()
+        val url = settings.haWebhookUrl.trim()
+        if (url.isBlank()) return
+        haPublisher.clear(url, settings.deviceId)
     }
 
     companion object {

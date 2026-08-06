@@ -60,6 +60,8 @@ class RemoteControlService : Service() {
                 }
                 val port = httpServer!!.start()
                 nsd?.register(advertiseId, port)
+                runCatching { app.publishRadioStationsToHa() }
+                runCatching { app.publishPodcastEpisodesToHa() }
                 return START_STICKY
             }
             else -> stopSelf()

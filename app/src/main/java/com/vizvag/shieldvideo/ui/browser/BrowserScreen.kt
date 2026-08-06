@@ -51,7 +51,8 @@ fun BrowserScreen(
     onOpenLiveTv: () -> Unit = {},
     onOpenYouTube: () -> Unit = {},
     onOpenRadio: () -> Unit = {},
-    onOpenMusic: () -> Unit = {}
+    onOpenMusic: () -> Unit = {},
+    onOpenPodcasts: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val folderAssign by viewModel.folderAssign.collectAsState()
@@ -130,6 +131,7 @@ fun BrowserScreen(
             onYouTube = onOpenYouTube,
             onRadio = onOpenRadio,
             onMusic = onOpenMusic,
+            onPodcasts = onOpenPodcasts,
             sleepTimerActive = sleepState.active,
             sleepTimerLabel = sleepState.label,
             onCycleSleepTimer = app.sleepTimer::cycle,

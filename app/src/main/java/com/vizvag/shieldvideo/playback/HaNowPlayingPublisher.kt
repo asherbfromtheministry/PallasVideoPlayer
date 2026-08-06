@@ -10,17 +10,29 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-/** Derive the sleep-timer webhook from the now-playing URL (`…/pallas_sleep`). */
-fun haSleepWebhookUrl(nowPlayingUrl: String): String {
+/** Derive a sibling webhook id from the now-playing URL (e.g. `…/pallas_sleep`). */
+fun haSiblingWebhookUrl(nowPlayingUrl: String, webhookId: String): String {
     val url = nowPlayingUrl.trim()
-    if (url.isBlank()) return ""
+    if (url.isBlank() || webhookId.isBlank()) return ""
     return when {
         url.contains("/pallas_nowplaying") ->
-            url.replace("/pallas_nowplaying", "/pallas_sleep")
-        url.endsWith('/') -> "${url}pallas_sleep"
-        else -> "${url.substringBeforeLast('/')}/pallas_sleep"
+            url.replace("/pallas_nowplaying", "/$webhookId")
+        url.endsWith('/') -> "$url$webhookId"
+        else -> "${url.substringBeforeLast('/')}/$webhookId"
     }
 }
+
+/** Derive the sleep-timer webhook from the now-playing URL (`…/pallas_sleep`). */
+fun haSleepWebhookUrl(nowPlayingUrl: String): String =
+    haSiblingWebhookUrl(nowPlayingUrl, "pallas_sleep")
+
+/** Derive the radio-stations catalog webhook (`…/pallas_radio_stations`). */
+fun haRadioStationsWebhookUrl(nowPlayingUrl: String): String =
+    haSiblingWebhookUrl(nowPlayingUrl, "pallas_radio_stations")
+
+/** Derive the recent-podcasts catalog webhook (`…/pallas_podcast_episodes`). */
+fun haPodcastEpisodesWebhookUrl(nowPlayingUrl: String): String =
+    haSiblingWebhookUrl(nowPlayingUrl, "pallas_podcast_episodes")
 
 /** Pushes now-playing snapshots to a Home Assistant webhook. */
 class HaNowPlayingPublisher {
@@ -87,6 +99,82 @@ class HaNowPlayingPublisher {
                     .put("position_ms", 0)
                     .put("duration_ms", 0)
                     .put("cleared", true)
+                    .toString()
+                val request = Request.Builder()
+                    .url(url)
+                    .post(body.toRequestBody(jsonType))
+                    .build()
+                client.newCall(request).execute().use { }
+            }
+        }
+    }
+
+    /**
+     * Pushes the radio station catalog so HA can populate an input_select / voice scripts.
+     * Body: `{ "device": "<id>", "stations": [ { "id", "name", "tagline" } ] }`
+     * (stream URLs omitted — play via deep link or LAN `/v1/play`).
+     */
+    fun publishRadioStations(
+        webhookUrl: String,
+        deviceId: String,
+        stations: List<Triple<String, String, String>>,
+    ) {
+        val url = webhookUrl.trim()
+        val device = deviceId.trim().lowercase()
+        if (url.isBlank() || device.isBlank()) return
+        scope.launch {
+            runCatching {
+                val arr = org.json.JSONArray()
+                stations.forEach { (id, name, tagline) ->
+                    arr.put(
+                        org.json.JSONObject()
+                            .put("id", id)
+                            .put("name", name)
+                            .put("tagline", tagline),
+                    )
+                }
+                val body = org.json.JSONObject()
+                    .put("device", device)
+                    .put("stations", arr)
+                    .toString()
+                val request = Request.Builder()
+                    .url(url)
+                    .post(body.toRequestBody(jsonType))
+                    .build()
+                client.newCall(request).execute().use { }
+            }
+        }
+    }
+
+    /**
+     * Pushes recent podcast episodes so HA can populate an input_select.
+     * Body: `{ "device": "<id>", "episodes": [ { "guid", "showId", "showTitle", "title", "label" } ] }`
+     * (audio URLs omitted — play via deep link or LAN `/v1/play`).
+     */
+    fun publishPodcastEpisodes(
+        webhookUrl: String,
+        deviceId: String,
+        episodes: List<Map<String, String>>,
+    ) {
+        val url = webhookUrl.trim()
+        val device = deviceId.trim().lowercase()
+        if (url.isBlank() || device.isBlank()) return
+        scope.launch {
+            runCatching {
+                val arr = org.json.JSONArray()
+                episodes.forEach { ep ->
+                    arr.put(
+                        org.json.JSONObject()
+                            .put("guid", ep["guid"].orEmpty())
+                            .put("showId", ep["showId"].orEmpty())
+                            .put("showTitle", ep["showTitle"].orEmpty())
+                            .put("title", ep["title"].orEmpty())
+                            .put("label", ep["label"].orEmpty()),
+                    )
+                }
+                val body = org.json.JSONObject()
+                    .put("device", device)
+                    .put("episodes", arr)
                     .toString()
                 val request = Request.Builder()
                     .url(url)

@@ -16,6 +16,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -32,12 +33,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -119,8 +122,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -204,6 +210,7 @@ fun MusicScreen(
     onOpenLiveTv: () -> Unit = {},
     onOpenYouTube: () -> Unit = {},
     onOpenRadio: () -> Unit = {},
+    onOpenPodcasts: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
     AudioScreenTheme {
@@ -217,6 +224,7 @@ fun MusicScreen(
                 onOpenLiveTv = onOpenLiveTv,
                 onOpenYouTube = onOpenYouTube,
                 onOpenRadio = onOpenRadio,
+                onOpenPodcasts = onOpenPodcasts,
                 onOpenSettings = onOpenSettings,
             )
         }
@@ -233,6 +241,7 @@ private fun ImmersiveMusicScreen(
     onOpenLiveTv: () -> Unit,
     onOpenYouTube: () -> Unit,
     onOpenRadio: () -> Unit,
+    onOpenPodcasts: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val app = LocalContext.current.applicationContext as ShieldVideoApp
@@ -259,6 +268,7 @@ private fun ImmersiveMusicScreen(
     val lyricsPath by viewModel.lyricsPath.collectAsState()
     val lyricsVisible by viewModel.lyricsVisible.collectAsState()
     val lyricsStatus by viewModel.lyricsStatus.collectAsState()
+    val lyricsOffsetMs by viewModel.lyricsOffsetMs.collectAsState()
     val artDetails by viewModel.artDetails.collectAsState()
     val hueSyncReady by viewModel.hueSyncReady.collectAsState()
     val hueSyncEnabled by viewModel.hueSyncEnabled.collectAsState()
@@ -591,6 +601,7 @@ private fun ImmersiveMusicScreen(
             onYouTube = onOpenYouTube,
             onRadio = onOpenRadio,
             onMusic = {},
+            onPodcasts = onOpenPodcasts,
             sleepTimerActive = sleepState.active,
             sleepTimerLabel = sleepState.label,
             onCycleSleepTimer = app.sleepTimer::cycle,
@@ -622,6 +633,7 @@ private fun ImmersiveMusicScreen(
         onYouTube = onOpenYouTube,
         onRadio = onOpenRadio,
         onMusic = {},
+        onPodcasts = onOpenPodcasts,
         sleepTimerActive = sleepState.active,
         sleepTimerLabel = sleepState.label,
         onCycleSleepTimer = app.sleepTimer::cycle,
@@ -850,6 +862,17 @@ private fun ImmersiveMusicScreen(
                         } || (discNo ?: 0) > 1
                     }
 
+                    val upNextTrack = remember(queue, queueIndex) {
+                        queue.getOrNull(queueIndex + 1)
+                    }
+                    val upNextCover = remember(upNextTrack, playlistCovers) {
+                        upNextTrack?.let { track ->
+                            playlistCovers[
+                                "tr:${track.id}|${track.nasPath.replace('\\', '/').lowercase()}",
+                            ]
+                        }
+                    }
+
                     ImmersiveStage(
                         playerState = playerState,
                         albumArtUrl = coverUrl,
@@ -866,8 +889,19 @@ private fun ImmersiveMusicScreen(
                         lyrics = lyrics,
                         lyricsVisible = lyricsVisible,
                         lyricsStatus = lyricsStatus,
+                        lyricsOffsetMs = lyricsOffsetMs,
                         onAcceptOnlineLyrics = viewModel::acceptOnlineLyrics,
                         onDeclineOnlineLyrics = viewModel::declineOnlineLyrics,
+                        onNudgeLyricsEarlier = { viewModel.nudgeLyricsOffset(-500L) },
+                        onNudgeLyricsLater = { viewModel.nudgeLyricsOffset(500L) },
+                        onResetLyricsOffset = viewModel::resetLyricsOffset,
+                        upNextTitle = upNextTrack?.takeUnless { queueOpen }?.let(::queueTitle),
+                        upNextArtist = upNextTrack?.takeUnless { queueOpen }?.let(::queueArtist),
+                        upNextCoverUrl = upNextCover.takeUnless { queueOpen },
+                        onUpNextClick = {
+                            val idx = queueIndex + 1
+                            if (idx in queue.indices) viewModel.playQueueIndex(idx)
+                        },
                         controlsEnabled = panel == Panel.None && !infoOpen && !confirmLeave && !searchOpen,
                         metaEnabled = playing != null && !infoOpen && !confirmLeave && !searchOpen,
                         playFocusRequester = playFocus,
@@ -1211,6 +1245,18 @@ private fun ImmersiveMusicScreen(
                             viewModel.addAlbumToPlaylist(target.albumId, replace = false)
                         is BrowseAddTarget.Track ->
                             viewModel.addTrackToPlaylist(target.track, replace = false)
+                        else -> Unit
+                    }
+                    searchAddTarget = null
+                },
+                onDownload = {
+                    when (target) {
+                        is BrowseAddTarget.Artist ->
+                            viewModel.downloadArtistToDevice(target.artist)
+                        is BrowseAddTarget.Album ->
+                            viewModel.downloadAlbumToDevice(target.albumId)
+                        is BrowseAddTarget.Track ->
+                            viewModel.downloadTrackToDevice(target.track)
                         else -> Unit
                     }
                     searchAddTarget = null
@@ -1726,17 +1772,22 @@ private enum class TransportFocus { Prev, SeekBack, Play, SeekForward, Next }
 private fun SyncedLyricsPanel(
     lyrics: List<LyricLine>,
     positionMs: Long,
+    lyricsOffsetMs: Long,
     scale: Float,
     status: MusicViewModel.LyricsStatus,
     onAcceptOnline: () -> Unit,
     onDeclineOnline: () -> Unit,
+    onNudgeEarlier: () -> Unit,
+    onNudgeLater: () -> Unit,
+    onResetOffset: () -> Unit,
+    syncControlsEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val index = LrcParser.currentLineIndex(lyrics, positionMs)
+    val effectivePos = (positionMs + lyricsOffsetMs).coerceAtLeast(0L)
+    val index = LrcParser.currentLineIndex(lyrics, effectivePos)
     val currentSize = (26f * scale).coerceIn(20f, 30f).sp
     val sideSize = (15f * scale).coerceIn(12f, 17f).sp
     val listState = rememberLazyListState()
-    val density = LocalDensity.current
     val offerFocus = remember { FocusRequester() }
     val tryOnlineFocus = remember { FocusRequester() }
 
@@ -1855,21 +1906,12 @@ private fun SyncedLyricsPanel(
         }
 
         val panelHeight = maxHeight
-        val lineHeight = (36.dp * scale).coerceIn(30.dp, 44.dp)
-        val lineHeightPx = with(density) { lineHeight.toPx() }
-        val viewportPx = with(density) { panelHeight.toPx() }
-        val edgePad = with(density) {
-            ((viewportPx / 2f) - (lineHeightPx / 2f)).coerceAtLeast(0f).toDp()
-        }
-        val fractional = fractionalLyricIndex(lyrics, positionMs)
+        val minLineHeight = (36.dp * scale).coerceIn(30.dp, 44.dp)
+        val edgePad = panelHeight * 0.32f
 
-        LaunchedEffect(fractional, lyrics.size, lineHeightPx, panelHeight) {
-            val idx = fractional.toInt().coerceIn(0, lyrics.lastIndex)
-            val frac = (fractional - idx).coerceIn(0f, 0.999f)
-            listState.scrollToItem(
-                index = idx,
-                scrollOffset = (frac * lineHeightPx).toInt(),
-            )
+        LaunchedEffect(index, lyrics.size, lyricsOffsetMs, panelHeight) {
+            if (index !in lyrics.indices) return@LaunchedEffect
+            centerLyricLine(listState, index)
         }
 
         Box(Modifier.fillMaxSize()) {
@@ -1880,7 +1922,8 @@ private fun SyncedLyricsPanel(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 14.dp),
+                    .padding(horizontal = 14.dp)
+                    .padding(bottom = 28.dp),
             ) {
                 itemsIndexed(
                     lyrics,
@@ -1902,12 +1945,13 @@ private fun SyncedLyricsPanel(
                         fontSize = if (isCurrent) currentSize else sideSize,
                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
                         fontFamily = PallasFontFamily,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+                        softWrap = true,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(lineHeight),
+                            .heightIn(min = minLineHeight)
+                            .wrapContentHeight(align = Alignment.CenterVertically)
+                            .padding(vertical = 4.dp),
                     )
                 }
             }
@@ -1934,21 +1978,135 @@ private fun SyncedLyricsPanel(
                         ),
                     ),
             )
+            LyricsSyncBar(
+                offsetMs = lyricsOffsetMs,
+                enabled = syncControlsEnabled,
+                onEarlier = onNudgeEarlier,
+                onLater = onNudgeLater,
+                onReset = onResetOffset,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 6.dp),
+            )
         }
     }
 }
 
-/** Continuous credits scroll: index + progress toward the next timed line. */
-private fun fractionalLyricIndex(lyrics: List<LyricLine>, positionMs: Long): Float {
-    if (lyrics.isEmpty()) return 0f
-    val index = LrcParser.currentLineIndex(lyrics, positionMs)
-    if (index < 0) return 0f
-    if (index >= lyrics.lastIndex) return index.toFloat()
-    val cur = lyrics[index].timeMs
-    val next = lyrics[index + 1].timeMs
-    if (next <= cur) return index.toFloat()
-    val progress = ((positionMs - cur).toFloat() / (next - cur).toFloat()).coerceIn(0f, 1f)
-    return index + progress
+private suspend fun centerLyricLine(listState: LazyListState, index: Int) {
+    listState.scrollToItem(index)
+    val item = snapshotFlow { listState.layoutInfo }
+        .map { info -> info.visibleItemsInfo.firstOrNull { it.index == index } }
+        .first { it != null }
+        ?: return
+    val layout = listState.layoutInfo
+    val viewportCenter = (layout.viewportStartOffset + layout.viewportEndOffset) / 2f
+    val itemCenter = item.offset + item.size / 2f
+    listState.scrollBy(itemCenter - viewportCenter)
+}
+
+@Composable
+private fun LyricsSyncBar(
+    offsetMs: Long,
+    enabled: Boolean,
+    onEarlier: () -> Unit,
+    onLater: () -> Unit,
+    onReset: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val label = when {
+        offsetMs == 0L -> "sync"
+        offsetMs > 0L -> "+${formatLyricsOffset(offsetMs)}"
+        else -> "−${formatLyricsOffset(-offsetMs)}"
+    }
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        LyricsSyncChip(
+            text = "−",
+            enabled = enabled,
+            onClick = onEarlier,
+        )
+        LyricsSyncChip(
+            text = label,
+            enabled = enabled && offsetMs != 0L,
+            onClick = onReset,
+            wide = true,
+        )
+        LyricsSyncChip(
+            text = "+",
+            enabled = enabled,
+            onClick = onLater,
+        )
+    }
+}
+
+@Composable
+private fun LyricsSyncChip(
+    text: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    wide: Boolean = false,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(999.dp)
+    // − / + stay focusable whenever the bar is shown; center only when it can reset.
+    val canActivate = enabled
+    Text(
+        text = text,
+        color = when {
+            focused && canActivate -> AudioAccent
+            canActivate -> Color.White.copy(alpha = 0.55f)
+            else -> Color.White.copy(alpha = 0.28f)
+        },
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontFamily = PallasFontFamily,
+        letterSpacing = if (wide) 0.6.sp else 0.sp,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .clip(shape)
+            .background(
+                when {
+                    focused && canActivate -> Color.White.copy(alpha = 0.14f)
+                    else -> Color.White.copy(alpha = 0.06f)
+                },
+            )
+            .border(
+                width = if (focused && canActivate) 1.5.dp else 1.dp,
+                color = if (focused && canActivate) {
+                    AudioAccent.copy(alpha = 0.65f)
+                } else {
+                    Color.White.copy(alpha = 0.10f)
+                },
+                shape = shape,
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .focusProperties { canFocus = canActivate }
+            .focusable(enabled = canActivate)
+            .clickable(
+                enabled = canActivate,
+                role = Role.Button,
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClick,
+            )
+            .padding(
+                horizontal = if (wide) 10.dp else 9.dp,
+                vertical = 4.dp,
+            )
+            .then(if (wide) Modifier.widthIn(min = 48.dp) else Modifier),
+    )
+}
+
+private fun formatLyricsOffset(absMs: Long): String {
+    val tenths = absMs / 100L
+    return if (tenths % 10L == 0L) {
+        "${tenths / 10}s"
+    } else {
+        "${tenths / 10}.${tenths % 10}s"
+    }
 }
 
 @Composable
@@ -2508,8 +2666,16 @@ private fun ImmersiveStage(
     lyrics: List<LyricLine>,
     lyricsVisible: Boolean,
     lyricsStatus: MusicViewModel.LyricsStatus,
+    lyricsOffsetMs: Long = 0L,
     onAcceptOnlineLyrics: () -> Unit,
     onDeclineOnlineLyrics: () -> Unit,
+    onNudgeLyricsEarlier: () -> Unit = {},
+    onNudgeLyricsLater: () -> Unit = {},
+    onResetLyricsOffset: () -> Unit = {},
+    upNextTitle: String? = null,
+    upNextArtist: String? = null,
+    upNextCoverUrl: Any? = null,
+    onUpNextClick: () -> Unit = {},
     controlsEnabled: Boolean,
     metaEnabled: Boolean,
     playFocusRequester: FocusRequester,
@@ -2566,11 +2732,12 @@ private fun ImmersiveStage(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val scale = (maxWidth.value / 1180f).coerceIn(0.58f, 1f)
-        // Clear the top icon row (Browse / Queue / …) so title never sits under it.
-        val topChrome = 104.dp
-        val bottomChrome = 20.dp
-        val hPad = (40.dp * scale).coerceAtLeast(16.dp)
-        val gap = (36.dp * scale).coerceAtLeast(16.dp)
+        // Phone / short landscape: larger hit targets; less top chrome so controls fit.
+        val touchFriendly = maxHeight < 520.dp || maxWidth < 960.dp
+        val topChrome = if (touchFriendly) 72.dp else 104.dp
+        val bottomChrome = if (touchFriendly) 12.dp else 20.dp
+        val hPad = (40.dp * scale).coerceAtLeast(if (touchFriendly) 12.dp else 16.dp)
+        val gap = (36.dp * scale).coerceAtLeast(if (touchFriendly) 12.dp else 16.dp)
         val titleSize = when {
             title.length > 48 -> (30f * scale).coerceIn(18f, 34f).sp
             title.length > 28 -> (34f * scale).coerceIn(20f, 38f).sp
@@ -2579,15 +2746,15 @@ private fun ImmersiveStage(
         val artistSize = (22f * scale).coerceIn(15f, 24f).sp
         val metaSize = (14f * scale).coerceIn(12f, 15f).sp
         val timeSize = (13f * scale).coerceIn(11f, 14f).sp
-        val skipSize = (56.dp * scale).coerceAtLeast(44.dp)
-        val playSize = (88.dp * scale).coerceAtLeast(60.dp)
-        val skipIcon = (32.dp * scale).coerceAtLeast(24.dp)
-        val playIcon = (46.dp * scale).coerceAtLeast(30.dp)
+        val skipSize = if (touchFriendly) 64.dp else (56.dp * scale).coerceAtLeast(48.dp)
+        val playSize = if (touchFriendly) 84.dp else (88.dp * scale).coerceAtLeast(68.dp)
+        val skipIcon = if (touchFriendly) 36.dp else (32.dp * scale).coerceAtLeast(26.dp)
+        val playIcon = if (touchFriendly) 48.dp else (46.dp * scale).coerceAtLeast(34.dp)
         val artSize = minOf(
             (maxHeight - topChrome - bottomChrome - 12.dp) * 0.88f,
             maxWidth * 0.34f,
             380.dp * scale,
-        ).coerceIn(120.dp, 380.dp)
+        ).coerceIn(if (touchFriendly) 100.dp else 120.dp, if (touchFriendly) 280.dp else 380.dp)
 
         Box(Modifier.fillMaxSize().background(Color(0xFF050507)))
         if (backgroundArt != null) {
@@ -2690,92 +2857,118 @@ private fun ImmersiveStage(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
-                verticalArrangement = Arrangement.Center,
+                verticalArrangement = if (lyricsVisible) Arrangement.Top else Arrangement.Center,
             ) {
-                // Track title — white; OK searches matching songs in Browse
-                MetaLink(
-                    text = title,
-                    color = Color.White,
-                    fontSize = titleSize,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 4,
-                    enabled = metaEnabled &&
-                        !title.equals("Nothing playing", ignoreCase = true),
-                    onClick = onTitleClick,
-                )
-                Spacer(Modifier.height((12.dp * scale).coerceAtLeast(8.dp)))
-                // Artist — gold; OK opens that artist's albums in Browse
-                MetaLink(
-                    text = artist,
-                    color = AudioAccent,
-                    fontSize = artistSize,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    enabled = metaEnabled &&
-                        !artist.equals("Browse to start listening", ignoreCase = true) &&
-                        !artist.equals("Unknown artist", ignoreCase = true),
-                    onClick = onArtistClick,
-                )
-                // Album artist — only when it differs from track artist
-                if (!albumArtist.isNullOrBlank()) {
-                    Spacer(Modifier.height((4.dp * scale).coerceAtLeast(2.dp)))
-                    MetaLink(
-                        text = albumArtist,
-                        color = AudioAccent.copy(alpha = 0.72f),
-                        fontSize = metaSize,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 2,
-                        enabled = metaEnabled,
-                        onClick = onAlbumArtistClick,
-                    )
-                }
-                // Album name only (never " | Track N") — OK opens matching albums
-                if (!album.isNullOrBlank()) {
-                    Spacer(Modifier.height((8.dp * scale).coerceAtLeast(4.dp)))
-                    MetaLink(
-                        text = album,
-                        color = AudioTextMuted,
-                        fontSize = metaSize,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 2,
-                        enabled = metaEnabled,
-                        onClick = onAlbumClick,
-                    )
-                }
-                // Track / disc + year — Track text uses same 4.dp inset as MetaLink
-                if (trackNumber != null || (year != null && year > 0)) {
-                    Spacer(Modifier.height((6.dp * scale).coerceAtLeast(3.dp)))
-                    val trackLabel = when {
-                        trackNumber == null -> null
-                        showDiscNumber && (discNumber ?: 0) > 0 ->
-                            "Disc $discNumber · Track $trackNumber"
-                        else -> "Track $trackNumber"
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        if (trackLabel != null) {
-                            Text(
-                                trackLabel,
-                                color = AudioTextMuted.copy(alpha = 0.75f),
+                val showUpNext = !upNextTitle.isNullOrBlank() &&
+                    !lyricsVisible &&
+                    !title.equals("Nothing playing", ignoreCase = true)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(if (touchFriendly) 10.dp else 16.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        // Track title — white; OK searches matching songs in Browse
+                        MetaLink(
+                            text = title,
+                            color = Color.White,
+                            fontSize = titleSize,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = if (touchFriendly) 2 else 4,
+                            enabled = metaEnabled &&
+                                !title.equals("Nothing playing", ignoreCase = true),
+                            onClick = onTitleClick,
+                        )
+                        Spacer(Modifier.height((12.dp * scale).coerceAtLeast(8.dp)))
+                        // Artist — gold; OK opens that artist's albums in Browse
+                        MetaLink(
+                            text = artist,
+                            color = AudioAccent,
+                            fontSize = artistSize,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            enabled = metaEnabled &&
+                                !artist.equals("Browse to start listening", ignoreCase = true) &&
+                                !artist.equals("Unknown artist", ignoreCase = true),
+                            onClick = onArtistClick,
+                        )
+                        // Album artist — only when it differs from track artist
+                        if (!albumArtist.isNullOrBlank()) {
+                            Spacer(Modifier.height((4.dp * scale).coerceAtLeast(2.dp)))
+                            MetaLink(
+                                text = albumArtist,
+                                color = AudioAccent.copy(alpha = 0.72f),
                                 fontSize = metaSize,
                                 fontWeight = FontWeight.Medium,
-                                fontFamily = PallasFontFamily,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                            )
-                        }
-                        if (year != null && year > 0) {
-                            MetaLink(
-                                text = year.toString(),
-                                color = AudioTextMuted.copy(alpha = 0.9f),
-                                fontSize = metaSize,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
+                                maxLines = 2,
                                 enabled = metaEnabled,
-                                onClick = onYearClick,
+                                onClick = onAlbumArtistClick,
                             )
                         }
+                        // Album name only (never " | Track N") — OK opens matching albums
+                        if (!album.isNullOrBlank()) {
+                            Spacer(Modifier.height((8.dp * scale).coerceAtLeast(4.dp)))
+                            MetaLink(
+                                text = album,
+                                color = AudioTextMuted,
+                                fontSize = metaSize,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                enabled = metaEnabled,
+                                onClick = onAlbumClick,
+                            )
+                        }
+                        // Track / disc + year — Track text uses same 4.dp inset as MetaLink
+                        if (trackNumber != null || (year != null && year > 0)) {
+                            Spacer(Modifier.height((6.dp * scale).coerceAtLeast(3.dp)))
+                            val trackLabel = when {
+                                trackNumber == null -> null
+                                showDiscNumber && (discNumber ?: 0) > 0 ->
+                                    "Disc $discNumber · Track $trackNumber"
+                                else -> "Track $trackNumber"
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                if (trackLabel != null) {
+                                    Text(
+                                        trackLabel,
+                                        color = AudioTextMuted.copy(alpha = 0.75f),
+                                        fontSize = metaSize,
+                                        fontWeight = FontWeight.Medium,
+                                        fontFamily = PallasFontFamily,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                                    )
+                                }
+                                if (year != null && year > 0) {
+                                    MetaLink(
+                                        text = year.toString(),
+                                        color = AudioTextMuted.copy(alpha = 0.9f),
+                                        fontSize = metaSize,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        enabled = metaEnabled,
+                                        onClick = onYearClick,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (showUpNext) {
+                        UpNextCard(
+                            title = upNextTitle.orEmpty(),
+                            artist = upNextArtist.orEmpty(),
+                            coverUrl = upNextCoverUrl,
+                            compact = touchFriendly,
+                            enabled = controlsEnabled,
+                            onClick = onUpNextClick,
+                            modifier = Modifier
+                                .widthIn(max = if (touchFriendly) 168.dp else 260.dp)
+                                .padding(top = 2.dp),
+                        )
                     }
                 }
 
@@ -2784,10 +2977,15 @@ private fun ImmersiveStage(
                     SyncedLyricsPanel(
                         lyrics = lyrics,
                         positionMs = position,
+                        lyricsOffsetMs = lyricsOffsetMs,
                         scale = scale,
                         status = lyricsStatus,
                         onAcceptOnline = onAcceptOnlineLyrics,
                         onDeclineOnline = onDeclineOnlineLyrics,
+                        onNudgeEarlier = onNudgeLyricsEarlier,
+                        onNudgeLater = onNudgeLyricsLater,
+                        onResetOffset = onResetLyricsOffset,
+                        syncControlsEnabled = controlsEnabled,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f, fill = true)
@@ -2795,6 +2993,7 @@ private fun ImmersiveStage(
                     )
                     Spacer(Modifier.height((12.dp * scale).coerceAtLeast(8.dp)))
                 } else {
+                    // Keep meta + transport clustered — do not reserve a blank lyrics-sized hole.
                     Spacer(Modifier.height((28.dp * scale).coerceAtLeast(16.dp)))
                 }
 
@@ -2846,7 +3045,7 @@ private fun ImmersiveStage(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    val btnGap = (18.dp * scale).coerceAtLeast(10.dp)
+                    val btnGap = if (touchFriendly) 16.dp else (18.dp * scale).coerceAtLeast(10.dp)
                     TransportButton(
                         enabled = controlsEnabled,
                         focusRequester = prevFocus,
@@ -2964,6 +3163,108 @@ private fun ImmersiveStage(
                             modifier = Modifier.size(skipIcon),
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpNextCard(
+    title: String,
+    artist: String,
+    coverUrl: Any?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    enabled: Boolean = true,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(10.dp)
+    val artSize = if (compact) 40.dp else 52.dp
+    val labelSize = if (compact) 9.sp else 10.sp
+    val titleSize = if (compact) 12.sp else 13.sp
+    val artistSize = if (compact) 10.sp else 11.sp
+
+    Column(
+        modifier = modifier
+            .clip(shape)
+            .background(
+                when {
+                    focused -> Color.White.copy(alpha = 0.10f)
+                    else -> Color.White.copy(alpha = 0.045f)
+                },
+            )
+            .border(
+                width = if (focused) 1.5.dp else 1.dp,
+                color = if (focused) {
+                    AudioAccent.copy(alpha = 0.55f)
+                } else {
+                    Color.White.copy(alpha = 0.08f)
+                },
+                shape = shape,
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .focusProperties { canFocus = enabled }
+            .focusable(enabled = enabled)
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClick,
+            )
+            .padding(
+                horizontal = if (compact) 8.dp else 10.dp,
+                vertical = if (compact) 7.dp else 9.dp,
+            ),
+    ) {
+        Text(
+            text = "UP NEXT",
+            color = AudioTextMuted.copy(alpha = if (focused) 0.85f else 0.55f),
+            fontSize = labelSize,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = PallasFontFamily,
+            letterSpacing = 1.6.sp,
+            maxLines = 1,
+        )
+        Spacer(Modifier.height(if (compact) 6.dp else 8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AlbumArt(
+                imageUrl = coverUrl,
+                title = title,
+                modifier = Modifier
+                    .size(artSize)
+                    .clip(RoundedCornerShape(6.dp))
+                    .border(
+                        1.dp,
+                        Color.White.copy(alpha = 0.10f),
+                        RoundedCornerShape(6.dp),
+                    ),
+            )
+            Spacer(Modifier.width(if (compact) 8.dp else 10.dp))
+            Column(modifier = Modifier.weight(1f, fill = false)) {
+                Text(
+                    text = title,
+                    color = Color.White.copy(alpha = if (focused) 0.95f else 0.78f),
+                    fontSize = titleSize,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = PallasFontFamily,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = (titleSize.value * 1.2f).sp,
+                )
+                if (artist.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = artist,
+                        color = AudioTextMuted.copy(alpha = if (focused) 0.8f else 0.55f),
+                        fontSize = artistSize,
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = PallasFontFamily,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -3680,6 +3981,18 @@ private fun BrowseDrawer(
                             viewModel.addAlbumToPlaylist(target.albumId, replace = false)
                         is BrowseAddTarget.Track ->
                             viewModel.addTrackToPlaylist(target.track, replace = false)
+                        else -> Unit
+                    }
+                    libraryAddTarget = null
+                },
+                onDownload = {
+                    when (target) {
+                        is BrowseAddTarget.Artist ->
+                            viewModel.downloadArtistToDevice(target.artist)
+                        is BrowseAddTarget.Album ->
+                            viewModel.downloadAlbumToDevice(target.albumId)
+                        is BrowseAddTarget.Track ->
+                            viewModel.downloadTrackToDevice(target.track)
                         else -> Unit
                     }
                     libraryAddTarget = null
@@ -4724,6 +5037,21 @@ private fun FolderBrowser(
                     }
                     addTarget = null
                 },
+                onDownload = {
+                    when (target) {
+                        is BrowseAddTarget.Folder ->
+                            viewModel.downloadFolderToDevice(target.path)
+                        is BrowseAddTarget.File ->
+                            viewModel.downloadFileEntryToDevice(target.entry)
+                        is BrowseAddTarget.Artist ->
+                            viewModel.downloadArtistToDevice(target.artist)
+                        is BrowseAddTarget.Album ->
+                            viewModel.downloadAlbumToDevice(target.albumId)
+                        is BrowseAddTarget.Track ->
+                            viewModel.downloadTrackToDevice(target.track)
+                    }
+                    addTarget = null
+                },
                 onDismiss = { addTarget = null },
             )
         }
@@ -4760,6 +5088,7 @@ private fun PlaylistAddSheet(
     title: String,
     onReplace: () -> Unit,
     onAppend: () -> Unit,
+    onDownload: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val firstFocus = remember { FocusRequester() }
@@ -4770,12 +5099,12 @@ private fun PlaylistAddSheet(
     MusicModalOverlay(onDismiss = onDismiss, scrimAlpha = 0.72f, windowed = true) {
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.72f)
-                .widthIn(max = 480.dp)
+                .fillMaxWidth(0.88f)
+                .widthIn(max = 640.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFF16161C))
                 .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                .padding(18.dp)
+                .padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 18.dp)
                 .clickable(
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() },
@@ -4783,15 +5112,58 @@ private fun PlaylistAddSheet(
                 ),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                "ADD TO PLAYLIST",
-                color = AudioAccent.copy(alpha = 0.9f),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.4.sp,
-                fontFamily = PallasFontFamily,
-            )
-            Spacer(Modifier.height(6.dp))
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "ADD TO PLAYLIST",
+                    color = AudioAccent.copy(alpha = 0.9f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.4.sp,
+                    fontFamily = PallasFontFamily,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                var closeFocused by remember { mutableStateOf(false) }
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close",
+                    tint = if (closeFocused) AudioAccent else Color.White.copy(alpha = 0.75f),
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (closeFocused) Color.White.copy(alpha = 0.12f)
+                            else Color.Transparent,
+                        )
+                        .border(
+                            width = if (closeFocused) 2.dp else 0.dp,
+                            color = if (closeFocused) FocusRing else Color.Transparent,
+                            shape = RoundedCornerShape(8.dp),
+                        )
+                        .onFocusChanged { closeFocused = it.isFocused }
+                        .onPreviewKeyEvent { event ->
+                            val isSelect = event.key == Key.DirectionCenter ||
+                                event.key == Key.Enter ||
+                                event.key == Key.NumPadEnter
+                            when {
+                                isSelect && event.type == KeyEventType.KeyUp -> {
+                                    onDismiss()
+                                    true
+                                }
+                                else -> false
+                            }
+                        }
+                        .focusable()
+                        .clickable(
+                            role = Role.Button,
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                            onClick = onDismiss,
+                        )
+                        .padding(6.dp),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
                 title,
                 color = Color.White,
@@ -4803,25 +5175,98 @@ private fun PlaylistAddSheet(
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(16.dp))
-            ModePill(
-                label = "Clear playlist & add",
-                selected = true,
-                focusRequester = firstFocus,
-                onClick = onReplace,
-            )
-            Spacer(Modifier.height(8.dp))
-            ModePill(
-                label = "Append to playlist",
-                selected = false,
-                onClick = onAppend,
-            )
-            Spacer(Modifier.height(8.dp))
-            ModePill(
-                label = "Cancel",
-                selected = false,
-                onClick = onDismiss,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                PlaylistAddActionBox(
+                    label = "Clear playlist & add",
+                    emphasized = true,
+                    focusRequester = firstFocus,
+                    onClick = onReplace,
+                    modifier = Modifier.weight(1f),
+                )
+                PlaylistAddActionBox(
+                    label = "Append to playlist",
+                    emphasized = false,
+                    onClick = onAppend,
+                    modifier = Modifier.weight(1f),
+                )
+                PlaylistAddActionBox(
+                    label = "Download to Music",
+                    emphasized = false,
+                    onClick = onDownload,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun PlaylistAddActionBox(
+    label: String,
+    emphasized: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .aspectRatio(1f)
+            .heightIn(min = 96.dp)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .clip(shape)
+            .background(
+                when {
+                    emphasized && !focused -> AudioAccent
+                    focused -> Color.White
+                    else -> Color.White.copy(alpha = 0.08f)
+                },
+            )
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = if (focused) FocusRing else Color.White.copy(alpha = 0.12f),
+                shape = shape,
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { event ->
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                when {
+                    isSelect && event.type == KeyEventType.KeyUp -> {
+                        onClick()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable()
+            .clickable(
+                role = Role.Button,
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClick,
+            )
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = label,
+            color = when {
+                emphasized || focused -> Color(0xFF1A1206)
+                else -> Color.White.copy(alpha = 0.88f)
+            },
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = PallasFontFamily,
+            textAlign = TextAlign.Center,
+            maxLines = 4,
+            softWrap = true,
+        )
     }
 }
 

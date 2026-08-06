@@ -146,6 +146,7 @@ fun IptvScreen(
     onOpenRadio: () -> Unit = {},
     onOpenYouTube: () -> Unit = {},
     onOpenMusic: () -> Unit = {},
+    onOpenPodcasts: () -> Unit = {},
     onFullscreenChanged: (Boolean) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
@@ -287,6 +288,7 @@ fun IptvScreen(
             onYouTube = onOpenYouTube,
             onRadio = onOpenRadio,
             onMusic = onOpenMusic,
+            onPodcasts = onOpenPodcasts,
             sleepTimerActive = sleepState.active,
             sleepTimerLabel = sleepState.label,
             onCycleSleepTimer = app.sleepTimer::cycle,

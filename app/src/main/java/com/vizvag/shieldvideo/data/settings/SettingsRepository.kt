@@ -109,6 +109,12 @@ data class AppSettings(
     val homeShowLibrary: Boolean = true,
     val homeShowYouTube: Boolean = false,
     val homeShowLiveTv: Boolean = true,
+    val homeShowPodcasts: Boolean = true,
+    /**
+     * Full NAS path to a Podcast Addict (or standard) OPML file,
+     * e.g. `/backups/Backup files/podcast addict/export.opml`.
+     */
+    val podcastOpmlNasPath: String = "",
 ) {
     val isTraktLinked: Boolean get() = traktAccessToken.isNotBlank()
     val isYoutubeLoggedIn: Boolean get() = youtubePipedAuthToken.isNotBlank()
@@ -261,6 +267,8 @@ class SettingsRepository(context: Context) {
             homeShowLibrary = prefs.getBoolean(KEY_HOME_SHOW_LIBRARY, true),
             homeShowYouTube = prefs.getBoolean(KEY_HOME_SHOW_YOUTUBE, false),
             homeShowLiveTv = prefs.getBoolean(KEY_HOME_SHOW_LIVETV, true),
+            homeShowPodcasts = prefs.getBoolean(KEY_HOME_SHOW_PODCASTS, true),
+            podcastOpmlNasPath = prefs.getString(KEY_PODCAST_OPML_NAS_PATH, "") ?: "",
         )
     }
 
@@ -347,6 +355,8 @@ class SettingsRepository(context: Context) {
             .putBoolean(KEY_HOME_SHOW_LIBRARY, settings.homeShowLibrary)
             .putBoolean(KEY_HOME_SHOW_YOUTUBE, settings.homeShowYouTube)
             .putBoolean(KEY_HOME_SHOW_LIVETV, settings.homeShowLiveTv)
+            .putBoolean(KEY_HOME_SHOW_PODCASTS, settings.homeShowPodcasts)
+            .putString(KEY_PODCAST_OPML_NAS_PATH, settings.podcastOpmlNasPath.trim())
             .apply()
         _revision.value = System.currentTimeMillis()
     }
@@ -410,6 +420,8 @@ class SettingsRepository(context: Context) {
             .put("homeShowLibrary", settings.homeShowLibrary)
             .put("homeShowYouTube", settings.homeShowYouTube)
             .put("homeShowLiveTv", settings.homeShowLiveTv)
+            .put("homeShowPodcasts", settings.homeShowPodcasts)
+            .put("podcastOpmlNasPath", settings.podcastOpmlNasPath)
 
     fun decodeBackup(obj: JSONObject): AppSettings {
         val defaults = AppSettings()
@@ -528,6 +540,8 @@ class SettingsRepository(context: Context) {
             homeShowLibrary = obj.optBoolean("homeShowLibrary", defaults.homeShowLibrary),
             homeShowYouTube = obj.optBoolean("homeShowYouTube", defaults.homeShowYouTube),
             homeShowLiveTv = obj.optBoolean("homeShowLiveTv", defaults.homeShowLiveTv),
+            homeShowPodcasts = obj.optBoolean("homeShowPodcasts", defaults.homeShowPodcasts),
+            podcastOpmlNasPath = obj.optString("podcastOpmlNasPath", defaults.podcastOpmlNasPath),
         )
     }
 
@@ -745,5 +759,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_HOME_SHOW_LIBRARY = "home_show_library"
         private const val KEY_HOME_SHOW_YOUTUBE = "home_show_youtube"
         private const val KEY_HOME_SHOW_LIVETV = "home_show_livetv"
+        private const val KEY_HOME_SHOW_PODCASTS = "home_show_podcasts"
+        private const val KEY_PODCAST_OPML_NAS_PATH = "podcast_opml_nas_path"
     }
 }

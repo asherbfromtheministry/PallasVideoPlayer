@@ -448,6 +448,24 @@ class SynologyApiClient constructor(
             }
         }
 
+    /** Stream a NAS file into [out] without buffering the whole file in memory. */
+    suspend fun downloadTo(path: String, out: java.io.OutputStream) =
+        withContext(Dispatchers.IO) {
+            withSession { sid ->
+                val settings = musicSettings.currentSettings()
+                val url = downloadUrl(settings, sid, path, mode = "download")
+                val request = Request.Builder().url(url).build()
+                val client = buildClient(settings)
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw SynologyException("Download failed: ${response.code}")
+                    }
+                    val body = response.body ?: throw SynologyException("Empty download body")
+                    body.byteStream().use { input -> input.copyTo(out) }
+                }
+            }
+        }
+
     suspend fun downloadText(path: String): String =
         String(downloadBytes(path))
 

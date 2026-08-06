@@ -10,6 +10,7 @@ enum class RemotePlaybackMode {
     LiveTv,
     Radio,
     YouTube,
+    Podcasts,
 }
 
 data class RemoteQueueItem(
@@ -33,6 +34,8 @@ data class RemoteStatus(
     val queueIndex: Int = -1,
     /** Compose route currently shown on the player (`home`, `music`, …). */
     val uiRoute: String = "home",
+    /** Radio station id / Live TV channel id / YouTube video id / podcast guid when relevant. */
+    val contentId: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("deviceId", deviceId)
@@ -45,6 +48,7 @@ data class RemoteStatus(
         .put("artworkUrl", artworkUrl)
         .put("queueIndex", queueIndex)
         .put("uiRoute", uiRoute)
+        .put("contentId", contentId)
         .put(
             "queue",
             JSONArray().also { arr ->
@@ -94,6 +98,7 @@ data class RemoteStatus(
                 queue = queue,
                 queueIndex = obj.optInt("queueIndex", -1),
                 uiRoute = obj.optString("uiRoute", "home").ifBlank { "home" },
+                contentId = obj.optString("contentId"),
             )
         }
     }
@@ -124,6 +129,16 @@ sealed class RemotePlayRequest {
     data class LiveTv(val channelId: String) : RemotePlayRequest()
     data class Radio(val stationId: String) : RemotePlayRequest()
     data class YouTube(val videoId: String) : RemotePlayRequest()
+    data class Podcast(
+        val showId: String,
+        val episodeGuid: String,
+        val audioUrl: String = "",
+        val episodeTitle: String = "",
+        val showTitle: String = "",
+        val imageUrl: String = "",
+        val durationSec: Long = 0L,
+        val positionMs: Long = 0L,
+    ) : RemotePlayRequest()
 }
 
 data class MusicTrackRef(

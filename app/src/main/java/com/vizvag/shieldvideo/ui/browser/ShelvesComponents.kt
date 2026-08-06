@@ -10,6 +10,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -27,7 +28,9 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clipToBounds
+import com.vizvag.shieldvideo.ui.components.LocalForcedLandscapeRotated
+import com.vizvag.shieldvideo.ui.components.touchFriendlyVerticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Podcasts
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
@@ -99,6 +103,7 @@ enum class RailDestination {
     YouTube,
     Radio,
     Music,
+    Podcasts,
 }
 
 /** Which player entries appear on the left rail (Settings → Display). */
@@ -107,6 +112,7 @@ data class RailPlayerVisibility(
     val youtube: Boolean = false,
     val radio: Boolean = true,
     val music: Boolean = true,
+    val podcasts: Boolean = true,
 ) {
     companion object {
         fun from(settings: AppSettings) = RailPlayerVisibility(
@@ -114,6 +120,7 @@ data class RailPlayerVisibility(
             youtube = settings.homeShowYouTube,
             radio = settings.homeShowRadio,
             music = settings.homeShowMusic,
+            podcasts = settings.homeShowPodcasts,
         )
     }
 }
@@ -132,6 +139,7 @@ fun BrowserNavRail(
     onYouTube: () -> Unit,
     onRadio: () -> Unit,
     onMusic: () -> Unit,
+    onPodcasts: () -> Unit = {},
     sleepTimerActive: Boolean,
     sleepTimerLabel: String?,
     onCycleSleepTimer: () -> Unit,
@@ -161,11 +169,13 @@ fun BrowserNavRail(
     val showYouTube = players.youtube
     val showRadio = players.radio
     val showMusic = players.music
+    val showPodcasts = players.podcasts
     val playerCount =
         (if (showLiveTv) 1 else 0) +
             (if (showYouTube) 1 else 0) +
             (if (showRadio) 1 else 0) +
-            (if (showMusic) 1 else 0)
+            (if (showMusic) 1 else 0) +
+            (if (showPodcasts) 1 else 0)
     // Focusable rows: shares + optional DVR + players + Sleep + Settings + optional Up
     val focusableCount = shares.size + (if (showDvr) 1 else 0) + playerCount + 2 + (if (showUp) 1 else 0)
     var focusIndex = 0
@@ -175,174 +185,209 @@ fun BrowserNavRail(
         return (i == 0) to (i == focusableCount - 1)
     }
 
-    Row(modifier = modifier.width(RailWidth).fillMaxHeight()) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .background(Color.Black.copy(alpha = 0.72f))
-                .focusProperties {
-                    // Entering from the content pane → selected destination.
-                    // (Avoid the old railHasFocus hop — it stole focus while scrolling up.)
-                    enter = { selectedFocus }
+    val rotated = LocalForcedLandscapeRotated.current
+    BoxWithConstraints(modifier = modifier.width(RailWidth).fillMaxHeight()) {
+        // Phone landscape stage is short — pack icons so Music/Settings stay reachable.
+        val compact = maxHeight < 480.dp
+        val itemGap = if (compact) 0.dp else 2.dp
+        val sectionGap = if (compact) 2.dp else 4.dp
+        Row(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .focusProperties {
+                        // Entering from the content pane → selected destination.
+                        // (Avoid the old railHasFocus hop — it stole focus while scrolling up.)
+                        enter = { selectedFocus }
+                    }
+                    .clipToBounds()
+                    .touchFriendlyVerticalScroll(scroll, rotated)
+                    .padding(
+                        top = if (compact) 6.dp else 12.dp,
+                        bottom = if (compact) 6.dp else 10.dp,
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(itemGap),
+            ) {
+                shares.forEachIndexed { index, share ->
+                    val label = NasPaths.labelFor(share)
+                    val selected = onBrowser && share.equals(selectedShare, ignoreCase = true)
+                    val preferred = selected ||
+                        (onBrowser && !shareSelected && !dvrSelected && index == 0)
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = label,
+                        selected = selected,
+                        onClick = { onSelectShare(share) },
+                        icon = shareIcon(share),
+                        focusRequester = if (preferred) selectedFocus else null,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
                 }
-                .verticalScroll(scroll)
-                .padding(top = 12.dp, bottom = 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            shares.forEachIndexed { index, share ->
-                val label = NasPaths.labelFor(share)
-                val selected = onBrowser && share.equals(selectedShare, ignoreCase = true)
-                val preferred = selected ||
-                    (onBrowser && !shareSelected && !dvrSelected && index == 0)
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = label,
-                    selected = selected,
-                    onClick = { onSelectShare(share) },
-                    icon = shareIcon(share),
-                    focusRequester = if (preferred) selectedFocus else null,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
+                if (showDvr) {
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "DVR",
+                        selected = dvrSelected,
+                        onClick = { onSelectShare(recordingFolder!!) },
+                        icon = Icons.Filled.FiberDvr,
+                        focusRequester = if (dvrSelected) selectedFocus else null,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+
+                Spacer(Modifier.height(sectionGap))
+                Box(
+                    Modifier
+                        .width(28.dp)
+                        .height(1.dp)
+                        .background(Color.White.copy(alpha = 0.12f)),
                 )
-            }
-            if (showDvr) {
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = "DVR",
-                    selected = dvrSelected,
-                    onClick = { onSelectShare(recordingFolder!!) },
-                    icon = Icons.Filled.FiberDvr,
-                    focusRequester = if (dvrSelected) selectedFocus else null,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
+                Spacer(Modifier.height(sectionGap))
+
+                if (showLiveTv) {
+                    val livePreferred = destination == RailDestination.LiveTv
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "Live TV",
+                        selected = livePreferred,
+                        onClick = onLiveTv,
+                        icon = Icons.Filled.LiveTv,
+                        focusRequester = if (livePreferred) selectedFocus else null,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+                if (showYouTube) {
+                    val youtubePreferred = destination == RailDestination.YouTube
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "YouTube",
+                        selected = youtubePreferred,
+                        onClick = onYouTube,
+                        icon = Icons.Filled.VideoLibrary,
+                        focusRequester = if (youtubePreferred) selectedFocus else null,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+                if (showRadio) {
+                    val radioPreferred = destination == RailDestination.Radio
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "Radio",
+                        selected = radioPreferred,
+                        onClick = onRadio,
+                        icon = Icons.Filled.Radio,
+                        focusRequester = if (radioPreferred) selectedFocus else null,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+                if (showMusic) {
+                    val musicPreferred = destination == RailDestination.Music
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "Music",
+                        selected = musicPreferred,
+                        onClick = onMusic,
+                        icon = Icons.Filled.LibraryMusic,
+                        focusRequester = if (musicPreferred) selectedFocus else null,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+                if (showPodcasts) {
+                    val podcastsPreferred = destination == RailDestination.Podcasts
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "Podcasts",
+                        selected = podcastsPreferred,
+                        onClick = onPodcasts,
+                        icon = Icons.Filled.Podcasts,
+                        focusRequester = if (podcastsPreferred) selectedFocus else null,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+
+                Spacer(Modifier.height(sectionGap))
+                Box(
+                    Modifier
+                        .width(28.dp)
+                        .height(1.dp)
+                        .background(Color.White.copy(alpha = 0.12f)),
                 )
+                Spacer(Modifier.height(sectionGap))
+
+                run {
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = sleepTimerLabel?.takeIf { it.isNotBlank() } ?: "Sleep",
+                        selected = sleepTimerActive,
+                        onClick = onCycleSleepTimer,
+                        icon = Icons.Filled.Timer,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+                run {
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "Settings",
+                        selected = false,
+                        onClick = onSettings,
+                        icon = Icons.Filled.Settings,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
+
+                if (showUp) {
+                    Spacer(Modifier.height(sectionGap))
+                    val (isFirst, isLast) = nextEdge()
+                    RailItem(
+                        label = "Up",
+                        selected = false,
+                        onClick = onGoUp,
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        focusEnabled = focusEnabled,
+                        blockFocusUp = isFirst,
+                        blockFocusDown = isLast,
+                        compact = compact,
+                    )
+                }
             }
 
-            Spacer(Modifier.height(4.dp))
             Box(
-                Modifier
-                    .width(28.dp)
-                    .height(1.dp)
-                    .background(Color.White.copy(alpha = 0.12f)),
+                modifier = Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(Color.White.copy(alpha = 0.06f)),
             )
-            Spacer(Modifier.height(4.dp))
-
-            if (showLiveTv) {
-                val livePreferred = destination == RailDestination.LiveTv
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = "Live TV",
-                    selected = livePreferred,
-                    onClick = onLiveTv,
-                    icon = Icons.Filled.LiveTv,
-                    focusRequester = if (livePreferred) selectedFocus else null,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
-                )
-            }
-            if (showYouTube) {
-                val youtubePreferred = destination == RailDestination.YouTube
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = "YouTube",
-                    selected = youtubePreferred,
-                    onClick = onYouTube,
-                    icon = Icons.Filled.VideoLibrary,
-                    focusRequester = if (youtubePreferred) selectedFocus else null,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
-                )
-            }
-            if (showRadio) {
-                val radioPreferred = destination == RailDestination.Radio
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = "Radio",
-                    selected = radioPreferred,
-                    onClick = onRadio,
-                    icon = Icons.Filled.Radio,
-                    focusRequester = if (radioPreferred) selectedFocus else null,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
-                )
-            }
-            if (showMusic) {
-                val musicPreferred = destination == RailDestination.Music
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = "Music",
-                    selected = musicPreferred,
-                    onClick = onMusic,
-                    icon = Icons.Filled.LibraryMusic,
-                    focusRequester = if (musicPreferred) selectedFocus else null,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
-                )
-            }
-
-            Spacer(Modifier.height(4.dp))
-            Box(
-                Modifier
-                    .width(28.dp)
-                    .height(1.dp)
-                    .background(Color.White.copy(alpha = 0.12f)),
-            )
-            Spacer(Modifier.height(4.dp))
-
-            run {
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = sleepTimerLabel?.takeIf { it.isNotBlank() } ?: "Sleep",
-                    selected = sleepTimerActive,
-                    onClick = onCycleSleepTimer,
-                    icon = Icons.Filled.Timer,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
-                )
-            }
-            run {
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = "Settings",
-                    selected = false,
-                    onClick = onSettings,
-                    icon = Icons.Filled.Settings,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
-                )
-            }
-
-            if (showUp) {
-                Spacer(Modifier.height(4.dp))
-                val (isFirst, isLast) = nextEdge()
-                RailItem(
-                    label = "Up",
-                    selected = false,
-                    onClick = onGoUp,
-                    icon = Icons.AutoMirrored.Filled.ArrowBack,
-                    focusEnabled = focusEnabled,
-                    blockFocusUp = isFirst,
-                    blockFocusDown = isLast,
-                )
-            }
         }
-
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .fillMaxHeight()
-                .background(Color.White.copy(alpha = 0.06f)),
-        )
     }
 }
 
@@ -357,6 +402,7 @@ private fun RailItem(
     focusEnabled: Boolean = true,
     blockFocusUp: Boolean = false,
     blockFocusDown: Boolean = false,
+    compact: Boolean = false,
 ) {
     val chrome = LocalScreenChrome.current
     val feedback = rememberTvFeedback()
@@ -374,6 +420,9 @@ private fun RailItem(
         animationSpec = Motion.focusSpring(),
         label = "railScale",
     )
+    val iconSize = if (compact) 18.dp else 22.dp
+    val labelSize = if (compact) 8.sp else 9.sp
+    val vPad = if (compact) 2.dp else 5.dp
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -405,29 +454,29 @@ private fun RailItem(
                 feedback.click()
                 onClick()
             })
-            .padding(vertical = 5.dp),
+            .padding(vertical = vPad),
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
             tint = tint,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(iconSize),
         )
         Text(
             text = label,
             color = tint,
-            fontSize = 9.sp,
+            fontSize = labelSize,
             fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 3.dp, start = 2.dp, end = 2.dp),
+            modifier = Modifier.padding(top = if (compact) 1.dp else 3.dp, start = 2.dp, end = 2.dp),
         )
         // Focus underline — selected state uses filled inverse pill instead
         Box(
             modifier = Modifier
-                .padding(top = 3.dp)
+                .padding(top = if (compact) 1.dp else 3.dp)
                 .width(18.dp)
-                .height(2.dp)
+                .height(if (compact) 1.dp else 2.dp)
                 .clip(RoundedCornerShape(1.dp))
                 .background(
                     if (focused && !selected) Color.White.copy(alpha = 0.55f)

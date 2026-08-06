@@ -41,6 +41,7 @@ import com.vizvag.shieldvideo.playback.remote.RemoteDevice
 import com.vizvag.shieldvideo.playback.remote.RemoteLanProbe
 import com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode
 import com.vizvag.shieldvideo.playback.remote.RemoteStatus
+import com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller
 import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
 import com.vizvag.shieldvideo.ui.components.IconActionButton
 import com.vizvag.shieldvideo.ui.theme.Accent
@@ -114,6 +115,7 @@ fun RemoteScreen(
 
     fun openRoom(device: RemoteDevice) {
         RemoteTargetStore.setTarget(device)
+        RemoteStatusPoller.kick()
         onOpenRoom(statusByKey[deviceKey(device)])
     }
 
@@ -195,6 +197,7 @@ fun RemoteScreen(
                                 "radio" -> "Radio"
                                 "iptv" -> "Live TV"
                                 "youtube" -> "YouTube"
+                                "podcasts" -> "Podcasts"
                                 "browser" -> "Browse"
                                 "settings" -> "Settings"
                                 else -> status.uiRoute.replaceFirstChar { it.uppercase() }

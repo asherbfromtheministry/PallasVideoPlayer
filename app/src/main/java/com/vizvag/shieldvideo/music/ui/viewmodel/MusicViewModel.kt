@@ -158,6 +158,10 @@ class MusicViewModel(
     private val _lyricsStatus = MutableStateFlow(LyricsStatus.Idle)
     val lyricsStatus = _lyricsStatus.asStateFlow()
 
+    /** Added to playback position when picking the current lyric line (negative = lyrics earlier). */
+    private val _lyricsOffsetMs = MutableStateFlow(0L)
+    val lyricsOffsetMs = _lyricsOffsetMs.asStateFlow()
+
     private val _connectionMessage = MutableStateFlow<String?>(null)
     val connectionMessage = _connectionMessage.asStateFlow()
 
@@ -237,6 +241,15 @@ class MusicViewModel(
         _lyricsStatus.value = LyricsStatus.NotFound
     }
 
+    fun nudgeLyricsOffset(deltaMs: Long) {
+        _lyricsOffsetMs.value =
+            (_lyricsOffsetMs.value + deltaMs).coerceIn(-30_000L, 30_000L)
+    }
+
+    fun resetLyricsOffset() {
+        _lyricsOffsetMs.value = 0L
+    }
+
     private fun reloadLyrics(track: TrackEntity) {
         lyricsLoadJob?.cancel()
         lyricsLoadJob = viewModelScope.launch {
@@ -302,6 +315,7 @@ class MusicViewModel(
                         _lyrics.value = emptyList()
                         _lyricsPath.value = null
                         _lyricsStatus.value = LyricsStatus.Idle
+                        _lyricsOffsetMs.value = 0L
                         tagLoadJob?.cancel()
                         lyricsLoadJob?.cancel()
                         return@collect
@@ -316,6 +330,7 @@ class MusicViewModel(
                     _lyrics.value = emptyList()
                     _lyricsPath.value = null
                     _lyricsStatus.value = LyricsStatus.Idle
+                    _lyricsOffsetMs.value = 0L
                     reloadLyrics(track)
                     tagLoadJob?.cancel()
                     tagLoadJob = viewModelScope.launch {
@@ -634,6 +649,8 @@ class MusicViewModel(
                         .playMusic(device, refs, startIndex)
                         .getOrThrow()
                     _remoteStatus.value = status
+                    RemoteStatusPoller.publish(status)
+                    RemoteStatusPoller.kick()
                 } else {
                     playerController.playTracks(tracks, startIndex)
                 }
@@ -754,6 +771,94 @@ class MusicViewModel(
             } else {
                 enqueueAndMaybePlay(listOf(track))
             }
+        }
+    }
+
+    fun downloadTrackToDevice(track: TrackEntity) {
+        downloadPathsToDevice(listOf(track.nasPath), label = track.title)
+    }
+
+    fun downloadAlbumToDevice(albumId: String) {
+        viewModelScope.launch {
+            val tracks = libraryRepository.getTracksByAlbum(albumId)
+            if (tracks.isEmpty()) {
+                flashStatus("No tracks in album")
+                return@launch
+            }
+            downloadPathsToDevice(tracks.map { it.nasPath }, label = tracks.first().albumTitle)
+        }
+    }
+
+    fun downloadArtistToDevice(artist: ArtistEntity) {
+        viewModelScope.launch {
+            val tracks = libraryRepository.getTracksForArtistBrowse(artist)
+            if (tracks.isEmpty()) {
+                flashStatus("No tracks for ${artist.name}")
+                return@launch
+            }
+            downloadPathsToDevice(tracks.map { it.nasPath }, label = artist.name)
+        }
+    }
+
+    fun downloadFolderToDevice(folderPath: String) {
+        viewModelScope.launch {
+            flashStatus("Preparing download…")
+            val tracks = runCatching { libraryRepository.getTracksUnderFolder(folderPath) }
+                .getOrElse {
+                    flashStatus("Failed: ${it.message}")
+                    return@launch
+                }
+            if (tracks.isEmpty()) {
+                flashStatus("No audio files in this folder")
+                return@launch
+            }
+            downloadPathsToDevice(
+                tracks.map { it.nasPath },
+                label = folderPath.substringAfterLast('/'),
+            )
+        }
+    }
+
+    fun downloadFileEntryToDevice(entry: FileEntry) {
+        downloadPathsToDevice(listOf(entry.path), label = entry.name)
+    }
+
+    private fun downloadPathsToDevice(paths: List<String>, label: String) {
+        val unique = paths
+            .map { it.replace('\\', '/').trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (unique.isEmpty()) {
+            flashStatus("Nothing to download")
+            return
+        }
+        viewModelScope.launch {
+            val appCtx = ShieldVideoApp.instance.applicationContext
+            var ok = 0
+            var fail = 0
+            unique.forEachIndexed { i, path ->
+                flashStatus("Downloading ${i + 1}/${unique.size}…")
+                runCatching {
+                    com.vizvag.shieldvideo.music.data.MusicDownloadStore.downloadNasFile(
+                        context = appCtx,
+                        api = synologyApiClient,
+                        nasPath = path,
+                    )
+                }.onSuccess {
+                    ok++
+                }.onFailure {
+                    android.util.Log.w("PallasMusic", "Download failed for $path: ${it.message}")
+                    fail++
+                }
+            }
+            flashStatus(
+                when {
+                    ok == 0 -> "Download failed${if (fail > 0) " ($fail)" else ""}"
+                    fail == 0 && ok == 1 -> "Saved to Music · $label"
+                    fail == 0 -> "Saved $ok tracks to Music"
+                    else -> "Saved $ok · $fail failed"
+                },
+            )
         }
     }
 
@@ -967,23 +1072,39 @@ class MusicViewModel(
         if (device != null) {
             viewModelScope.launch {
                 val client = ShieldVideoApp.instance.remoteClient
-                val remote = client.status(device).getOrNull()?.also { _remoteStatus.value = it }
-                    ?: _remoteStatus.value
+                // Use last polled status — do not block play on an extra status round-trip.
+                val remote = _remoteStatus.value
                 val queueSize = remote?.queue?.size ?: 0
+                val looksMusic = remote != null && remoteLooksLikeMusic(remote)
                 when {
-                    queueSize > 0 || (remote != null && remoteLooksLikeMusic(remote) && remote.title.isNotBlank()) -> {
+                    queueSize > 0 || (looksMusic && !remote.title.isNullOrBlank()) -> {
                         val action = when {
                             remote?.isPlaying == true -> TransportAction.Pause
-                            queueSize > 0 && remote?.title.isNullOrBlank() -> TransportAction.Play
-                            else -> TransportAction.Toggle
+                            else -> TransportAction.Play
                         }
                         client.transport(device, action)
-                            .onSuccess { _remoteStatus.value = it }
+                            .onSuccess {
+                                _remoteStatus.value = it
+                                RemoteStatusPoller.publish(it)
+                                RemoteStatusPoller.kick()
+                            }
                             .onFailure { flashStatus(it.message ?: "Remote play failed") }
                     }
-                    else -> flashStatus(
-                        "Browse or Random to play on ${device.deviceId.ifBlank { "this room" }}",
-                    )
+                    else -> {
+                        // Stale/empty local view of the room — still try Toggle, then refresh.
+                        client.transport(device, TransportAction.Toggle)
+                            .onSuccess {
+                                _remoteStatus.value = it
+                                RemoteStatusPoller.publish(it)
+                                RemoteStatusPoller.kick()
+                                if (it.mode != RemotePlaybackMode.Music && it.queue.isEmpty()) {
+                                    flashStatus(
+                                        "Browse or Random to play on ${device.deviceId.ifBlank { "this room" }}",
+                                    )
+                                }
+                            }
+                            .onFailure { flashStatus(it.message ?: "Remote play failed") }
+                    }
                 }
             }
             return
@@ -997,7 +1118,11 @@ class MusicViewModel(
             viewModelScope.launch {
                 ShieldVideoApp.instance.remoteClient
                     .transport(device, TransportAction.Seek, positionMs = ms)
-                    .onSuccess { _remoteStatus.value = it }
+                    .onSuccess {
+                        _remoteStatus.value = it
+                        RemoteStatusPoller.publish(it)
+                        RemoteStatusPoller.kick()
+                    }
             }
             return
         }
@@ -1019,7 +1144,11 @@ class MusicViewModel(
             if (device != null) {
                 ShieldVideoApp.instance.remoteClient
                     .transport(device, TransportAction.Next)
-                    .onSuccess { _remoteStatus.value = it }
+                    .onSuccess {
+                        _remoteStatus.value = it
+                        RemoteStatusPoller.publish(it)
+                        RemoteStatusPoller.kick()
+                    }
                 return@launch
             }
             playerController.playNext()
@@ -1032,7 +1161,11 @@ class MusicViewModel(
             if (device != null) {
                 ShieldVideoApp.instance.remoteClient
                     .transport(device, TransportAction.Previous)
-                    .onSuccess { _remoteStatus.value = it }
+                    .onSuccess {
+                        _remoteStatus.value = it
+                        RemoteStatusPoller.publish(it)
+                        RemoteStatusPoller.kick()
+                    }
                 return@launch
             }
             playerController.playPrevious()
@@ -1047,7 +1180,11 @@ class MusicViewModel(
             viewModelScope.launch {
                 ShieldVideoApp.instance.remoteClient
                     .musicQueue(device, MusicQueueAction.PlayIndex, index = index)
-                    .onSuccess { _remoteStatus.value = it }
+                    .onSuccess {
+                        _remoteStatus.value = it
+                        RemoteStatusPoller.publish(it)
+                        RemoteStatusPoller.kick()
+                    }
             }
             return
         }

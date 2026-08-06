@@ -90,6 +90,7 @@ fun YoutubeScreen(
     onOpenLiveTv: () -> Unit = {},
     onOpenRadio: () -> Unit = {},
     onOpenMusic: () -> Unit = {},
+    onOpenPodcasts: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onFullscreenChanged: (Boolean) -> Unit = {},
 ) {
@@ -162,6 +163,7 @@ fun YoutubeScreen(
             onYouTube = {},
             onRadio = onOpenRadio,
             onMusic = onOpenMusic,
+            onPodcasts = onOpenPodcasts,
             sleepTimerActive = sleepState.active,
             sleepTimerLabel = sleepState.label,
             onCycleSleepTimer = app.sleepTimer::cycle,

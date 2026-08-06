@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -66,8 +68,10 @@ import com.vizvag.shieldvideo.ui.theme.staggeredEntrance
 import kotlinx.coroutines.delay
 
 /**
- * Fraction of the media-room plate — tuned to the generated image layout:
- * radio (far left), hi-fi (left speakers), home theatre (center screen), living-room TV (right).
+ * Fraction of the media-room plate — authored against [R.drawable.media_room]:
+ * radio (left sideboard), music (speakers + amp rack), podcasts (headphones/mic table),
+ * library / Download (center cinema screen), YouTube (wall TV), Live TV (far-right console TV).
+ * Each rect covers that prop — not a forced horizontal strip.
  */
 private data class RoomHotspot(
     val key: String,
@@ -80,8 +84,8 @@ private data class RoomHotspot(
     val onOpen: () -> Unit,
 )
 
-/** Approximate aspect of [R.drawable.media_room] — hotspots are authored against this frame. */
-private const val ROOM_ASPECT = 16f / 9f
+/** Aspect of [R.drawable.media_room] (1536×1024). Hotspots are authored against this frame. */
+private const val ROOM_ASPECT = 1536f / 1024f
 
 @Composable
 fun HomeLandingScreen(
@@ -90,6 +94,7 @@ fun HomeLandingScreen(
     onOpenYouTube: () -> Unit,
     onOpenMusic: () -> Unit,
     onOpenRadio: () -> Unit,
+    onOpenPodcasts: () -> Unit = {},
     onOpenShare: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenRemote: () -> Unit = {},
@@ -117,6 +122,7 @@ fun HomeLandingScreen(
         defaultShare,
         settings.homeShowRadio,
         settings.homeShowMusic,
+        settings.homeShowPodcasts,
         settings.homeShowLibrary,
         showYouTube,
         showLiveTv,
@@ -124,16 +130,18 @@ fun HomeLandingScreen(
         onOpenYouTube,
         onOpenMusic,
         onOpenRadio,
+        onOpenPodcasts,
         onOpenShare,
     ) {
         buildList {
+            // Zones stay locked to image props even when siblings are hidden.
             if (settings.homeShowRadio) {
                 add(
                     RoomHotspot(
                         key = "radio",
                         label = "Radio",
                         kind = "ON AIR",
-                        x = 0.02f, y = 0.28f, w = 0.14f, h = 0.42f,
+                        x = 0f, y = 0.34f, w = 0.18f, h = 0.28f,
                         onOpen = onOpenRadio,
                     ),
                 )
@@ -144,8 +152,19 @@ fun HomeLandingScreen(
                         key = "music",
                         label = "Music",
                         kind = "HI-FI",
-                        x = 0.17f, y = 0.22f, w = 0.18f, h = 0.52f,
+                        x = 0.18f, y = 0.14f, w = 0.17f, h = 0.48f,
                         onOpen = onOpenMusic,
+                    ),
+                )
+            }
+            if (settings.homeShowPodcasts) {
+                add(
+                    RoomHotspot(
+                        key = "podcasts",
+                        label = "Podcasts",
+                        kind = "SHOWS",
+                        x = 0.17f, y = 0.64f, w = 0.22f, h = 0.28f,
+                        onOpen = onOpenPodcasts,
                     ),
                 )
             }
@@ -155,56 +174,34 @@ fun HomeLandingScreen(
                         key = "library",
                         label = defaultShare?.let { NasPaths.labelFor(it) } ?: "Library",
                         kind = "HOME THEATRE",
-                        x = 0.36f, y = 0.14f, w = 0.36f, h = 0.58f,
+                        x = 0.34f, y = 0.20f, w = 0.32f, h = 0.42f,
                         onOpen = {
                             if (defaultShare != null) onOpenShare(defaultShare) else onOpenLiveTv()
                         },
                     ),
                 )
             }
-            when {
-                showYouTube && showLiveTv -> {
-                    add(
-                        RoomHotspot(
-                            key = "youtube",
-                            label = "YouTube",
-                            kind = "STREAM",
-                            x = 0.73f, y = 0.22f, w = 0.12f, h = 0.40f,
-                            onOpen = onOpenYouTube,
-                        ),
-                    )
-                    add(
-                        RoomHotspot(
-                            key = "livetv",
-                            label = "Live TV",
-                            kind = "IPTV",
-                            x = 0.86f, y = 0.24f, w = 0.12f, h = 0.48f,
-                            onOpen = onOpenLiveTv,
-                        ),
-                    )
-                }
-                showYouTube -> {
-                    add(
-                        RoomHotspot(
-                            key = "youtube",
-                            label = "YouTube",
-                            kind = "STREAM",
-                            x = 0.73f, y = 0.22f, w = 0.25f, h = 0.50f,
-                            onOpen = onOpenYouTube,
-                        ),
-                    )
-                }
-                showLiveTv -> {
-                    add(
-                        RoomHotspot(
-                            key = "livetv",
-                            label = "Live TV",
-                            kind = "IPTV",
-                            x = 0.73f, y = 0.22f, w = 0.25f, h = 0.50f,
-                            onOpen = onOpenLiveTv,
-                        ),
-                    )
-                }
+            if (showYouTube) {
+                add(
+                    RoomHotspot(
+                        key = "youtube",
+                        label = "YouTube",
+                        kind = "STREAM",
+                        x = 0.67f, y = 0.18f, w = 0.16f, h = 0.34f,
+                        onOpen = onOpenYouTube,
+                    ),
+                )
+            }
+            if (showLiveTv) {
+                add(
+                    RoomHotspot(
+                        key = "livetv",
+                        label = "Live TV",
+                        kind = "IPTV",
+                        x = 0.83f, y = 0.34f, w = 0.17f, h = 0.36f,
+                        onOpen = onOpenLiveTv,
+                    ),
+                )
             }
         }
     }
@@ -231,22 +228,30 @@ fun HomeLandingScreen(
             .background(Color.Black),
     ) {
         val viewAspect = if (maxHeight > 0.dp) maxWidth / maxHeight else ROOM_ASPECT
-        val stageW = if (viewAspect > ROOM_ASPECT) maxHeight * ROOM_ASPECT else maxWidth
-        val stageH = if (viewAspect > ROOM_ASPECT) maxHeight else maxWidth / ROOM_ASPECT
+        // Cover transform: image fills the viewport; overflow is cropped (matches ContentScale.Crop).
+        val coverW: Dp
+        val coverH: Dp
+        val coverOffsetX: Dp
+        val coverOffsetY: Dp
+        if (viewAspect > ROOM_ASPECT) {
+            coverW = maxWidth
+            coverH = maxWidth / ROOM_ASPECT
+            coverOffsetX = 0.dp
+            coverOffsetY = (maxHeight - coverH) / 2
+        } else {
+            coverH = maxHeight
+            coverW = maxHeight * ROOM_ASPECT
+            coverOffsetX = (maxWidth - coverW) / 2
+            coverOffsetY = 0.dp
+        }
         val titleSp = when {
-            stageH < 280.dp -> 28.sp
-            stageH < 360.dp -> 34.sp
+            maxHeight < 280.dp -> 28.sp
+            maxHeight < 360.dp -> 34.sp
             else -> 44.sp
         }
-        val compactChrome = stageH < 320.dp || stageW < 520.dp
+        val compactChrome = maxHeight < 320.dp || maxWidth < 520.dp
 
-        // Scale the authored landscape room to fit — never crush hotspots into portrait bounds.
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .width(stageW)
-                .height(stageH),
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
             Image(
                 painter = painterResource(R.drawable.media_room),
                 contentDescription = null,
@@ -330,12 +335,12 @@ fun HomeLandingScreen(
                     onOpen = spot.onOpen,
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(
-                            start = stageW * spot.x,
-                            top = stageH * spot.y,
+                        .offset(
+                            x = coverW * spot.x + coverOffsetX,
+                            y = coverH * spot.y + coverOffsetY,
                         )
-                        .width(stageW * spot.w)
-                        .height(stageH * spot.h)
+                        .width(coverW * spot.w)
+                        .height(coverH * spot.h)
                         .then(
                             if (spot.key == initialFocusKey) Modifier.focusRequester(firstFocus)
                             else Modifier
@@ -355,13 +360,12 @@ fun HomeLandingScreen(
             if (corridor.isNotEmpty()) {
                 Row(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
+                        .align(Alignment.BottomEnd)
                         .padding(
-                            start = if (compactChrome) 12.dp else 28.dp,
                             bottom = if (compactChrome) 10.dp else 20.dp,
-                            end = if (compactChrome) 12.dp else 28.dp,
+                            // Keep clear of the on-screen clock/date (bottom-right).
+                            end = if (compactChrome) 160.dp else 220.dp,
                         )
-                        .fillMaxWidth(0.72f)
                         .horizontalScroll(rememberScrollState())
                         .staggeredEntrance(entered, 6),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

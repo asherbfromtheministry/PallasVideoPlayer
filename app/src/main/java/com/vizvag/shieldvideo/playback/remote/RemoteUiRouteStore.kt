@@ -8,21 +8,27 @@ object RemoteUiRouteStore {
     @Volatile
     private var route: String = "home"
 
-    private val mirrorable = setOf(
+    val mirrorableRoutes = setOf(
         "home",
         "music",
         "radio",
         "iptv",
         "youtube",
+        "podcasts",
         "browser",
         "settings",
         "multiview",
     )
 
+    fun isMirrorable(route: String?): Boolean {
+        val trimmed = route?.trim().orEmpty()
+        return trimmed.isNotEmpty() && trimmed in mirrorableRoutes
+    }
+
     fun set(route: String?) {
         val trimmed = route?.trim().orEmpty()
         if (trimmed.isEmpty() || trimmed == "remote") return
-        if (trimmed in mirrorable) {
+        if (trimmed in mirrorableRoutes) {
             this.route = trimmed
         }
     }

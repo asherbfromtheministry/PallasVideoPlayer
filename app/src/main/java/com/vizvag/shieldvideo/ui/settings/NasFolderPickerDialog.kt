@@ -57,7 +57,9 @@ enum class FolderPickerMode {
     MUSIC_FOLDERS,
     BACKGROUND_FOLDER,
     BACKUP_FOLDER,
-    IPTV_RECORDING_FOLDER
+    IPTV_RECORDING_FOLDER,
+    /** Pick a single `.opml` file on the NAS (Podcasts import). */
+    PODCAST_OPML_FILE,
 }
 
 @Composable
@@ -77,6 +79,7 @@ fun NasFolderPickerDialog(
     var pathStack by remember { mutableStateOf<List<String>>(emptyList()) }
     var shares by remember { mutableStateOf<List<String>>(emptyList()) }
     var folders by remember { mutableStateOf<List<SmbEntry>>(emptyList()) }
+    var files by remember { mutableStateOf<List<SmbEntry>>(emptyList()) }
     var selected by remember {
         mutableStateOf(
             initialSelection
@@ -85,6 +88,7 @@ fun NasFolderPickerDialog(
                 .toMutableSet()
         )
     }
+    val pickOpmlFile = mode == FolderPickerMode.PODCAST_OPML_FILE
     val listState = rememberLazyListState()
     val firstRowFocus = remember { FocusRequester() }
 
@@ -98,7 +102,20 @@ fun NasFolderPickerDialog(
         error = null
     }
 
-    LaunchedEffect(atShareRoot, shareName, pathStack, settings.host, settings.password) {
+    // Deep-link into the parent folder of an existing OPML path (if any).
+    LaunchedEffect(Unit) {
+        if (!pickOpmlFile) return@LaunchedEffect
+        val initial = initialSelection.firstOrNull()?.let { normalizePath(it) }.orEmpty()
+        if (initial.isBlank() || initial == "/") return@LaunchedEffect
+        val parts = initial.trim('/').split('/').filter { it.isNotBlank() }
+        if (parts.size < 2) return@LaunchedEffect
+        // Last segment is the file name — open its parent folder.
+        shareName = parts.first()
+        pathStack = parts.drop(1).dropLast(1)
+        atShareRoot = false
+    }
+
+    LaunchedEffect(atShareRoot, shareName, pathStack, settings.host, settings.password, pickOpmlFile) {
         loading = true
         error = null
         val result = withContext(Dispatchers.IO) {
@@ -106,6 +123,14 @@ fun NasFolderPickerDialog(
                 nasRepository.listShares(settings).map { list ->
                     list.map { SmbEntry(name = it, path = it, isDirectory = true) }
                 }
+            } else if (pickOpmlFile) {
+                nasRepository.list(
+                    settings,
+                    shareName.orEmpty(),
+                    pathStack.joinToString("/"),
+                    allowedExtensions = setOf("opml"),
+                    hideEmptyFolders = false,
+                )
             } else {
                 nasRepository.listDirectories(
                     settings,
@@ -119,8 +144,13 @@ fun NasFolderPickerDialog(
                 if (atShareRoot) {
                     shares = entries.map { it.name }
                     folders = emptyList()
+                    files = emptyList()
+                } else if (pickOpmlFile) {
+                    folders = entries.filter { it.isDirectory }
+                    files = entries.filter { !it.isDirectory }
                 } else {
                     folders = entries
+                    files = emptyList()
                 }
                 loading = false
             },
@@ -133,9 +163,13 @@ fun NasFolderPickerDialog(
 
     // Always land on the first row of the current folder — not a previously selected share
     // such as Download that may appear later in the list.
-    LaunchedEffect(atShareRoot, shareName, pathStack, loading, shares, folders) {
+    LaunchedEffect(atShareRoot, shareName, pathStack, loading, shares, folders, files) {
         if (loading || error != null) return@LaunchedEffect
-        val hasRows = if (atShareRoot) shares.isNotEmpty() else true
+        val hasRows = if (atShareRoot) {
+            shares.isNotEmpty()
+        } else {
+            folders.isNotEmpty() || files.isNotEmpty() || true
+        }
         if (!hasRows) return@LaunchedEffect
         listState.scrollToItem(0)
         delay(48)
@@ -162,6 +196,7 @@ fun NasFolderPickerDialog(
                     FolderPickerMode.BACKGROUND_FOLDER -> "Select background folder"
                     FolderPickerMode.BACKUP_FOLDER -> "Select settings backup folder"
                     FolderPickerMode.IPTV_RECORDING_FOLDER -> "Select IPTV recording folder"
+                    FolderPickerMode.PODCAST_OPML_FILE -> "Select OPML file"
                 },
                 color = Color.White,
                 fontSize = 22.sp,
@@ -185,6 +220,14 @@ fun NasFolderPickerDialog(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            if (pickOpmlFile) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "OK on a folder to open it · OK on a .opml file to select it",
+                    color = CyanAccent.copy(alpha = 0.9f),
+                    fontSize = 13.sp,
+                )
+            }
             Spacer(modifier = Modifier.height(12.dp))
 
             Box(
@@ -204,7 +247,8 @@ fun NasFolderPickerDialog(
                                 FolderRow(
                                     title = share,
                                     path = NasPaths.toFolderPath(share),
-                                    isShareRootItem = true
+                                    isShareRootItem = true,
+                                    isFile = false,
                                 )
                             }
                         } else {
@@ -213,7 +257,16 @@ fun NasFolderPickerDialog(
                                     title = folder.name,
                                     path = NasPaths.toFolderPath(shareName.orEmpty(), folder.path),
                                     isShareRootItem = false,
-                                    entry = folder
+                                    entry = folder,
+                                    isFile = false,
+                                )
+                            } + files.map { file ->
+                                FolderRow(
+                                    title = file.name,
+                                    path = NasPaths.toFolderPath(shareName.orEmpty(), file.path),
+                                    isShareRootItem = false,
+                                    entry = file,
+                                    isFile = true,
                                 )
                             }
                         }
@@ -244,7 +297,7 @@ fun NasFolderPickerDialog(
                                 val isSelected = selected.contains(normalizePath(row.path))
                                 val isFirstFocusTarget = atShareRoot && row.path == rows.firstOrNull()?.path
                                 PickerRow(
-                                    title = row.title,
+                                    title = if (row.isFile) "OPML · ${row.title}" else row.title,
                                     subtitle = row.path,
                                     selected = isSelected,
                                     focusRequester = if (isFirstFocusTarget) firstRowFocus else null,
@@ -254,22 +307,29 @@ fun NasFolderPickerDialog(
                                             pathStack = emptyList()
                                             atShareRoot = false
                                             reload()
+                                        } else if (row.isFile) {
+                                            val key = normalizePath(row.path)
+                                            onConfirm(listOf(key))
                                         } else {
                                             val entry = row.entry ?: return@PickerRow
                                             pathStack = entry.path.split('/').filter { it.isNotBlank() }
                                             reload()
                                         }
                                     },
-                                    onToggle = {
-                                        val key = normalizePath(row.path)
-                                        selected = selected.toMutableSet().also { set ->
-                                            if (mode != FolderPickerMode.VIDEO_FOLDERS &&
-                                                mode != FolderPickerMode.MUSIC_FOLDERS
-                                            ) {
-                                                set.clear()
-                                                set += key
-                                            } else {
-                                                if (!set.add(key)) set.remove(key)
+                                    onToggle = if (pickOpmlFile || row.isFile) {
+                                        null
+                                    } else {
+                                        {
+                                            val key = normalizePath(row.path)
+                                            selected = selected.toMutableSet().also { set ->
+                                                if (mode != FolderPickerMode.VIDEO_FOLDERS &&
+                                                    mode != FolderPickerMode.MUSIC_FOLDERS
+                                                ) {
+                                                    set.clear()
+                                                    set += key
+                                                } else {
+                                                    if (!set.add(key)) set.remove(key)
+                                                }
                                             }
                                         }
                                     }
@@ -283,7 +343,7 @@ fun NasFolderPickerDialog(
             Spacer(modifier = Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 PickerButton(label = "Cancel", onClick = onDismiss)
-                if (!atShareRoot) {
+                if (!atShareRoot && !pickOpmlFile) {
                     PickerButton(
                         label = if (mode != FolderPickerMode.VIDEO_FOLDERS &&
                             mode != FolderPickerMode.MUSIC_FOLDERS
@@ -312,29 +372,32 @@ fun NasFolderPickerDialog(
                         }
                     )
                 }
-                PickerButton(
-                    label = "Done",
-                    emphasized = true,
-                    onClick = {
-                        val result = when (mode) {
-                            FolderPickerMode.BACKGROUND_FOLDER ->
-                                selected.toList().ifEmpty {
-                                    if (!atShareRoot) listOf(normalizePath(currentPath)) else emptyList()
-                                }
-                            FolderPickerMode.BACKUP_FOLDER ->
-                                selected.toList().ifEmpty {
-                                    if (!atShareRoot) listOf(normalizePath(currentPath)) else emptyList()
-                                }
-                            FolderPickerMode.IPTV_RECORDING_FOLDER ->
-                                selected.toList().ifEmpty {
-                                    if (!atShareRoot) listOf(normalizePath(currentPath)) else emptyList()
-                                }
-                            FolderPickerMode.VIDEO_FOLDERS,
-                            FolderPickerMode.MUSIC_FOLDERS -> selected.toList().sorted()
+                if (!pickOpmlFile) {
+                    PickerButton(
+                        label = "Done",
+                        emphasized = true,
+                        onClick = {
+                            val result = when (mode) {
+                                FolderPickerMode.BACKGROUND_FOLDER ->
+                                    selected.toList().ifEmpty {
+                                        if (!atShareRoot) listOf(normalizePath(currentPath)) else emptyList()
+                                    }
+                                FolderPickerMode.BACKUP_FOLDER ->
+                                    selected.toList().ifEmpty {
+                                        if (!atShareRoot) listOf(normalizePath(currentPath)) else emptyList()
+                                    }
+                                FolderPickerMode.IPTV_RECORDING_FOLDER ->
+                                    selected.toList().ifEmpty {
+                                        if (!atShareRoot) listOf(normalizePath(currentPath)) else emptyList()
+                                    }
+                                FolderPickerMode.VIDEO_FOLDERS,
+                                FolderPickerMode.MUSIC_FOLDERS -> selected.toList().sorted()
+                                FolderPickerMode.PODCAST_OPML_FILE -> selected.toList()
+                            }
+                            onConfirm(result)
                         }
-                        onConfirm(result)
-                    }
-                )
+                    )
+                }
             }
         }
     }
@@ -344,7 +407,8 @@ private data class FolderRow(
     val title: String,
     val path: String,
     val isShareRootItem: Boolean,
-    val entry: SmbEntry? = null
+    val entry: SmbEntry? = null,
+    val isFile: Boolean = false,
 )
 
 private fun normalizePath(path: String): String {

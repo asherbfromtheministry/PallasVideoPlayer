@@ -14,20 +14,32 @@ import java.util.concurrent.TimeUnit
 /** LAN client — no shared token; same Wi‑Fi is enough. */
 class RemoteControlClient(
     private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .writeTimeout(8, TimeUnit.SECONDS)
-        .connectionPool(ConnectionPool(2, 30, TimeUnit.SECONDS))
+        .connectTimeout(1, TimeUnit.SECONDS)
+        .readTimeout(2, TimeUnit.SECONDS)
+        .writeTimeout(2, TimeUnit.SECONDS)
+        .callTimeout(3, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(4, 60, TimeUnit.SECONDS))
         .retryOnConnectionFailure(true)
         .build(),
 ) {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+
+    /** Podcast catalog / refresh can parse many feeds — allow a long read. */
+    private val podcastHttp: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(90, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(2, 30, TimeUnit.SECONDS))
+        .retryOnConnectionFailure(true)
+        .build()
 
     suspend fun status(device: RemoteDevice): Result<RemoteStatus> = withContext(Dispatchers.IO) {
         runCatching {
             val req = Request.Builder()
                 .url("${device.baseUrl}/v1/status")
                 .get()
+                .withControllerHeaders()
                 .build()
             val body = http.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) error("status ${resp.code}")
@@ -109,6 +121,116 @@ class RemoteControlClient(
     suspend fun playYouTube(device: RemoteDevice, videoId: String): Result<RemoteStatus> =
         play(device, JSONObject().put("type", "youtube").put("videoId", videoId))
 
+    suspend fun navigate(device: RemoteDevice, route: String): Result<RemoteStatus> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                postJson(
+                    "${device.baseUrl}/v1/navigate",
+                    JSONObject().put("route", route),
+                )
+            }
+        }
+
+    suspend fun podcastSubscriptions(device: RemoteDevice): Result<List<JSONObject>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val req = Request.Builder()
+                    .url("${device.baseUrl}/v1/podcasts")
+                    .get()
+                    .withControllerHeaders()
+                    .build()
+                val body = podcastHttp.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) error("podcasts ${resp.code}")
+                    resp.body?.string().orEmpty()
+                }
+                val arr = JSONObject(body).optJSONArray("subscriptions") ?: JSONArray()
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        arr.optJSONObject(i)?.let { add(it) }
+                    }
+                }
+            }
+        }
+
+    /** Force the room TV to re-fetch all podcast RSS feeds, then return updated subscriptions. */
+    suspend fun refreshPodcastFeeds(device: RemoteDevice): Result<Pair<Int, List<JSONObject>>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val req = Request.Builder()
+                    .url("${device.baseUrl}/v1/podcasts/refresh")
+                    .post("{}".toRequestBody(jsonMedia))
+                    .withControllerHeaders()
+                    .build()
+                val text = podcastHttp.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        val err = runCatching { JSONObject(body).optString("error") }.getOrNull()
+                        error(err?.takeIf { it.isNotBlank() } ?: "HTTP ${resp.code}")
+                    }
+                    body
+                }
+                val obj = JSONObject(text)
+                val updated = obj.optInt("updated", 0)
+                val arr = obj.optJSONArray("subscriptions") ?: JSONArray()
+                val subs = buildList {
+                    for (i in 0 until arr.length()) {
+                        arr.optJSONObject(i)?.let { add(it) }
+                    }
+                }
+                updated to subs
+            }
+        }
+
+    suspend fun podcastEpisodes(
+        device: RemoteDevice,
+        showId: String? = null,
+    ): Result<List<JSONObject>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = buildString {
+                append("${device.baseUrl}/v1/podcasts/episodes")
+                if (!showId.isNullOrBlank()) {
+                    append("?showId=")
+                    append(java.net.URLEncoder.encode(showId, Charsets.UTF_8.name()))
+                }
+            }
+            val req = Request.Builder().url(url).get().withControllerHeaders().build()
+            val body = podcastHttp.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("podcast episodes ${resp.code}")
+                resp.body?.string().orEmpty()
+            }
+            val arr = JSONObject(body).optJSONArray("episodes") ?: JSONArray()
+            buildList {
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { add(it) }
+                }
+            }
+        }
+    }
+
+    suspend fun playPodcast(
+        device: RemoteDevice,
+        showId: String,
+        episodeGuid: String,
+        audioUrl: String = "",
+        episodeTitle: String = "",
+        showTitle: String = "",
+        imageUrl: String = "",
+        durationSec: Long = 0L,
+        positionMs: Long = 0L,
+    ): Result<RemoteStatus> = play(
+        device,
+        JSONObject()
+            .put("type", "podcast")
+            .put("showId", showId)
+            .put("episodeGuid", episodeGuid)
+            .put("audioUrl", audioUrl)
+            .put("episodeTitle", episodeTitle)
+            .put("showTitle", showTitle)
+            .put("imageUrl", imageUrl)
+            .put("durationSec", durationSec)
+            .put("positionMs", positionMs),
+    )
+
     suspend fun musicQueue(
         device: RemoteDevice,
         action: MusicQueueAction,
@@ -144,6 +266,7 @@ class RemoteControlClient(
         val req = Request.Builder()
             .url(url)
             .post(payload.toString().toRequestBody(jsonMedia))
+            .withControllerHeaders()
             .build()
         http.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
@@ -154,5 +277,11 @@ class RemoteControlClient(
             if (text.isBlank()) error("empty response")
             return RemoteStatus.fromJson(JSONObject(text))
         }
+    }
+
+    private fun Request.Builder.withControllerHeaders(): Request.Builder {
+        if (!RemoteTargetStore.isControllingRemote()) return this
+        return header(RemoteControllerIdentity.HEADER_ID, RemoteControllerIdentity.id())
+            .header(RemoteControllerIdentity.HEADER_NAME, RemoteControllerIdentity.displayName())
     }
 }

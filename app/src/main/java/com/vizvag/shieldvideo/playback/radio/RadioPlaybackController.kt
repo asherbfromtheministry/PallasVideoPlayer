@@ -66,9 +66,20 @@ class RadioPlaybackController(context: Context) {
             isPlaying = true,
             title = name,
         )
+        // Keep RadioScreen dial / cold-start selection in sync with deep links & remotes.
+        appContext.getSharedPreferences(PREFS_RADIO, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_LAST_STATION, stationId)
+            .apply()
         player.setMediaItem(MediaItem.fromUri(streamUrl))
         player.prepare()
         player.play()
+        publishHaNowPlaying()
+    }
+
+    companion object {
+        const val PREFS_RADIO = "radio_player"
+        const val KEY_LAST_STATION = "last_station_id"
     }
 
     /** UI already loaded media onto [player] — keep remote status in sync. */
@@ -80,6 +91,7 @@ class RadioPlaybackController(context: Context) {
             isPlaying = player.isPlaying || player.playWhenReady,
             title = name,
         )
+        publishHaNowPlaying()
     }
 
     fun play() {
@@ -91,9 +103,13 @@ class RadioPlaybackController(context: Context) {
                 playStation(s.stationId, s.stationName, s.streamUrl)
             }
         }
+        publishHaNowPlaying()
     }
 
-    fun pause() = player.pause()
+    fun pause() {
+        player.pause()
+        publishHaNowPlaying()
+    }
 
     fun toggle() {
         if (player.isPlaying) pause() else play()
@@ -109,11 +125,27 @@ class RadioPlaybackController(context: Context) {
         }
         energyProbe.resetLevels()
         _state.value = RadioPlaybackState()
+        clearHaNowPlaying()
     }
 
     fun setNowPlayingTitle(title: String) {
         _state.update { it.copy(title = title.ifBlank { it.stationName }) }
+        publishHaNowPlaying()
     }
 
     fun isActive(): Boolean = _state.value.stationId.isNotBlank() || player.mediaItemCount > 0
+
+    private fun publishHaNowPlaying() {
+        runCatching {
+            (appContext as? com.vizvag.shieldvideo.ShieldVideoApp)
+                ?: com.vizvag.shieldvideo.ShieldVideoApp.instance
+        }.getOrNull()?.publishRadioNowPlayingToHa()
+    }
+
+    private fun clearHaNowPlaying() {
+        runCatching {
+            (appContext as? com.vizvag.shieldvideo.ShieldVideoApp)
+                ?: com.vizvag.shieldvideo.ShieldVideoApp.instance
+        }.getOrNull()?.clearRadioNowPlayingToHa()
+    }
 }

@@ -78,8 +78,8 @@ class RemoteControlHttpServer(
 
     private fun handleClient(socket: Socket) {
         try {
-            // Long enough for large UTF-8 play payloads + prepareInAppPlayer.
-            socket.soTimeout = 60_000
+            // Long enough for podcast catalog assembly on slower Shields (~15s+).
+            socket.soTimeout = 300_000
             socket.tcpNoDelay = true
             socket.use { s ->
                 handleClientBody(s)
@@ -118,6 +118,18 @@ class RemoteControlHttpServer(
             String(readExact(input, contentLength), Charsets.UTF_8)
         } else {
             ""
+        }
+
+        val controllerId = headers[RemoteControllerIdentity.HEADER_ID.lowercase()]
+        if (!controllerId.isNullOrBlank()) {
+            val controllerName = headers[RemoteControllerIdentity.HEADER_NAME.lowercase()]
+                .orEmpty()
+            val host = runCatching { s.inetAddress.hostAddress }.getOrNull().orEmpty()
+            RemoteControllerSessions.touch(
+                id = controllerId,
+                name = controllerName,
+                host = host,
+            )
         }
 
         when {
@@ -248,6 +260,74 @@ class RemoteControlHttpServer(
                         ).toString(),
                     )
                 }
+            }
+            method == "POST" && path == "/v1/navigate" -> {
+                val json = runCatching { JSONObject(body.ifBlank { "{}" }) }.getOrElse {
+                    writeResponse(s, 400, """{"error":"invalid json"}""")
+                    return
+                }
+                val route = json.optString("route").trim()
+                val result = runBlocking { router.navigate(route) }
+                if (result.isSuccess) {
+                    writeResponse(s, 200, router.status().toJson().toString())
+                } else {
+                    writeResponse(
+                        s,
+                        400,
+                        JSONObject().put(
+                            "error",
+                            result.exceptionOrNull()?.message ?: "navigate failed",
+                        ).toString(),
+                    )
+                }
+            }
+            method == "GET" && path == "/v1/podcasts" -> {
+                val payload = JSONObject()
+                    .put("subscriptions", router.podcastSubscriptionsJson())
+                writeResponse(s, 200, payload.toString())
+            }
+            method == "GET" && path == "/v1/radio/stations" -> {
+                val payload = JSONObject()
+                    .put("stations", router.radioStationsJson())
+                writeResponse(s, 200, payload.toString())
+            }
+            method == "POST" && path == "/v1/podcasts/refresh" -> {
+                val result = runBlocking { router.refreshPodcastFeeds() }
+                if (result.isSuccess) {
+                    val count = result.getOrDefault(0)
+                    writeResponse(
+                        s,
+                        200,
+                        JSONObject()
+                            .put("updated", count)
+                            .put("subscriptions", router.podcastSubscriptionsJson())
+                            .toString(),
+                    )
+                } else {
+                    writeResponse(
+                        s,
+                        500,
+                        JSONObject().put(
+                            "error",
+                            result.exceptionOrNull()?.message ?: "refresh failed",
+                        ).toString(),
+                    )
+                }
+            }
+            method == "GET" && path.startsWith("/v1/podcasts/episodes") -> {
+                val query = parts[1].substringAfter('?', missingDelimiterValue = "")
+                val showId = query.split('&')
+                    .mapNotNull { pair ->
+                        val kv = pair.split('=', limit = 2)
+                        if (kv.size == 2 && kv[0] == "showId") {
+                            java.net.URLDecoder.decode(kv[1], Charsets.UTF_8.name())
+                        } else {
+                            null
+                        }
+                    }
+                    .firstOrNull()
+                val episodes = runBlocking { router.podcastEpisodesJson(showId) }
+                writeResponse(s, 200, JSONObject().put("episodes", episodes).toString())
             }
             else -> writeResponse(s, 404, """{"error":"not found"}""")
         }

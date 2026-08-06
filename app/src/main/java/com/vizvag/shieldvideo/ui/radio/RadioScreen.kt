@@ -149,8 +149,9 @@ import kotlin.math.sin
 import kotlin.random.Random
 private const val RADIO_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-private const val PREFS = "radio_player"
-private const val KEY_LAST_STATION = "last_station_id"
+private const val PREFS = com.vizvag.shieldvideo.playback.radio.RadioPlaybackController.PREFS_RADIO
+private const val KEY_LAST_STATION =
+    com.vizvag.shieldvideo.playback.radio.RadioPlaybackController.KEY_LAST_STATION
 private const val METADATA_POLL_MS = 30_000L
 private val GlassRowShape = RoundedCornerShape(14.dp)
 private val LeftPanePad = 14.dp
@@ -165,6 +166,7 @@ fun RadioScreen(
     onOpenLiveTv: () -> Unit = {},
     onOpenYouTube: () -> Unit = {},
     onOpenMusic: () -> Unit = {},
+    onOpenPodcasts: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
     AudioScreenTheme {
@@ -176,6 +178,7 @@ fun RadioScreen(
             onOpenLiveTv = onOpenLiveTv,
             onOpenYouTube = onOpenYouTube,
             onOpenMusic = onOpenMusic,
+            onOpenPodcasts = onOpenPodcasts,
             onOpenSettings = onOpenSettings,
         )
     }
@@ -189,6 +192,7 @@ private fun RadioScreenBody(
     onOpenLiveTv: () -> Unit,
     onOpenYouTube: () -> Unit,
     onOpenMusic: () -> Unit,
+    onOpenPodcasts: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -208,8 +212,69 @@ private fun RadioScreenBody(
         customStations = settingsRepository.load().customRadioStations
     }
     val stations = remember(customStations) { RadioStations.all(customStations) }
+    val app = LocalContext.current.applicationContext as ShieldVideoApp
+    val radioPlaybackState by app.radioPlayback.state.collectAsState()
     var selectedStationId by remember(stations) {
-        mutableStateOf(prefs.getString(KEY_LAST_STATION, null))
+        val liveId = app.radioPlayback.state.value.stationId
+        mutableStateOf(
+            when {
+                liveId.isNotBlank() && stations.any { it.id == liveId } -> liveId
+                else -> prefs.getString(KEY_LAST_STATION, null)
+            },
+        )
+    }
+    val controllingRemote by com.vizvag.shieldvideo.playback.remote.RemoteTargetStore.target.collectAsState()
+    val remoteStatus by com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller.status.collectAsState()
+    // Wait until we've mirrored the room station before pushing play — otherwise the phone
+    // would overwrite the TV with its local last-station preference.
+    var remoteReady by remember { mutableStateOf(controllingRemote == null) }
+    // Deep link / LAN remote playStation() — keep dial + hero in sync with the shared player.
+    LaunchedEffect(radioPlaybackState.stationId, controllingRemote) {
+        if (controllingRemote != null) return@LaunchedEffect
+        val id = radioPlaybackState.stationId
+        if (id.isNotBlank() && id != selectedStationId && stations.any { it.id == id }) {
+            selectedStationId = id
+            prefs.edit().putString(KEY_LAST_STATION, id).apply()
+        }
+    }
+    LaunchedEffect(controllingRemote?.host, controllingRemote?.port, stations) {
+        val target = controllingRemote
+        if (target == null) {
+            remoteReady = true
+            return@LaunchedEffect
+        }
+        remoteReady = false
+        val polled = remoteStatus
+        val status = if (
+            polled?.mode == com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode.Radio &&
+            polled.contentId.isNotBlank()
+        ) {
+            polled
+        } else {
+            com.vizvag.shieldvideo.ShieldVideoApp.instance.remoteClient
+                .status(target)
+                .getOrNull()
+                ?.also {
+                    com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller.publish(it)
+                    com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller.kick()
+                }
+        }
+        val roomId = status?.contentId?.takeIf { it.isNotBlank() }
+        if (roomId != null && stations.any { it.id == roomId }) {
+            selectedStationId = roomId
+        }
+        remoteReady = true
+    }
+    LaunchedEffect(remoteStatus?.contentId, remoteStatus?.mode, remoteStatus?.isPlaying) {
+        if (controllingRemote == null) return@LaunchedEffect
+        val remote = remoteStatus ?: return@LaunchedEffect
+        if (remote.mode != com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode.Radio) {
+            return@LaunchedEffect
+        }
+        val roomId = remote.contentId
+        if (roomId.isNotBlank() && roomId != selectedStationId && stations.any { it.id == roomId }) {
+            selectedStationId = roomId
+        }
     }
     LaunchedEffect(stations) {
         if (stations.none { it.id == selectedStationId }) {
@@ -233,6 +298,7 @@ private fun RadioScreenBody(
             onYouTube = onOpenYouTube,
             onRadio = {},
             onMusic = onOpenMusic,
+            onPodcasts = onOpenPodcasts,
             sleepTimerActive = sleepForEmpty.active,
             sleepTimerLabel = sleepForEmpty.label,
             onCycleSleepTimer = appForRail.sleepTimer::cycle,
@@ -299,7 +365,6 @@ private fun RadioScreenBody(
     val hostView = LocalView.current
     val playFocus = remember { FocusRequester() }
     val blackFocus = remember { FocusRequester() }
-    val app = LocalContext.current.applicationContext as ShieldVideoApp
     val scope = rememberCoroutineScope()
     val musicCache = app.musicModule.libraryCache
     val libraryArtists by musicCache.artists.collectAsState()
@@ -421,12 +486,41 @@ private fun RadioScreenBody(
         player.addListener(listener)
         onDispose { player.removeListener(listener) }
     }
-    LaunchedEffect(station.id, streamAttempt, activeStreamUrl) {
+    LaunchedEffect(station.id, streamAttempt, activeStreamUrl, remoteReady) {
         prefs.edit().putString(KEY_LAST_STATION, station.id).apply()
         if (com.vizvag.shieldvideo.playback.remote.RemoteTargetStore.isControllingRemote()) {
-            runCatching {
-                com.vizvag.shieldvideo.playback.remote.RemotePlayBridge.playRadio(station.id) {}
+            if (!remoteReady) return@LaunchedEffect
+            val roomId = remoteStatus?.contentId
+            // Only push when the phone dial moved — don't re-fire for the mirrored room station.
+            if (roomId != station.id || remoteStatus?.mode != com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode.Radio) {
+                runCatching {
+                    com.vizvag.shieldvideo.playback.remote.RemotePlayBridge.playRadio(station.id) {}
+                }
             }
+            playing = remoteStatus?.isPlaying == true
+            buffering = false
+            error = null
+            return@LaunchedEffect
+        }
+        val live = com.vizvag.shieldvideo.ShieldVideoApp.instance.radioPlayback.state.value
+        // Deep link already switched the shared player — wait for dial sync, don't stomp it.
+        if (live.stationId.isNotBlank() && live.stationId != station.id) {
+            return@LaunchedEffect
+        }
+        // Already on this station from playStation() — attach UI state without restarting.
+        if (
+            streamAttempt == 0 &&
+            live.stationId == station.id &&
+            player.mediaItemCount > 0
+        ) {
+            buffering = false
+            playing = player.isPlaying || player.playWhenReady
+            error = null
+            com.vizvag.shieldvideo.ShieldVideoApp.instance.radioPlayback.notePlaying(
+                station.id,
+                station.name,
+                live.streamUrl.ifBlank { activeStreamUrl },
+            )
             return@LaunchedEffect
         }
         if (streamAttempt == 0) error = null
@@ -451,6 +545,14 @@ private fun RadioScreenBody(
             station.name,
             activeStreamUrl,
         )
+    }
+    LaunchedEffect(remoteStatus?.isPlaying, remoteStatus?.mode, controllingRemote) {
+        if (controllingRemote == null) return@LaunchedEffect
+        val remote = remoteStatus ?: return@LaunchedEffect
+        if (remote.mode == com.vizvag.shieldvideo.playback.remote.RemotePlaybackMode.Radio) {
+            playing = remote.isPlaying
+            buffering = false
+        }
     }
     DisposableEffect(station.id) {
         onDispose {
@@ -509,6 +611,7 @@ private fun RadioScreenBody(
         onYouTube = onOpenYouTube,
         onRadio = {},
         onMusic = onOpenMusic,
+        onPodcasts = onOpenPodcasts,
         sleepTimerActive = sleepState.active,
         sleepTimerLabel = sleepState.label,
         onCycleSleepTimer = app.sleepTimer::cycle,
@@ -727,7 +830,11 @@ private fun RadioScreenBody(
                                                         com.vizvag.shieldvideo.playback.remote.TransportAction.Play
                                                     }
                                                     app.remoteClient.transport(device, action)
-                                                        .onSuccess { playing = !playing }
+                                                        .onSuccess {
+                                                            playing = it.isPlaying
+                                                            com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller.publish(it)
+                                                            com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller.kick()
+                                                        }
                                                 }
                                             } else if (player.isPlaying) {
                                                 player.pause()

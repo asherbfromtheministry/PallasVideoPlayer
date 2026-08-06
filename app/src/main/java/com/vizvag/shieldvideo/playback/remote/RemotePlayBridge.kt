@@ -27,7 +27,9 @@ object RemotePlayBridge {
                 durationMs = it.durationMs,
             )
         }
-        ShieldVideoApp.instance.remoteClient.playMusic(device, refs, startIndex).getOrThrow()
+        val status = ShieldVideoApp.instance.remoteClient.playMusic(device, refs, startIndex).getOrThrow()
+        RemoteStatusPoller.publish(status)
+        RemoteStatusPoller.kick()
     }
 
     suspend fun enqueueMusic(
@@ -49,9 +51,11 @@ object RemotePlayBridge {
                 durationMs = it.durationMs,
             )
         }
-        ShieldVideoApp.instance.remoteClient
+        val status = ShieldVideoApp.instance.remoteClient
             .musicQueue(device, MusicQueueAction.Add, tracks = refs)
             .getOrThrow()
+        RemoteStatusPoller.publish(status)
+        RemoteStatusPoller.kick()
     }
 
     suspend fun playNasVideo(
@@ -67,9 +71,11 @@ object RemotePlayBridge {
             local()
             return
         }
-        ShieldVideoApp.instance.remoteClient
+        val status = ShieldVideoApp.instance.remoteClient
             .playNasVideo(device, share, path, title, positionMs, host)
             .getOrThrow()
+        RemoteStatusPoller.publish(status)
+        RemoteStatusPoller.kick()
     }
 
     suspend fun playLiveTv(channelId: String, local: suspend () -> Unit) {
@@ -78,7 +84,9 @@ object RemotePlayBridge {
             local()
             return
         }
-        ShieldVideoApp.instance.remoteClient.playLiveTv(device, channelId).getOrThrow()
+        val status = ShieldVideoApp.instance.remoteClient.playLiveTv(device, channelId).getOrThrow()
+        RemoteStatusPoller.publish(status)
+        RemoteStatusPoller.kick()
     }
 
     suspend fun playRadio(stationId: String, local: suspend () -> Unit) {
@@ -87,7 +95,9 @@ object RemotePlayBridge {
             local()
             return
         }
-        ShieldVideoApp.instance.remoteClient.playRadio(device, stationId).getOrThrow()
+        val status = ShieldVideoApp.instance.remoteClient.playRadio(device, stationId).getOrThrow()
+        RemoteStatusPoller.publish(status)
+        RemoteStatusPoller.kick()
     }
 
     suspend fun playYouTube(videoId: String, local: suspend () -> Unit) {
@@ -96,7 +106,40 @@ object RemotePlayBridge {
             local()
             return
         }
-        ShieldVideoApp.instance.remoteClient.playYouTube(device, videoId).getOrThrow()
+        val status = ShieldVideoApp.instance.remoteClient.playYouTube(device, videoId).getOrThrow()
+        RemoteStatusPoller.publish(status)
+        RemoteStatusPoller.kick()
+    }
+
+    suspend fun playPodcast(
+        showId: String,
+        episodeGuid: String,
+        audioUrl: String = "",
+        episodeTitle: String = "",
+        showTitle: String = "",
+        imageUrl: String = "",
+        durationSec: Long = 0L,
+        positionMs: Long = 0L,
+        local: suspend () -> Unit,
+    ) {
+        val device = RemoteTargetStore.current()
+        if (device == null) {
+            local()
+            return
+        }
+        val status = ShieldVideoApp.instance.remoteClient.playPodcast(
+            device = device,
+            showId = showId,
+            episodeGuid = episodeGuid,
+            audioUrl = audioUrl,
+            episodeTitle = episodeTitle,
+            showTitle = showTitle,
+            imageUrl = imageUrl,
+            durationSec = durationSec,
+            positionMs = positionMs,
+        ).getOrThrow()
+        RemoteStatusPoller.publish(status)
+        RemoteStatusPoller.kick()
     }
 
     fun controllingLabel(): String? =

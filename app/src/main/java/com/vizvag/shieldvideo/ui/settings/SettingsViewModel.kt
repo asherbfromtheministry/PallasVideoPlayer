@@ -3,6 +3,7 @@ package com.vizvag.shieldvideo.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.vizvag.shieldvideo.ShieldVideoApp
 import com.vizvag.shieldvideo.data.hue.HueBridgeClient
 import com.vizvag.shieldvideo.data.hue.HueLight
 import com.vizvag.shieldvideo.data.index.VideoIndexController
@@ -62,6 +63,10 @@ data class SettingsUiState(
     val youtubePasswordVisible: Boolean = false,
     val youtubeAuthBusy: Boolean = false,
     val youtubeAuthMessage: String? = null,
+    val podcastBusy: Boolean = false,
+    val podcastMessage: String? = null,
+    val podcastSubscriptionCount: Int = 0,
+    val podcastLastImportMs: Long = 0L,
     val hueBusy: Boolean = false,
     val hueMessage: String? = null,
     val hueLights: List<HueLight> = emptyList(),
@@ -78,6 +83,7 @@ class SettingsViewModel(
     private val iptvParental: IptvParentalStore,
     private val settingsBackup: SettingsBackupManager,
     private val youtubeRepository: com.vizvag.shieldvideo.data.youtube.YoutubeRepository,
+    private val podcastRepository: com.vizvag.shieldvideo.data.podcast.PodcastRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -93,7 +99,9 @@ class SettingsViewModel(
             draft = loaded,
             indexStatus = videoIndex.status.value,
             parentalPinSet = iptvParental.hasPin(),
-            lockedGroupsText = iptvParental.lockedGroups().joinToString(", ")
+            lockedGroupsText = iptvParental.lockedGroups().joinToString(", "),
+            podcastSubscriptionCount = podcastRepository.subscriptionCount(),
+            podcastLastImportMs = podcastRepository.lastImportAtMs(),
         )
         refreshInstalledPlayers()
         viewModelScope.launch {
@@ -329,18 +337,67 @@ class SettingsViewModel(
         }
     }
 
+    fun openPodcastOpmlPicker() {
+        _state.update {
+            it.copy(
+                folderPickerMode = FolderPickerMode.PODCAST_OPML_FILE,
+                folderPickerForDefault = false,
+            )
+        }
+    }
+
+    fun importPickedOpml(pick: OpmlPick) {
+        dismissFolderPicker()
+        if (pick is OpmlPick.Nas) {
+            update { it.copy(podcastOpmlNasPath = pick.path) }
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(podcastBusy = true, podcastMessage = "Importing OPML…") }
+            val result = withContext(Dispatchers.IO) {
+                when (pick) {
+                    is OpmlPick.Nas -> podcastRepository.importOpmlFromNasPath(pick.path)
+                    is OpmlPick.Local -> podcastRepository.importOpmlFromLocalFile(pick.absolutePath)
+                }
+            }
+            _state.update {
+                result.fold(
+                    onSuccess = { count ->
+                        runCatching { ShieldVideoApp.instance.publishPodcastEpisodesToHa() }
+                        it.copy(
+                            podcastBusy = false,
+                            podcastMessage = "Imported $count shows",
+                            podcastSubscriptionCount = podcastRepository.subscriptionCount(),
+                            podcastLastImportMs = podcastRepository.lastImportAtMs(),
+                        )
+                    },
+                    onFailure = { e ->
+                        it.copy(
+                            podcastBusy = false,
+                            podcastMessage = e.message ?: "OPML import failed",
+                        )
+                    },
+                )
+            }
+        }
+    }
+
     fun dismissFolderPicker() {
         _state.update { it.copy(folderPickerMode = null, folderPickerForDefault = false) }
     }
 
     fun applyFolderPicker(paths: List<String>) {
+        val mode = _state.value.folderPickerMode
+        val forDefault = _state.value.folderPickerForDefault
+        if (mode == FolderPickerMode.PODCAST_OPML_FILE) {
+            // File pick handled by OpmlFilePickerDialog → importPickedOpml.
+            dismissFolderPicker()
+            return
+        }
         val normalized = paths
             .map { path -> if (path.startsWith("/")) path else "/$path" }
             .map { it.trimEnd('/') }
             .filter { it.isNotBlank() && it != "/" }
             .distinct()
-        val mode = _state.value.folderPickerMode
-        val forDefault = _state.value.folderPickerForDefault
         when {
             forDefault -> {
                 val path = normalized.firstOrNull() ?: return
@@ -461,6 +518,8 @@ class SettingsViewModel(
         settingsRepository.save(draft)
         backgroundImages.reloadNow(viewModelScope)
         videoIndex.rebuildNow(viewModelScope)
+        runCatching { ShieldVideoApp.instance.publishRadioStationsToHa() }
+        runCatching { ShieldVideoApp.instance.publishPodcastEpisodesToHa() }
         baseline = draft
         _state.update { it.copy(draft = draft, saved = true, isDirty = false, testMessage = "Saved") }
     }
@@ -806,6 +865,26 @@ class SettingsViewModel(
             }
         }
     }
+
+    fun refreshPodcastStatus() {
+        _state.update {
+            it.copy(
+                podcastSubscriptionCount = podcastRepository.subscriptionCount(),
+                podcastLastImportMs = podcastRepository.lastImportAtMs(),
+            )
+        }
+    }
+
+    fun clearPodcastSubscriptions() {
+        podcastRepository.clearSubscriptions()
+        _state.update {
+            it.copy(
+                podcastSubscriptionCount = 0,
+                podcastLastImportMs = 0L,
+                podcastMessage = "Subscriptions cleared",
+            )
+        }
+    }
 }
 
 class SettingsViewModelFactory(
@@ -819,6 +898,7 @@ class SettingsViewModelFactory(
     private val iptvParental: IptvParentalStore,
     private val settingsBackup: SettingsBackupManager,
     private val youtubeRepository: com.vizvag.shieldvideo.data.youtube.YoutubeRepository,
+    private val podcastRepository: com.vizvag.shieldvideo.data.podcast.PodcastRepository,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -833,6 +913,7 @@ class SettingsViewModelFactory(
             iptvParental,
             settingsBackup,
             youtubeRepository,
+            podcastRepository,
         ) as T
     }
 }
