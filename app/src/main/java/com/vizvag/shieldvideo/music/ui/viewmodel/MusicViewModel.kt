@@ -893,7 +893,10 @@ class MusicViewModel(
             } else {
                 val wasEmpty = queueManager.queue.value.isEmpty()
                 val insertAt = queueManager.queue.value.size
-                val idle = playerController.uiState.value.track == null
+                // Idle = nothing prepared (left Music / never started). Track metadata may
+                // still be set so the UI can show the current song while stopped.
+                val idle = !playerController.uiState.value.isPlaying &&
+                    playerController.player.mediaItemCount == 0
                 queueManager.addAllToEnd(tracks)
                 queueManager.persist()
                 if (wasEmpty || idle) {

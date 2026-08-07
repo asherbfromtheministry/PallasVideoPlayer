@@ -2,7 +2,6 @@ package com.vizvag.shieldvideo.ui.youtube
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -70,10 +69,10 @@ import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.FocusRing
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import com.vizvag.shieldvideo.ui.theme.TextCream
 import com.vizvag.shieldvideo.ui.theme.TextMuted
@@ -415,28 +414,14 @@ private fun YoutubeSortPill(
     Text(
         text = label,
         color = when {
-            selected -> Color.Black
-            focused -> TextCream
+            selected || focused -> TextCream
             else -> TextMuted
         },
         fontSize = 12.sp,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(
-                when {
-                    selected -> Accent
-                    focused -> Color.White.copy(alpha = 0.16f)
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-            )
-            .border(
-                width = if (focused && !selected) 2.dp else 0.dp,
-                color = FocusRing,
-                shape = RoundedCornerShape(999.dp),
-            )
+            .glassInteract(focused = focused, selected = selected)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable {
                 feedback.click()
                 onClick()
@@ -486,15 +471,8 @@ private fun YoutubeVideoCard(
     Column(
         modifier = Modifier
             .width(220.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(CardSurface)
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) FocusRing else Color.White.copy(alpha = 0.1f),
-                shape = RoundedCornerShape(12.dp),
-            )
+            .glassInteract(focused = focused, selected = false)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable {
                 feedback.click()
                 onClick()
@@ -659,15 +637,8 @@ private fun YoutubeRelatedRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.Transparent)
-            .border(
-                width = if (focused) 1.dp else 0.dp,
-                color = if (focused) FocusRing else Color.Transparent,
-                shape = RoundedCornerShape(8.dp),
-            )
+            .glassInteract(focused = focused, selected = false)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable {
                 feedback.click()
                 onClick()

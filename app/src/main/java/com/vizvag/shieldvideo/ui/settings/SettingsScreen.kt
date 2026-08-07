@@ -61,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.onFocusEvent
@@ -94,12 +95,13 @@ import com.vizvag.shieldvideo.data.settings.IptvGuideSize
 import com.vizvag.shieldvideo.data.settings.IptvRecordingStorage
 import com.vizvag.shieldvideo.playback.NotificationAccessHelper
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
-import com.vizvag.shieldvideo.ui.theme.FocusRing
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextCream
+import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -161,13 +163,13 @@ fun SettingsScreen(
     val contentFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedBorderColor = CyanAccent,
+        focusedBorderColor = LocalScreenChrome.current.accent,
         unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
         focusedTextColor = Color.White,
         unfocusedTextColor = Color.White,
-        focusedLabelColor = CyanAccent,
+        focusedLabelColor = LocalScreenChrome.current.accent,
         unfocusedLabelColor = TextMuted,
-        cursorColor = CyanAccent,
+        cursorColor = LocalScreenChrome.current.accent,
         disabledBorderColor = Color.White.copy(alpha = 0.2f),
         disabledTextColor = Color.White,
         disabledLabelColor = TextMuted
@@ -473,17 +475,13 @@ fun SettingsScreen(
             onPick = viewModel::importPickedOpml,
         )
     } else if (pickerMode != null) {
-        val titleMode = when {
-            state.folderPickerForDefault -> FolderPickerMode.BACKGROUND_FOLDER
-            else -> pickerMode
-        }
         NasFolderPickerDialog(
-            mode = titleMode,
+            mode = pickerMode,
             settings = draft,
             nasRepository = nasRepository,
             initialSelection = when {
-                state.folderPickerForDefault -> listOf(draft.defaultShare)
-                pickerMode == FolderPickerMode.BACKGROUND_FOLDER -> listOf(draft.backgroundFolderPath)
+                state.folderPickerForDefault || pickerMode == FolderPickerMode.DEFAULT_FOLDER ->
+                    listOf(draft.defaultShare)
                 pickerMode == FolderPickerMode.BACKUP_FOLDER -> listOf(draft.backupFolderPath)
                 pickerMode == FolderPickerMode.IPTV_RECORDING_FOLDER ->
                     listOf(draft.iptvRecordingNasFolder)
@@ -491,8 +489,8 @@ fun SettingsScreen(
                 else -> draft.shares
             },
             title = when {
-                state.folderPickerForDefault -> "Select default video folder"
-                pickerMode == FolderPickerMode.BACKGROUND_FOLDER -> "Select background folder"
+                state.folderPickerForDefault || pickerMode == FolderPickerMode.DEFAULT_FOLDER ->
+                    "Select default video folder"
                 pickerMode == FolderPickerMode.BACKUP_FOLDER -> "Select settings backup folder"
                 pickerMode == FolderPickerMode.IPTV_RECORDING_FOLDER -> "Select IPTV recording folder"
                 pickerMode == FolderPickerMode.MUSIC_FOLDERS -> "Select music folders"
@@ -520,7 +518,7 @@ fun SettingsScreen(
                         viewModel.importSettings()
                     }
                 ) {
-                    Text("Import", color = CyanAccent, fontWeight = FontWeight.Bold)
+                    Text("Import", color = LocalScreenChrome.current.accent, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -552,7 +550,7 @@ fun SettingsScreen(
                         onBack()
                     }
                 ) {
-                    Text("Save", color = CyanAccent, fontWeight = FontWeight.Bold)
+                    Text("Save", color = LocalScreenChrome.current.accent, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -641,18 +639,12 @@ private fun SettingsRailItem(
         focused || selected -> Color.White
         else -> TextMuted
     }
-    val bg = when {
-        focused -> Accent.copy(alpha = 0.22f)
-        selected -> Accent.copy(alpha = 0.12f)
-        else -> Color.Transparent
-    }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(bg)
+            .glassInteract(focused = focused, selected = selected, idleSurface = Color.Transparent)
             .onPreviewKeyEvent { event ->
                 val isSelect = event.key == Key.DirectionCenter ||
                     event.key == Key.Enter ||
@@ -671,7 +663,6 @@ private fun SettingsRailItem(
                     else -> false
                 }
             }
-            .focusable(true, interaction)
             .clickable(
                 role = Role.Button,
                 interactionSource = interaction,
@@ -822,28 +813,7 @@ private fun LibrarySettingsTab(
     )
 
     Spacer(modifier = Modifier.height(12.dp))
-    Text("Background", color = TextMuted, fontWeight = FontWeight.Bold)
-    Spacer(modifier = Modifier.height(6.dp))
-    Text(
-        text = draft.backgroundFolderPath.ifBlank { "Not set" },
-        color = Color.White,
-        fontSize = 13.sp,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis
-    )
-    Spacer(modifier = Modifier.height(8.dp))
-    TvFocusButton(onClick = { viewModel.openBackgroundFolderPicker() }) {
-        Text(text = "Browse background folder", color = Color.White, fontWeight = FontWeight.SemiBold)
-    }
-    Text(
-        text = "Picks a random image from this folder every hour",
-        color = TextMuted,
-        fontSize = 11.sp,
-        modifier = Modifier.padding(top = 6.dp)
-    )
-
-    Spacer(modifier = Modifier.height(12.dp))
-    Text("Music folders", color = CyanAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    Text("Music folders", color = LocalScreenChrome.current.accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     SectionHint("NAS folders scanned for the Music library (default /music). Uses NAS credentials from the NAS tab.")
     Text(
         text = draft.musicPaths.joinToString(", ") { NasPaths.labelFor(it) }.ifBlank { "None selected" },
@@ -1022,7 +992,7 @@ private fun PlaybackSettingsTab(
         Text(text = "Refresh player list", color = Color.White, fontWeight = FontWeight.SemiBold)
     }
     Text(
-        text = "Opens files in the selected app. VLC is preferred when installed.",
+        text = "Opens files in the selected app via the seekable local proxy. VLC is preferred when installed.",
         color = TextMuted,
         fontSize = 11.sp,
         modifier = Modifier.padding(top = 6.dp)
@@ -1064,7 +1034,7 @@ private fun PlaybackSettingsTab(
         } else {
             "Notification access: off — enable so PallasVideoPlayer can read VLC playback position"
         },
-        color = if (notificationAccessEnabled) CyanAccent else TextMuted,
+        color = if (notificationAccessEnabled) LocalScreenChrome.current.accent else TextMuted,
         fontSize = 14.sp
     )
     Spacer(modifier = Modifier.height(8.dp))
@@ -1380,7 +1350,7 @@ private fun LiveTvSettingsTab(
                 .background(Color.Black.copy(alpha = 0.28f))
                 .border(
                     1.dp,
-                    if (selected) CyanAccent else Color.White.copy(alpha = 0.12f),
+                    if (selected) LocalScreenChrome.current.accent else Color.White.copy(alpha = 0.12f),
                     RoundedCornerShape(10.dp)
                 )
                 .padding(8.dp)
@@ -1501,7 +1471,7 @@ private fun YouTubeSettingsTab(
         } else {
             "Piped account · signed out"
         },
-        color = CyanAccent,
+        color = LocalScreenChrome.current.accent,
         fontWeight = FontWeight.Bold,
         fontSize = 11.sp,
     )
@@ -1731,7 +1701,7 @@ private fun RadioSettingsTab(
     Spacer(modifier = Modifier.height(10.dp))
     Text(
         "Radio stations (${draft.customRadioStations.size})",
-        color = CyanAccent,
+        color = LocalScreenChrome.current.accent,
         fontWeight = FontWeight.Bold,
         fontSize = 11.sp
     )
@@ -1755,7 +1725,7 @@ private fun RadioSettingsTab(
                     .background(Color.Black.copy(alpha = 0.32f))
                     .border(
                         1.dp,
-                        if (editing) CyanAccent.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.12f),
+                        if (editing) LocalScreenChrome.current.accent.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.12f),
                         RoundedCornerShape(10.dp)
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp)
@@ -1968,7 +1938,7 @@ private fun IntegrationsSettingsTab(
         } else {
             "Not paired"
         },
-        color = if (draft.hueUsername.isNotBlank()) CyanAccent else TextMuted,
+        color = if (draft.hueUsername.isNotBlank()) LocalScreenChrome.current.accent else TextMuted,
         fontSize = 14.sp
     )
     Spacer(modifier = Modifier.height(8.dp))
@@ -2022,7 +1992,7 @@ private fun IntegrationsSettingsTab(
         if (draft.hueLightIds.isNotEmpty()) {
             Text(
                 text = "${draft.hueLightIds.size} selected — Save, then play Music",
-                color = CyanAccent,
+                color = LocalScreenChrome.current.accent,
                 fontSize = 12.sp
             )
         }
@@ -2082,7 +2052,7 @@ private fun IntegrationsSettingsTab(
         } else {
             "Trakt: not linked (watched still works if profile is public)"
         },
-        color = if (draft.isTraktLinked) CyanAccent else TextMuted,
+        color = if (draft.isTraktLinked) LocalScreenChrome.current.accent else TextMuted,
         fontSize = 14.sp
     )
     Spacer(modifier = Modifier.height(8.dp))
@@ -2187,7 +2157,7 @@ private fun BackupSettingsTab(
     )
     state.backupMessage?.let { message ->
         Spacer(modifier = Modifier.height(12.dp))
-        Text(message, color = CyanAccent, fontSize = 11.sp)
+        Text(message, color = LocalScreenChrome.current.accent, fontSize = 11.sp)
     }
 }
 
@@ -2223,7 +2193,7 @@ private fun TvSettingsField(
             .background(Color.Black.copy(alpha = 0.28f))
             .border(
                 width = if (rowFocused) 2.dp else 1.dp,
-                color = if (rowFocused) CyanAccent else Color.White.copy(alpha = 0.18f),
+                color = if (rowFocused) LocalScreenChrome.current.accent else Color.White.copy(alpha = 0.18f),
                 shape = RoundedCornerShape(8.dp)
             )
             .onFocusChanged { rowFocused = it.isFocused }
@@ -2311,7 +2281,7 @@ private fun TvFieldEditorDialog(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color(0xFF2E342A))
-                .border(1.dp, CyanAccent.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
                 .padding(20.dp)
                 .onPreviewKeyEvent { event ->
                     if (event.type == KeyEventType.KeyUp && event.key == Key.Back) {
@@ -2394,40 +2364,27 @@ private fun TvFocusButton(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
+    val feedback = rememberTvFeedback()
+    var focused by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(
-                when {
-                    focused && selected -> CyanAccent.copy(alpha = 0.38f)
-                    focused -> Color.White.copy(alpha = 0.16f)
-                    selected -> CyanAccent.copy(alpha = 0.26f)
-                    else -> Color.White.copy(alpha = 0.08f)
-                }
-            )
-            .border(
-                width = when {
-                    focused -> 2.dp
-                    selected -> 1.5.dp
-                    else -> 1.dp
-                },
-                color = when {
-                    focused -> TextCream
-                    selected -> CyanAccent
-                    else -> Color.White.copy(alpha = 0.12f)
-                },
-                shape = RoundedCornerShape(10.dp)
-            )
-            .focusable(enabled = enabled, interactionSource = interaction)
+            .glassInteract(focused = focused, selected = selected)
+            .onFocusChanged {
+                val gained = it.isFocused && !focused
+                focused = it.isFocused
+                if (gained) feedback.focus()
+            }
+            .focusProperties { canFocus = enabled }
             .clickable(
                 enabled = enabled,
                 role = Role.Button,
-                interactionSource = interaction,
                 indication = null,
-                onClick = onClick
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = {
+                    feedback.click()
+                    onClick()
+                }
             )
             .padding(
                 horizontal = if (compact) 10.dp else 12.dp,

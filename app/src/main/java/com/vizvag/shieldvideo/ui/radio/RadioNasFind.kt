@@ -61,6 +61,7 @@ import com.vizvag.shieldvideo.music.data.local.AlbumWithArtist
 import com.vizvag.shieldvideo.music.data.local.ArtistEntity
 import com.vizvag.shieldvideo.music.data.local.TrackEntity
 import com.vizvag.shieldvideo.music.data.metadata.MetadataResolver
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.AudioSurface
 import com.vizvag.shieldvideo.ui.theme.AudioText
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
@@ -544,18 +545,9 @@ private fun NasFindQueryField(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .glassInteract(focused = focused, selected = false)
             .focusRequester(focusRequester)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color.White else accent.copy(alpha = 0.35f),
-                shape = RoundedCornerShape(12.dp),
-            )
-            .background(
-                if (focused) accent.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.05f),
-            )
             .clickable(role = Role.Button) {
                 feedback.click()
                 onClick()
@@ -586,25 +578,8 @@ private fun NasFindKindChip(
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
+            .glassInteract(focused = focused, selected = selected)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
-            .border(
-                width = if (focused || selected) 2.dp else 1.dp,
-                color = when {
-                    focused -> Color.White
-                    selected -> accent
-                    else -> Color.White.copy(alpha = 0.2f)
-                },
-                shape = RoundedCornerShape(20.dp),
-            )
-            .background(
-                when {
-                    selected -> accent.copy(alpha = 0.35f)
-                    focused -> Color.White.copy(alpha = 0.1f)
-                    else -> Color.Transparent
-                },
-            )
             .clickable(role = Role.Button) {
                 feedback.click()
                 onClick()
@@ -712,26 +687,8 @@ private fun NasFindDialogButton(
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
+            .glassInteract(focused = focused, selected = emphasized)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = when {
-                    focused -> Color.White
-                    emphasized -> accent
-                    else -> Color.White.copy(alpha = 0.22f)
-                },
-                shape = RoundedCornerShape(12.dp),
-            )
-            .background(
-                when {
-                    emphasized && focused -> accent.copy(alpha = 0.55f)
-                    emphasized -> accent.copy(alpha = 0.35f)
-                    focused -> Color.White.copy(alpha = 0.12f)
-                    else -> Color.Transparent
-                },
-            )
             .clickable(role = Role.Button) {
                 feedback.click()
                 onClick()
@@ -762,18 +719,9 @@ private fun NasFindResultRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .glassInteract(focused = focused, selected = false)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color.White else accent.copy(alpha = 0.28f),
-                shape = RoundedCornerShape(12.dp),
-            )
-            .background(
-                if (focused) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.04f),
-            )
             .clickable(role = Role.Button) {
                 feedback.click()
                 onClick()
@@ -819,16 +767,9 @@ private fun NasFindIconButton(
     Box(
         modifier = Modifier
             .size(44.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .glassInteract(focused = focused, selected = false)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color.White else Color.White.copy(alpha = 0.2f),
-                shape = RoundedCornerShape(12.dp),
-            )
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.Transparent)
             .clickable(role = Role.Button) {
                 feedback.click()
                 onClick()

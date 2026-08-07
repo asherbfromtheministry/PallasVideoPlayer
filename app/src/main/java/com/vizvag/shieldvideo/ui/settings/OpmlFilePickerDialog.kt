@@ -46,6 +46,7 @@ import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.nas.NasRepository
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.smb.SmbEntry
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
 import com.vizvag.shieldvideo.ui.theme.TextMuted
@@ -439,25 +440,8 @@ private fun OpmlPickerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(
-                when {
-                    focused -> CyanAccent.copy(alpha = 0.4f)
-                    selected -> CyanAccent.copy(alpha = 0.18f)
-                    else -> Color.White.copy(alpha = 0.04f)
-                },
-            )
-            .border(
-                width = if (focused || selected) 2.dp else 1.dp,
-                color = when {
-                    focused -> CyanAccent
-                    selected -> CyanAccent.copy(alpha = 0.75f)
-                    else -> Color.White.copy(alpha = 0.1f)
-                },
-                shape = RoundedCornerShape(10.dp),
-            )
+            .glassInteract(focused = focused, selected = selected)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .focusable(interactionSource = interaction)
             .clickable(
                 role = Role.Button,
                 interactionSource = interaction,
@@ -484,19 +468,7 @@ private fun OpmlPickerButton(
     Box(
         modifier = Modifier
             .heightIn(min = 44.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    focused -> CyanAccent
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color(0xFFE8E2D4) else Color.White.copy(alpha = 0.16f),
-                shape = RoundedCornerShape(12.dp),
-            )
-            .focusable(interactionSource = interaction)
+            .glassInteract(focused = focused, selected = false)
             .clickable(
                 role = Role.Button,
                 interactionSource = interaction,

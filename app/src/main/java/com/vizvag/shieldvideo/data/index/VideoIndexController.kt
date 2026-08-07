@@ -149,6 +149,64 @@ class VideoIndexController(
 
     fun currentSnapshot(): VideoIndexSnapshot = snapshot
 
+    /** True when the index knows at least one video file on this SMB/File Station share. */
+    fun shareHasIndexedVideos(share: String): Boolean {
+        val want = share.trim('/').lowercase()
+        if (want.isEmpty() || snapshot.isEmpty) return false
+        return snapshot.entries.any { entry ->
+            !entry.isDirectory && entry.share.trim('/').equals(want, ignoreCase = true)
+        }
+    }
+
+    /**
+     * True if any indexed video file lives at [folderRelativePath] or under it
+     * (share-relative, e.g. `APK` or `Shows/Foo`).
+     */
+    fun hasPlayableUnder(share: String, folderRelativePath: String): Boolean {
+        val wantShare = share.trim('/').lowercase()
+        val folder = folderRelativePath.trim('/').replace('\\', '/').lowercase()
+        if (wantShare.isEmpty() || snapshot.isEmpty) return false
+        return snapshot.entries.any { entry ->
+            if (entry.isDirectory) return@any false
+            if (!entry.share.trim('/').equals(wantShare, ignoreCase = true)) return@any false
+            val path = entry.path.trim('/').replace('\\', '/').lowercase()
+            when {
+                folder.isBlank() -> true
+                path == folder -> true
+                path.startsWith("$folder/") -> true
+                else -> false
+            }
+        }
+    }
+
+    /** Indexed video files at or under [folderRelativePath] on [share] (flat list). */
+    fun videosUnder(
+        share: String,
+        folderRelativePath: String,
+        maxResults: Int = 2_000,
+    ): List<SmbEntry> {
+        val wantShare = share.trim('/').lowercase()
+        val folder = folderRelativePath.trim('/').replace('\\', '/').lowercase()
+        if (wantShare.isEmpty() || snapshot.isEmpty) return emptyList()
+        return snapshot.entries.asSequence()
+            .filter { entry ->
+                if (entry.isDirectory) return@filter false
+                if (!entry.share.trim('/').equals(wantShare, ignoreCase = true)) return@filter false
+                if (pathContainsIgnoredFolder(entry.path)) return@filter false
+                val path = entry.path.trim('/').replace('\\', '/').lowercase()
+                when {
+                    folder.isBlank() -> true
+                    path == folder -> true
+                    path.startsWith("$folder/") -> true
+                    else -> false
+                }
+            }
+            .take(maxResults)
+            .map { it.toEntry() }
+            .sortedBy { it.path.lowercase() }
+            .toList()
+    }
+
     private fun pathContainsIgnoredFolder(path: String): Boolean =
         NasPaths.pathContainsIgnoredDirectory(path)
 

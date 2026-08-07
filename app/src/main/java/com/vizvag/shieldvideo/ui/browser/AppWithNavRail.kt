@@ -9,6 +9,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.settings.IptvRecordingStorage
+import com.vizvag.shieldvideo.ui.components.chromeFor
+import com.vizvag.shieldvideo.ui.theme.ScreenTheme
 
 @Composable
 fun AppWithNavRail(
@@ -26,8 +28,6 @@ fun AppWithNavRail(
     sleepTimerLabel: String?,
     onCycleSleepTimer: () -> Unit,
     onSettings: () -> Unit,
-    canGoUp: Boolean = false,
-    onGoUp: () -> Unit = {},
     showRail: Boolean = true,
     /** When false, rail stays visible but is not in the D-pad focus tree. */
     railFocusEnabled: Boolean = true,
@@ -35,31 +35,31 @@ fun AppWithNavRail(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    Row(modifier = modifier.fillMaxSize()) {
-        if (showRail) {
-            BrowserNavRail(
-                shares = shares,
-                selectedShare = selectedShare,
-                onSelectShare = onSelectShare,
-                recordingFolder = recordingFolder,
-                onLiveTv = onLiveTv,
-                onYouTube = onYouTube,
-                onRadio = onRadio,
-                onMusic = onMusic,
-                onPodcasts = onPodcasts,
-                sleepTimerActive = sleepTimerActive,
-                sleepTimerLabel = sleepTimerLabel,
-                onCycleSleepTimer = onCycleSleepTimer,
-                onSettings = onSettings,
-                canGoUp = canGoUp,
-                onGoUp = onGoUp,
-                destination = destination,
-                focusEnabled = railFocusEnabled,
-                players = players,
-            )
-        }
-        Box(modifier = Modifier.weight(1f).fillMaxHeight().fillMaxSize()) {
-            content()
+    ScreenTheme(chromeFor(destination)) {
+        Row(modifier = modifier.fillMaxSize()) {
+            if (showRail) {
+                BrowserNavRail(
+                    shares = shares,
+                    selectedShare = selectedShare,
+                    onSelectShare = onSelectShare,
+                    recordingFolder = recordingFolder,
+                    onLiveTv = onLiveTv,
+                    onYouTube = onYouTube,
+                    onRadio = onRadio,
+                    onMusic = onMusic,
+                    onPodcasts = onPodcasts,
+                    sleepTimerActive = sleepTimerActive,
+                    sleepTimerLabel = sleepTimerLabel,
+                    onCycleSleepTimer = onCycleSleepTimer,
+                    onSettings = onSettings,
+                    destination = destination,
+                    focusEnabled = railFocusEnabled,
+                    players = players,
+                )
+            }
+            Box(modifier = Modifier.weight(1f).fillMaxHeight().fillMaxSize()) {
+                content()
+            }
         }
     }
 }

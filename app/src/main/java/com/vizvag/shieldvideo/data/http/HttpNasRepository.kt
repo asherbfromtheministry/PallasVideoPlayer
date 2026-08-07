@@ -368,22 +368,49 @@ class HttpNasRepository {
         return "http://${settings.host.trim()}:$port"
     }
 
-    private fun absoluteFolder(shareName: String, path: String): String {
-        val share = shareName.trim('/')
-        // Paths from list() are share-relative; tolerate a duplicated/cased share prefix.
-        val relative = stripSharePrefix(path, share)
-        return if (relative.isBlank()) "/$share" else "/$share/$relative"
-    }
+    private fun absoluteFolder(shareName: String, path: String): String =
+        absoluteSharePath(shareName, path)
 
     companion object {
-        /** `/Download/Show` + share `download` → `Show` (case-insensitive). */
+        /**
+         * Build a File Station absolute path `/share/relative…`.
+         *
+         * [path] is share-relative (from browse). Do **not** strip a differently-cased
+         * first segment — that is a folder (e.g. `Docs/video.mkv` under share `docs`),
+         * not a duplicated share prefix. Stripping it caused Download 408 (no such file).
+         */
+        fun absoluteSharePath(shareName: String, path: String): String {
+            val share = shareName.trim('/')
+            var relative = path.trim('/').replace('\\', '/')
+            when {
+                relative == share -> relative = ""
+                relative.startsWith("$share/") ->
+                    relative = relative.substring(share.length + 1).trim('/')
+            }
+            return if (relative.isBlank()) "/$share" else "/$share/$relative"
+        }
+
+        /** Strip a DSM absolute share prefix from a path.
+         *
+         * `/Download/Show` + share `download` → `Show` (case-insensitive prefix).
+         *
+         * Do **not** collapse a lone segment that only matches the share name
+         * case-insensitively — that is a folder under the share (e.g. `/docs/Docs`
+         * with share `docs`). Collapsing it made browse reopen the share root.
+         */
         fun stripSharePrefix(path: String, shareName: String): String {
             var p = path.trim('/').replace('\\', '/')
             val share = shareName.trim('/')
             if (share.isBlank() || p.isBlank()) return p
-            if (p.equals(share, ignoreCase = true)) return ""
             if (p.startsWith("$share/", ignoreCase = true)) {
-                p = p.substring(share.length + 1).trim('/')
+                return p.substring(share.length + 1).trim('/')
+            }
+            // Exact share-root absolute path only when casing matches the share token
+            // we were given (DSM list paths use the real share casing as the first segment).
+            if (p.equals(share, ignoreCase = true) && p.contains('/').not()) {
+                // Single segment: keep relative folder names like "Docs" under share "docs".
+                // Only treat as share root when the segment is an exact case match.
+                return if (p == share) "" else p
             }
             return p
         }

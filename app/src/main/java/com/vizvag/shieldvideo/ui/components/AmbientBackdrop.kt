@@ -107,7 +107,7 @@ fun AmbientBackdrop(
         )
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(chrome.accentWarm.copy(alpha = a2), Color.Transparent),
+                colors = listOf(chrome.accentSecondary.copy(alpha = a2), Color.Transparent),
                 center = orb2,
                 radius = w * 0.52f,
             ),

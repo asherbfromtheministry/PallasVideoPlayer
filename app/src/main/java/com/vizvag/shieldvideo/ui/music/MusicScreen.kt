@@ -149,6 +149,8 @@ import com.vizvag.shieldvideo.music.ui.AlbumArt
 import com.vizvag.shieldvideo.music.ui.viewmodel.MusicViewModel
 import com.vizvag.shieldvideo.music.data.settings.NasSettings
 import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.components.glassInteract
+import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.browser.AppWithNavRail
 import com.vizvag.shieldvideo.ui.browser.RailDestination
 import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
@@ -165,6 +167,9 @@ import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import com.vizvag.shieldvideo.ui.theme.AudioScreenTheme
 import com.vizvag.shieldvideo.ui.theme.AudioText
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
+import com.vizvag.shieldvideo.ui.theme.PallasShapes
+import com.vizvag.shieldvideo.ui.theme.Motion
+import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 
 private enum class BrowseMode(val label: String) {
     Folders("Folders"),
@@ -175,11 +180,8 @@ private enum class BrowseMode(val label: String) {
 
 private enum class Panel { None, Browse, Queue }
 
-/** Playlist reorder highlight — ice blue, never gold (gold = now playing). */
-private val QueueMoveAccent = Color(0xFF5EC8FF)
-
-/** D-pad focus ring — same ice blue so focus is never confused with gold selected. */
-private val FocusRing = QueueMoveAccent
+/** Playlist reorder highlight — soft secondary, never confused with now-playing accent fill. */
+private val QueueMoveAccent = Color(0xFFB4A0FF)
 
 /** While >0, navigation BackHandlers stay off so one Back only dismisses the modal. */
 private class ModalBackGate {
@@ -929,12 +931,17 @@ private fun ImmersiveMusicScreen(
                             .focusProperties { canFocus = chromeFocusable },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        var musicPillFocused by remember { mutableStateOf(false) }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier
-                                .clip(CircleShape)
+                                .glassInteract(
+                                    focused = musicPillFocused,
+                                    selected = true,
+                                )
                                 .focusProperties { canFocus = chromeFocusable }
+                                .onFocusChanged { musicPillFocused = it.isFocused }
                                 .clickable(
                                     enabled = true,
                                     role = Role.Button,
@@ -945,23 +952,14 @@ private fun ImmersiveMusicScreen(
                                     },
                                 )
                                 .focusable(enabled = chromeFocusable)
-                                .padding(8.dp),
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(AudioAccent)
-                                    .border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Filled.PlayArrow,
-                                    contentDescription = "Music",
-                                    tint = Color(0xFF0A0804),
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = "Music",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp),
+                            )
                             Text(
                                 "Music",
                                 color = AudioText,
@@ -1309,7 +1307,6 @@ private fun MusicBlackScreenOverlay(
             .zIndex(10f)
             .background(Color.Black)
             .focusRequester(focusRequester)
-            .focusable()
             .clickable(role = Role.Button, onClick = onWake),
     )
 }
@@ -1593,19 +1590,13 @@ private fun MusicSearchQueryBar(
     Row(
         modifier = modifier
             .heightIn(min = 56.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = when {
-                    focused -> AudioAccent
-                    else -> Color.White.copy(alpha = 0.25f)
-                },
-                shape = RoundedCornerShape(4.dp),
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.White.copy(alpha = 0.04f),
             )
-            .background(Color.White.copy(alpha = if (focused) 0.06f else 0.04f))
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onActivate)
             .onPreviewKeyEvent { event ->
                 val isSelect = event.key == Key.DirectionCenter ||
@@ -1624,7 +1615,7 @@ private fun MusicSearchQueryBar(
         Icon(
             Icons.Filled.Search,
             contentDescription = null,
-            tint = if (focused) AudioAccent else AudioTextMuted,
+            tint = if (focused) LocalScreenChrome.current.accent else AudioTextMuted,
             modifier = Modifier.size(20.dp),
         )
         Spacer(Modifier.width(10.dp))
@@ -1713,12 +1704,10 @@ private fun MusicSearchResultRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.10f) else Color.Transparent)
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) FocusRing else Color.Transparent,
-                shape = RoundedCornerShape(6.dp),
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.Transparent,
             )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
@@ -2050,14 +2039,12 @@ private fun LyricsSyncChip(
     wide: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(999.dp)
     // − / + stay focusable whenever the bar is shown; center only when it can reset.
     val canActivate = enabled
     Text(
         text = text,
         color = when {
-            focused && canActivate -> AudioAccent
-            canActivate -> Color.White.copy(alpha = 0.55f)
+            canActivate -> Color.White.copy(alpha = if (focused) 0.95f else 0.55f)
             else -> Color.White.copy(alpha = 0.28f)
         },
         fontSize = 11.sp,
@@ -2066,25 +2053,14 @@ private fun LyricsSyncChip(
         letterSpacing = if (wide) 0.6.sp else 0.sp,
         textAlign = TextAlign.Center,
         modifier = Modifier
-            .clip(shape)
-            .background(
-                when {
-                    focused && canActivate -> Color.White.copy(alpha = 0.14f)
-                    else -> Color.White.copy(alpha = 0.06f)
-                },
-            )
-            .border(
-                width = if (focused && canActivate) 1.5.dp else 1.dp,
-                color = if (focused && canActivate) {
-                    AudioAccent.copy(alpha = 0.65f)
-                } else {
-                    Color.White.copy(alpha = 0.10f)
-                },
-                shape = shape,
+            .then(if (wide) Modifier.widthIn(min = 48.dp) else Modifier)
+            .glassInteract(
+                focused = focused && canActivate,
+                selected = false,
+                idleSurface = Color.White.copy(alpha = 0.06f),
             )
             .onFocusChanged { focused = it.isFocused }
             .focusProperties { canFocus = canActivate }
-            .focusable(enabled = canActivate)
             .clickable(
                 enabled = canActivate,
                 role = Role.Button,
@@ -2095,8 +2071,7 @@ private fun LyricsSyncChip(
             .padding(
                 horizontal = if (wide) 10.dp else 9.dp,
                 vertical = 4.dp,
-            )
-            .then(if (wide) Modifier.widthIn(min = 48.dp) else Modifier),
+            ),
     )
 }
 
@@ -3088,20 +3063,10 @@ private fun ImmersiveStage(
                         modifier = Modifier
                             .focusRequester(playFocusRequester)
                             .size(playSize)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.radialGradient(
-                                    listOf(Color(0xFFFFE08A), AudioAccent, Color(0xFFB8860B)),
-                                ),
-                            )
-                            .border(
-                                width = if (playFocused) 3.dp else 2.dp,
-                                color = if (playFocused) {
-                                    FocusRing
-                                } else {
-                                    Color.White.copy(alpha = 0.35f)
-                                },
-                                shape = CircleShape,
+                            .glassInteract(
+                                focused = playFocused,
+                                selected = true,
+                                idleSurface = Color.White.copy(alpha = 0.10f),
                             )
                             .onFocusChanged {
                                 playFocused = it.isFocused
@@ -3123,7 +3088,7 @@ private fun ImmersiveStage(
                         Icon(
                             if (playerState.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                             if (playerState.isPlaying) "Pause" else "Play",
-                            tint = Color(0xFF1A1206),
+                            tint = Color.White,
                             modifier = Modifier.size(playIcon),
                         )
                     }
@@ -3180,7 +3145,6 @@ private fun UpNextCard(
     enabled: Boolean = true,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(10.dp)
     val artSize = if (compact) 40.dp else 52.dp
     val labelSize = if (compact) 9.sp else 10.sp
     val titleSize = if (compact) 12.sp else 13.sp
@@ -3188,25 +3152,13 @@ private fun UpNextCard(
 
     Column(
         modifier = modifier
-            .clip(shape)
-            .background(
-                when {
-                    focused -> Color.White.copy(alpha = 0.10f)
-                    else -> Color.White.copy(alpha = 0.045f)
-                },
-            )
-            .border(
-                width = if (focused) 1.5.dp else 1.dp,
-                color = if (focused) {
-                    AudioAccent.copy(alpha = 0.55f)
-                } else {
-                    Color.White.copy(alpha = 0.08f)
-                },
-                shape = shape,
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.White.copy(alpha = 0.045f),
             )
             .onFocusChanged { focused = it.isFocused }
             .focusProperties { canFocus = enabled }
-            .focusable(enabled = enabled)
             .clickable(
                 enabled = enabled,
                 role = Role.Button,
@@ -3286,24 +3238,16 @@ private fun TransportButton(
         modifier = Modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .size(size)
-            .clip(CircleShape)
-            .background(
-                when {
-                    focused -> Color.White.copy(alpha = 0.22f)
-                    else -> Color.White.copy(alpha = 0.10f)
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) FocusRing else Color.White.copy(alpha = 0.2f),
-                shape = CircleShape,
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.White.copy(alpha = 0.10f),
             )
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocused?.invoke()
             }
             .focusProperties { canFocus = enabled }
-            .focusable(enabled = enabled)
             .clickable(
                 enabled = enabled,
                 indication = null,
@@ -5126,19 +5070,14 @@ private fun PlaylistAddSheet(
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = "Close",
-                    tint = if (closeFocused) AudioAccent else Color.White.copy(alpha = 0.75f),
+                    tint = if (closeFocused) LocalScreenChrome.current.accent else Color.White.copy(alpha = 0.75f),
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .size(36.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            if (closeFocused) Color.White.copy(alpha = 0.12f)
-                            else Color.Transparent,
-                        )
-                        .border(
-                            width = if (closeFocused) 2.dp else 0.dp,
-                            color = if (closeFocused) FocusRing else Color.Transparent,
-                            shape = RoundedCornerShape(8.dp),
+                        .glassInteract(
+                            focused = closeFocused,
+                            selected = false,
+                            idleSurface = Color.Transparent,
                         )
                         .onFocusChanged { closeFocused = it.isFocused }
                         .onPreviewKeyEvent { event ->
@@ -5153,7 +5092,6 @@ private fun PlaylistAddSheet(
                                 else -> false
                             }
                         }
-                        .focusable()
                         .clickable(
                             role = Role.Button,
                             indication = null,
@@ -5212,25 +5150,16 @@ private fun PlaylistAddActionBox(
     focusRequester: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(10.dp)
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .aspectRatio(1f)
             .heightIn(min = 96.dp)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .clip(shape)
-            .background(
-                when {
-                    emphasized && !focused -> AudioAccent
-                    focused -> Color.White
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) FocusRing else Color.White.copy(alpha = 0.12f),
-                shape = shape,
+            .glassInteract(
+                focused = focused,
+                selected = emphasized,
+                idleSurface = Color.White.copy(alpha = 0.08f),
             )
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent { event ->
@@ -5245,7 +5174,6 @@ private fun PlaylistAddActionBox(
                     else -> false
                 }
             }
-            .focusable()
             .clickable(
                 role = Role.Button,
                 indication = null,
@@ -5256,10 +5184,7 @@ private fun PlaylistAddActionBox(
     ) {
         Text(
             text = label,
-            color = when {
-                emphasized || focused -> Color(0xFF1A1206)
-                else -> Color.White.copy(alpha = 0.88f)
-            },
+            color = Color.White.copy(alpha = 0.92f),
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
             fontFamily = PallasFontFamily,
@@ -5293,12 +5218,10 @@ private fun BrowseRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 1.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) FocusRing else Color.Transparent,
-                shape = RoundedCornerShape(4.dp),
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.Transparent,
             )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
@@ -5376,7 +5299,11 @@ private fun BrowseRow(
             Icon(
                 imageVector = trailingIcon,
                 contentDescription = null,
-                tint = if (focused) FocusRing else AudioTextMuted.copy(alpha = 0.75f),
+                tint = if (focused) {
+                    LocalScreenChrome.current.accent
+                } else {
+                    AudioTextMuted.copy(alpha = 0.75f)
+                },
                 modifier = Modifier
                     .padding(start = 10.dp)
                     .size(20.dp),
@@ -5409,18 +5336,12 @@ private fun MetaLink(
         softWrap = true,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(
-                when {
-                    !enabled -> Color.Transparent
-                    focused -> Color.White.copy(alpha = 0.10f)
-                    else -> Color.Transparent
-                },
-            )
-            .border(
-                width = if (focused && enabled) 2.dp else 0.dp,
-                color = if (focused && enabled) FocusRing else Color.Transparent,
-                shape = RoundedCornerShape(4.dp),
+            .glassInteract(
+                focused = focused && enabled,
+                selected = false,
+                idleSurface = Color.Transparent,
+                showIdleBorder = false,
+                scaleOnFocus = false,
             )
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent { event ->
@@ -5437,7 +5358,6 @@ private fun MetaLink(
                     else -> false
                 }
             }
-            .focusable(enabled = enabled, interactionSource = interaction)
             .clickable(
                 enabled = enabled,
                 indication = null,
@@ -5467,27 +5387,16 @@ private fun ModePill(
 
     Text(
         text = label,
-        color = when {
-            selected || focused -> Color(0xFF1A1206)
-            else -> Color.White.copy(alpha = 0.88f)
-        },
+        color = Color.White.copy(alpha = if (selected || focused) 0.95f else 0.88f),
         fontSize = 12.sp,
         fontWeight = FontWeight.SemiBold,
         fontFamily = PallasFontFamily,
         modifier = Modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .clip(RoundedCornerShape(6.dp))
-            .background(
-                when {
-                    selected && !focused -> AudioAccent
-                    focused -> Color.White
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) FocusRing else Color.White.copy(alpha = 0.12f),
-                shape = RoundedCornerShape(6.dp),
+            .glassInteract(
+                focused = focused,
+                selected = selected,
+                idleSurface = Color.White.copy(alpha = 0.08f),
             )
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent { event ->
@@ -5553,8 +5462,7 @@ private fun PanelLink(
     Text(
         text = label,
         color = when {
-            focused -> Color(0xFF1A1206)
-            emphasized -> AudioAccent
+            emphasized -> LocalScreenChrome.current.accent
             else -> Color.White.copy(alpha = 0.82f)
         },
         fontSize = 12.sp,
@@ -5562,15 +5470,12 @@ private fun PanelLink(
         fontFamily = PallasFontFamily,
         modifier = Modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .clip(RoundedCornerShape(4.dp))
-            .background(if (focused) Color.White else Color.Transparent)
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) FocusRing else Color.Transparent,
-                shape = RoundedCornerShape(4.dp),
+            .glassInteract(
+                focused = focused,
+                selected = emphasized,
+                idleSurface = Color.Transparent,
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
@@ -5595,15 +5500,12 @@ private fun PanelIconButton(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(36.dp)
-            .clip(CircleShape)
-            .background(if (focused) Color.White.copy(alpha = 0.14f) else Color.Transparent)
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) FocusRing else Color.Transparent,
-                shape = CircleShape,
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.Transparent,
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },

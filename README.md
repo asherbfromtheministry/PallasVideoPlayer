@@ -37,10 +37,10 @@ Android TV app for NVIDIA Shield / Google TV. Browses a Synology NAS, plays vide
 Browse Synology shares over **SMB3** or **DSM File Station HTTP**. Split UI: file list left, cinematic preview right. Shares switch from the left rail or home corridor plaques.
 
 - **Shelves:** Hero, Continue Watching, Folders, Videos. Folder posters only when every video inside is the same title; mixed bins use generic icons.
-- **Metadata:** Filename → Trakt → TMDB art. Hold OK to assign/clear folder or file metadata (nested clear options).
-- **Search:** Video Station index (preferred) or raw scan; auto-refresh ≥24h.
+- **Metadata:** Filename → Trakt → TMDB art. Hold OK to assign/clear folder or file metadata (nested clear options), or **Show all videos** to flatten a folder (ignore subfolders; list every playable file underneath).
+- **Search:** Video Station index (preferred) or raw scan; auto-refresh ≥24h. **Refresh** (↻ next to Search) force-syncs Video Station and reloads the current folder so new NAS folders appear.
 - **Playback:** External player (VLC). Resume via notification listener + local store + NAS `.pallas.json` sidecars (cross-TV).
-- **Extras:** `.rar` extract on NAS, delete from NAS, DVR shortcut to recording folder, hourly background images from a NAS folder.
+- **Extras:** `.rar` extract on NAS, delete from NAS, DVR shortcut to recording folder.
 
 ### Music player (NAS library)
 
@@ -80,7 +80,7 @@ User-managed internet stations (BBC nationals seeded once; restorable).
 Immersive player for RSS podcast subscriptions imported from Podcast Addict (or any standard OPML).
 
 - **Import:** Settings → Podcasts → **Import OPML…** — browse NAS or this device, OK on the `.opml` file to import.
-- **Browse:** Home hotspot + left rail (toggle under Display). Opens on **all shows · recent** episode feed; Shows picker can filter to one subscription. Sort **A–Z / Recent / Genre / In progress**; episode sort **Newest / Oldest / Unplayed**; resume progress.
+- **Browse:** Home hotspot + left rail (toggle under Display). Opens on **all shows · recent** episode feed from the last catalog snapshot (instant), then quietly refreshes feeds in the background; Shows picker can filter to one subscription. Sort **A–Z / Recent / Genre / In progress**; episode sort **Newest / Oldest / Unplayed**; resume progress. Manual **Refresh** still force-updates with a progress overlay.
 - **Playback:** In-app ExoPlayer; −15s / +30s; sleep timer; black screen. Quit stops audio; playing keeps the screen on.
 - Included in settings backup (path + subscriptions prefs).
 

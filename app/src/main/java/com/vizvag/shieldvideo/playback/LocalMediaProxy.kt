@@ -200,6 +200,8 @@ class LocalMediaProxy(
                 if (range != null) {
                     append("Content-Range: bytes $start-$end/$total\r\n")
                 }
+                // Filename helps MX / XPlayer treat the stream as a seekable file, not live.
+                append("Content-Disposition: inline; filename=\"${file.fileName.replace("\"", "")}\"\r\n")
                 append("Connection: close\r\n")
                 append("\r\n")
             }

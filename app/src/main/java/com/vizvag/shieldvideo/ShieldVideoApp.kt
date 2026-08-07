@@ -38,7 +38,6 @@ import com.vizvag.shieldvideo.playback.remote.PlaybackCommandRouter
 import com.vizvag.shieldvideo.playback.remote.RemoteControlClient
 import com.vizvag.shieldvideo.playback.remote.RemoteDeviceDiscovery
 import com.vizvag.shieldvideo.playback.youtube.YoutubePlaybackController
-import com.vizvag.shieldvideo.ui.background.BackgroundImageController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,8 +53,6 @@ class ShieldVideoApp : Application() {
     lateinit var sleepTimer: SleepTimerController
         private set
     lateinit var nasWatchHistory: NasWatchHistoryStore
-        private set
-    lateinit var backgroundImages: BackgroundImageController
         private set
     lateinit var settingsRepository: SettingsRepository
         private set
@@ -180,8 +177,6 @@ class ShieldVideoApp : Application() {
             VideoIndexStore(this),
             musicModule.synologyApiClient,
         )
-        backgroundImages = BackgroundImageController(this, settingsRepository, nasRepository)
-        backgroundImages.start(appScope)
 
         val isTv = run {
             val uiMode = getSystemService(android.content.Context.UI_MODE_SERVICE)

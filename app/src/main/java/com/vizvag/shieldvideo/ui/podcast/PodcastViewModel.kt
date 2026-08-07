@@ -182,7 +182,11 @@ class PodcastViewModel(
                 cachedEpisodes = emptyList()
                 // Only auto-reload when already on Podcasts and the room target flips.
                 if (wasLoaded) {
-                    startCatalogLoad(forceNetwork = false)
+                    if (!isRemoteSession() && hydrateFromSnapshot()) {
+                        startCatalogLoad(forceNetwork = false, showOverlay = false)
+                    } else {
+                        startCatalogLoad(forceNetwork = false, showOverlay = true)
+                    }
                 }
             }
         }
@@ -201,28 +205,57 @@ class PodcastViewModel(
     /** Single entry from the Podcasts screen — loads once per open (ignored if already loaded). */
     fun onScreenOpened() {
         if (hasLoadedOnce || loadJob?.isActive == true) return
-        startCatalogLoad(forceNetwork = false)
+        if (!isRemoteSession() && hydrateFromSnapshot()) {
+            // Paint last catalog immediately; refresh quietly in the background.
+            startCatalogLoad(forceNetwork = false, showOverlay = false)
+            return
+        }
+        startCatalogLoad(forceNetwork = false, showOverlay = true)
     }
 
     /** Manual Refresh button — always force-updates feeds with overlay progress. */
     fun refreshAllFeeds() {
-        startCatalogLoad(forceNetwork = true)
+        startCatalogLoad(forceNetwork = true, showOverlay = true)
     }
 
-    private fun startCatalogLoad(forceNetwork: Boolean) {
+    private fun hydrateFromSnapshot(): Boolean {
+        val snap = repository.loadCatalogSnapshot() ?: return false
+        val shows = snap.shows.ifEmpty { repository.subscriptions.value }
+        if (shows.isEmpty() || snap.episodes.isEmpty()) return false
+        cachedEpisodes = snap.episodes
+        val selected = _ui.value.selectedShow?.let { sel ->
+            shows.firstOrNull { it.id == sel.id }
+        }
+        _ui.update {
+            it.copy(
+                shows = shows,
+                selectedShow = selected,
+                progress = repository.progress.value,
+                loadingCatalog = false,
+                loadingEpisodes = false,
+                refreshing = false,
+                refreshOverlay = null,
+            )
+        }
+        publishEpisodesForSelection()
+        hasLoadedOnce = true
+        return true
+    }
+
+    private fun startCatalogLoad(forceNetwork: Boolean, showOverlay: Boolean = true) {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             loadMutex.withLock {
-                runCatalogLoad(forceNetwork = forceNetwork)
+                runCatalogLoad(forceNetwork = forceNetwork, showOverlay = showOverlay)
             }
         }
     }
 
-    private suspend fun runCatalogLoad(forceNetwork: Boolean) {
+    private suspend fun runCatalogLoad(forceNetwork: Boolean, showOverlay: Boolean) {
         if (isRemoteSession()) {
             runRemoteCatalogLoad(forceNetwork = forceNetwork)
         } else {
-            runLocalCatalogLoad(forceNetwork = forceNetwork)
+            runLocalCatalogLoad(forceNetwork = forceNetwork, showOverlay = showOverlay)
         }
         hasLoadedOnce = true
     }
@@ -255,14 +288,20 @@ class PodcastViewModel(
         }
     }
 
-    private suspend fun runLocalCatalogLoad(forceNetwork: Boolean) {
-        setOverlay(0, 0, if (forceNetwork) "Refreshing feeds…" else "Loading subscriptions…")
+    private suspend fun runLocalCatalogLoad(forceNetwork: Boolean, showOverlay: Boolean) {
+        if (showOverlay) {
+            setOverlay(0, 0, if (forceNetwork) "Refreshing feeds…" else "Loading subscriptions…")
+        }
         var shows = repository.subscriptions.value
         if (shows.isEmpty()) {
-            setOverlay(0, 0, "Importing OPML…")
+            if (showOverlay) setOverlay(0, 0, "Importing OPML…")
             val imported = repository.importOpmlPreferNas()
             shows = repository.subscriptions.value
             if (shows.isEmpty()) {
+                if (!showOverlay && cachedEpisodes.isNotEmpty()) {
+                    // Keep the painted snapshot; OPML may be mid-import elsewhere.
+                    return
+                }
                 _ui.update {
                     it.copy(
                         shows = emptyList(),
@@ -271,10 +310,14 @@ class PodcastViewModel(
                     )
                 }
                 cachedEpisodes = emptyList()
-                clearOverlay(
-                    imported.exceptionOrNull()?.message
-                        ?: "No subscriptions — import OPML in Settings",
-                )
+                if (showOverlay) {
+                    clearOverlay(
+                        imported.exceptionOrNull()?.message
+                            ?: "No subscriptions — import OPML in Settings",
+                    )
+                } else {
+                    clearOverlay(null)
+                }
                 return
             }
         }
@@ -294,7 +337,7 @@ class PodcastViewModel(
         val merged = ArrayList<PodcastEpisode>(total * 20)
         shows.forEachIndexed { index, show ->
             coroutineContext.ensureActive()
-            setOverlay(index + 1, total, show.title)
+            if (showOverlay) setOverlay(index + 1, total, show.title)
             val eps = runCatching {
                 repository.episodesForShow(show, forceRefresh = forceNetwork)
             }.getOrDefault(emptyList())
@@ -305,11 +348,32 @@ class PodcastViewModel(
         cachedEpisodes = merged
             .sortedByDescending { it.publishEpochMs }
             .take(ALL_EPISODES_CAP)
+        // Prefer live subscription meta (images / latest) after feed parse.
+        val paintedShows = repository.subscriptions.value.ifEmpty { shows }
+        _ui.update {
+            it.copy(
+                shows = paintedShows,
+                selectedShow = it.selectedShow?.let { sel ->
+                    paintedShows.firstOrNull { s -> s.id == sel.id }
+                },
+            )
+        }
         publishEpisodesForSelection()
+        repository.saveCatalogSnapshot(paintedShows, cachedEpisodes)
         runCatching { ShieldVideoApp.instance.publishPodcastEpisodesToHa() }
-        clearOverlay(
-            if (forceNetwork) "Updated $total shows" else null,
-        )
+        if (showOverlay) {
+            clearOverlay(
+                if (forceNetwork) "Updated $total shows" else null,
+            )
+        } else {
+            _ui.update {
+                it.copy(
+                    refreshing = false,
+                    loadingCatalog = false,
+                    loadingEpisodes = false,
+                )
+            }
+        }
     }
 
     private suspend fun runRemoteCatalogLoad(forceNetwork: Boolean) {

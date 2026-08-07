@@ -26,6 +26,13 @@ data class PodcastEpisode(
     val imageUrl: String = "",
 )
 
+/** Last successful catalog paint — shows + recent episodes for instant reopen. */
+data class PodcastCatalogSnapshot(
+    val shows: List<PodcastShow>,
+    val episodes: List<PodcastEpisode>,
+    val savedAtMs: Long = 0L,
+)
+
 /** Compact episode row for HA catalog / deep-link resolution. */
 data class HaPodcastEpisodeRef(
     val guid: String,

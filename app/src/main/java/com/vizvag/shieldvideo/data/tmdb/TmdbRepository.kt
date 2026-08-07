@@ -9,7 +9,15 @@ import java.util.concurrent.TimeUnit
 
 data class TmdbImages(
     val posterUrl: String?,
-    val fanartUrl: String?
+    val fanartUrl: String?,
+    /** From the same TMDB details response used for art (no extra round-trip). */
+    val overview: String? = null,
+    val year: Int? = null,
+    val rating: Double? = null,
+    /** e.g. "Drama · Crime" */
+    val genresLabel: String? = null,
+    /** e.g. "3 seasons" / "Ended" */
+    val statusLabel: String? = null,
 )
 
 data class TmdbEpisode(
@@ -175,10 +183,43 @@ class TmdbRepository {
             val json = JSONObject(body)
             val poster = json.optString("poster_path").takeIf { it.isNotBlank() }
             val backdrop = json.optString("backdrop_path").takeIf { it.isNotBlank() }
+            val overview = json.optString("overview").takeIf { it.isNotBlank() }
+            val date = when (pathType) {
+                "tv" -> json.optString("first_air_date")
+                else -> json.optString("release_date")
+            }
+            val year = date.take(4).toIntOrNull()
+            val rating = json.optDouble("vote_average").takeIf { !it.isNaN() && it > 0.0 }
+            val genres = buildList {
+                val arr = json.optJSONArray("genres") ?: return@buildList
+                for (i in 0 until arr.length()) {
+                    val name = arr.optJSONObject(i)?.optString("name").orEmpty()
+                    if (name.isNotBlank()) add(name)
+                }
+            }
+            val statusLabel = when (pathType) {
+                "tv" -> {
+                    val seasons = json.optInt("number_of_seasons").takeIf { it > 0 }
+                    val status = json.optString("status").takeIf { it.isNotBlank() }
+                    when {
+                        seasons != null && status != null ->
+                            "$seasons ${if (seasons == 1) "season" else "seasons"} · $status"
+                        seasons != null ->
+                            "$seasons ${if (seasons == 1) "season" else "seasons"}"
+                        else -> status
+                    }
+                }
+                else -> json.optString("status").takeIf { it.isNotBlank() }
+            }
             TmdbImages(
                 posterUrl = poster?.let { "https://image.tmdb.org/t/p/w500$it" },
-                fanartUrl = backdrop?.let { "https://image.tmdb.org/t/p/w500$it" }
-                    ?: poster?.let { "https://image.tmdb.org/t/p/w500$it" }
+                fanartUrl = backdrop?.let { "https://image.tmdb.org/t/p/w1280$it" }
+                    ?: poster?.let { "https://image.tmdb.org/t/p/w500$it" },
+                overview = overview,
+                year = year,
+                rating = rating,
+                genresLabel = genres.take(3).joinToString(" · ").ifBlank { null },
+                statusLabel = statusLabel,
             )
         }
         synchronized(imageCache) { imageCache[cacheKey] = images }

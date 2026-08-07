@@ -72,6 +72,7 @@ import com.vizvag.shieldvideo.data.iptv.XmltvParser
 import com.vizvag.shieldvideo.data.settings.IptvGuideMetrics
 import com.vizvag.shieldvideo.data.settings.IptvGuideSize
 import com.vizvag.shieldvideo.data.settings.metrics
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.AccentWarm
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
 import com.vizvag.shieldvideo.ui.theme.TextCream
@@ -733,25 +734,13 @@ private fun nearestCenterIndex(listState: LazyListState): Int? {
     }?.index
 }
 
-private fun Modifier.wheelRowChrome(highlighted: Boolean, active: Boolean): Modifier {
-    val shape = RoundedCornerShape(8.dp)
-    // Highlighted rows sit inside the wheel's center focus band — no extra border
-    // (that was reading as a double white frame on the playing channel).
-    return this
-        .clip(shape)
-        .background(
-            when {
-                highlighted -> Color.White.copy(alpha = 0.14f)
-                active -> AccentWarm.copy(alpha = 0.24f)
-                else -> Color.Transparent
-            }
-        )
-        .border(
-            width = if (!highlighted && active) 2.dp else 0.dp,
-            color = if (!highlighted && active) AccentWarm else Color.Transparent,
-            shape = shape
-        )
-}
+@Composable
+private fun Modifier.wheelRowChrome(highlighted: Boolean, active: Boolean): Modifier =
+    glassInteract(
+        focused = highlighted,
+        selected = active,
+        scaleOnFocus = false,
+    )
 
 @Composable
 private fun WheelTextItem(

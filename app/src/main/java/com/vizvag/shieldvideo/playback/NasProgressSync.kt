@@ -48,15 +48,70 @@ class NasProgressSync(
         folderPath: String,
         videoPaths: Collection<String>,
     ) {
-        if (videoPaths.isEmpty()) return
+        if (videoPaths.isEmpty()) {
+            mergeAllSidecarsInFolder(settings, shareName, folderPath)
+            return
+        }
         val byName = videoPaths.associateBy { it.substringAfterLast('/') }
         val names = nasRepository.listProgressSidecarNames(settings, shareName, folderPath)
             .getOrNull()
             ?: return
         for (sidecarName in names) {
             val videoName = NasPaths.videoNameFromProgressSidecar(sidecarName) ?: continue
-            val videoPath = byName[videoName] ?: continue
+            val videoPath = byName[videoName]
+                ?: run {
+                    val parent = folderPath.trim('/').replace('\\', '/')
+                    if (parent.isBlank()) videoName else "$parent/$videoName"
+                }
             readAndMerge(settings, shareName, videoPath)
+        }
+    }
+
+    /**
+     * Merge every `*.pallas.json` in [folderPath] into the local resume store.
+     * Returns watched vs in-progress counts from those sidecars.
+     */
+    suspend fun mergeAllSidecarsInFolder(
+        settings: AppSettings,
+        shareName: String,
+        folderPath: String,
+    ): SidecarFolderProgress {
+        val parent = folderPath.trim('/').replace('\\', '/')
+        val names = nasRepository.listProgressSidecarNames(settings, shareName, parent)
+            .getOrNull()
+            ?: return SidecarFolderProgress(0, 0)
+        var watched = 0
+        var inProgress = 0
+        for (sidecarName in names) {
+            val videoName = NasPaths.videoNameFromProgressSidecar(sidecarName) ?: continue
+            val videoPath = if (parent.isBlank()) videoName else "$parent/$videoName"
+            val merged = readAndMerge(settings, shareName, videoPath) ?: continue
+            when {
+                merged.watched -> watched++
+                merged.isMeaningful -> inProgress++
+            }
+        }
+        return SidecarFolderProgress(watched = watched, inProgress = inProgress)
+    }
+
+    data class SidecarFolderProgress(
+        val watched: Int,
+        val inProgress: Int,
+    )
+
+    /** Merge sidecars next to each video (groups by parent folder). */
+    suspend fun mergeVideos(
+        settings: AppSettings,
+        shareName: String,
+        videoPaths: Collection<String>,
+    ) {
+        if (videoPaths.isEmpty()) return
+        val byParent = videoPaths
+            .map { it.trim('/').replace('\\', '/') }
+            .filter { it.isNotBlank() }
+            .groupBy { it.substringBeforeLast('/', missingDelimiterValue = "") }
+        for ((parent, paths) in byParent) {
+            mergeFolder(settings, shareName, parent, paths)
         }
     }
 
@@ -75,9 +130,9 @@ class NasProgressSync(
         val share = shareName?.takeIf { it.isNotBlank() } ?: return
         if (settings.host.isBlank() || settings.password.isBlank()) return
 
-        val finished = durationMs > 0L && positionMs >= durationMs * 0.95
-        val meaningful = positionMs > 5_000L &&
-            (durationMs <= 0L || positionMs < durationMs * 0.95)
+        val finished = durationMs > 0L && positionMs >= durationMs * LocalResume.WATCHED_FRACTION
+        val meaningful = positionMs > LocalResume.MIN_RESUME_POSITION_MS &&
+            (durationMs <= 0L || positionMs < durationMs * LocalResume.WATCHED_FRACTION)
         if (!finished && !meaningful) return
 
         val now = System.currentTimeMillis()

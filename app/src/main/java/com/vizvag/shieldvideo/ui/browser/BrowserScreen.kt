@@ -2,6 +2,7 @@ package com.vizvag.shieldvideo.ui.browser
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -62,11 +64,9 @@ fun BrowserScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     var showAccessHint by remember { mutableStateOf(false) }
     val listFocus = remember { FocusRequester() }
-    val browseLocation = remember(state.selectedShare, state.pathStack) {
-        state.selectedShare to state.pathStack
+    val browseLocation = remember(state.selectedShare, state.pathStack, state.flatView) {
+        Triple(state.selectedShare, state.pathStack, state.flatView)
     }
-    // Survives list remounts (loading flash) so long-press clear does not jump to top.
-    var focusedPath by remember(browseLocation) { mutableStateOf<String?>(null) }
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as com.vizvag.shieldvideo.ShieldVideoApp
     val sleepState by app.sleepTimer.state.collectAsState()
 
@@ -87,9 +87,12 @@ fun BrowserScreen(
         viewModel.goUp()
     }
 
-    LaunchedEffect(browseLocation, state.loading, state.items.firstOrNull()?.entry?.path) {
-        if (state.loading || state.searchOpen || state.items.isEmpty()) return@LaunchedEffect
-        delay(48)
+    // Request focus after the list has scrolled so the focused row (not index 0) owns FocusRequester.
+    LaunchedEffect(browseLocation, state.loading, state.focusedPath) {
+        if (state.loading || state.searchOpen || state.items.isEmpty() || state.focusedPath == null) {
+            return@LaunchedEffect
+        }
+        delay(64)
         runCatching { listFocus.requestFocus() }
     }
 
@@ -136,8 +139,6 @@ fun BrowserScreen(
             sleepTimerLabel = sleepState.label,
             onCycleSleepTimer = app.sleepTimer::cycle,
             onSettings = onOpenSettings,
-            canGoUp = state.pathStack.isNotEmpty(),
-            onGoUp = viewModel::goUp,
             destination = RailDestination.Browser,
             players = RailPlayerVisibility.from(state.settings),
         )
@@ -171,45 +172,66 @@ fun BrowserScreen(
                                     .padding(12.dp),
                             ) {
                                 val chrome = LocalScreenChrome.current
-                                IconActionButton(
-                                    selected = false,
-                                    onClick = { viewModel.openSearch() },
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Search,
-                                        contentDescription = "Search videos",
-                                        tint = chrome.accent,
-                                        modifier = Modifier.size(24.dp),
-                                    )
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    IconActionButton(
+                                        selected = state.indexBuilding,
+                                        onClick = { viewModel.refreshLibrary() },
+                                        enabled = !state.indexBuilding,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Refresh,
+                                            contentDescription = if (state.indexBuilding) {
+                                                "Refreshing library"
+                                            } else {
+                                                "Refresh library"
+                                            },
+                                            tint = chrome.accent,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    }
+                                    IconActionButton(
+                                        selected = false,
+                                        onClick = { viewModel.openSearch() },
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Search,
+                                            contentDescription = "Search videos",
+                                            tint = chrome.accent,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                     else -> {
                         val folderTitle = state.pathStack.lastOrNull() ?: shareLabel
-                        val focused = focusedPath?.let { path ->
-                            state.items.find { it.entry.path == path }
+                        val cleaned = folderTitle.replace('.', ' ').replace('_', ' ').trim()
+                            .ifBlank { folderTitle }
+                        val listTitle = if (state.flatView) {
+                            "$cleaned · all videos"
+                        } else {
+                            cleaned
                         }
-                        LaunchedEffect(state.items, focusedPath) {
-                            if (state.items.isEmpty()) {
-                                focusedPath = null
-                            } else if (focusedPath == null ||
-                                state.items.none { it.entry.path == focusedPath }
-                            ) {
-                                focusedPath = state.items.firstOrNull()?.entry?.path
-                            }
+                        val focused = state.focusedPath?.let { path ->
+                            state.items.find { it.entry.path.equals(path, ignoreCase = true) }
+                                ?: state.items.find {
+                                    it.entry.path.replace('\\', '/').trim('/')
+                                        .equals(path.replace('\\', '/').trim('/'), ignoreCase = true)
+                                }
                         }
                         SplitFolderBrowser(
-                            title = folderTitle.replace('.', ' ').replace('_', ' ').trim()
-                                .ifBlank { folderTitle },
+                            title = listTitle,
                             itemCount = state.items.size,
                             items = state.items,
                             focused = focused,
-                            onFocusedChange = { focusedPath = it.entry.path },
+                            onFocusedChange = { viewModel.setFocusedPath(it.entry.path) },
                             onClick = ::onItemClick,
                             onLongClick = ::onItemLongClick,
                             onPlay = { item -> onItemClick(item) },
                             onSearch = viewModel::openSearch,
+                            onRefresh = viewModel::refreshLibrary,
+                            refreshing = state.indexBuilding,
                             listFocusRequester = listFocus,
                         )
                     }
@@ -220,7 +242,13 @@ fun BrowserScreen(
                         msg.startsWith("Extracted ", ignoreCase = true) ||
                         msg.contains("Extract already", ignoreCase = true) ||
                         msg.startsWith("Deleted ", ignoreCase = true) ||
-                        msg.startsWith("Delete failed", ignoreCase = true)
+                        msg.startsWith("Delete failed", ignoreCase = true) ||
+                        msg.contains("Synced", ignoreCase = true) ||
+                        msg.contains("Refreshing library", ignoreCase = true) ||
+                        msg.contains("Library refreshed", ignoreCase = true) ||
+                        msg.contains("Library refresh", ignoreCase = true) ||
+                        msg.contains("Video Station", ignoreCase = true) ||
+                        msg.contains("Indexing", ignoreCase = true)
                 }
                 if (toastMessage != null) {
                     LaunchedEffect(toastMessage) {
@@ -248,7 +276,14 @@ fun BrowserScreen(
     val blockingMessage = state.message?.takeUnless { msg ->
         msg.contains("metadata", ignoreCase = true) ||
             msg.startsWith("Extracted ", ignoreCase = true) ||
-            msg.contains("Extract already", ignoreCase = true)
+            msg.contains("Extract already", ignoreCase = true) ||
+            msg.contains("Synced", ignoreCase = true) ||
+            msg.contains("Refreshing library", ignoreCase = true) ||
+            msg.contains("Library refreshed", ignoreCase = true) ||
+            msg.contains("Library refresh", ignoreCase = true) ||
+            msg.contains("Video Station", ignoreCase = true) ||
+            msg.contains("Indexing", ignoreCase = true) ||
+            msg.contains("Scanning", ignoreCase = true)
     }
     if (state.showVlcMissing || blockingMessage != null) {
         AlertDialog(
@@ -294,6 +329,7 @@ fun BrowserScreen(
         BrowserItemOptionsDialog(
             item = item,
             confirmingDelete = itemOptions.confirmingDelete,
+            onShowAllVideos = { viewModel.showAllVideosInFolder(item) },
             onAssignMetadata = { viewModel.openFolderAssign(item) },
             onClearIncludingContents = {
                 viewModel.clearItemMetadata(item, includeDescendants = true)
@@ -329,6 +365,8 @@ fun BrowserScreen(
     if (folderAssign.folder != null) {
         FolderAssignDialog(
             state = folderAssign,
+            onQueryChange = viewModel::setFolderAssignQuery,
+            onSearch = viewModel::searchFolderAssign,
             onSelect = viewModel::assignFolderMetadata,
             onKeepEmpty = viewModel::keepFolderEmpty,
             onDismiss = viewModel::dismissFolderAssign,

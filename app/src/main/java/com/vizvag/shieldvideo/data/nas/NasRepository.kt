@@ -71,8 +71,9 @@ class NasRepository(
         ).map { entries -> entries.filter { it.isDirectory } }
 
     /**
-     * @param hideEmptyFolders when true (browse UI), omit directories that have no video/archive
-     *   files and no descendant folders that do either.
+     * @param hideEmptyFolders when true, omit leaf directories with no video/archive.
+     *   Browse UI should pass false — probing every child folder for media caused multi-second
+     *   loads on large shares (one NAS list per subdirectory).
      */
     suspend fun list(
         settings: AppSettings,
@@ -104,8 +105,6 @@ class NasRepository(
             if (!hideEmptyFolders || allowedExtensions != null) {
                 visible
             } else {
-                // Fresh check each browse so deletes/extracts update empty-folder visibility.
-                playableFolderCache.clear()
                 filterOutEmptyFolders(settings, shareName, visible)
             }
         }
@@ -193,6 +192,13 @@ class NasRepository(
             return false
         }
 
+        // Folders with children are almost always worth opening — skip deep NAS walks
+        // (those were the ~10s delay on large shares like /video).
+        if (depth == 0) {
+            playableFolderCache[cacheKey] = true
+            return true
+        }
+
         // Short-circuit on first hit; check a few in parallel for latency.
         val gate = Semaphore(4)
         val found = coroutineScope {
@@ -273,6 +279,43 @@ class NasRepository(
     /** Portable URI for HA / cross-Shield handoff (always path-only SMB — never File Station / never user:pass). */
     fun handoffUri(settings: AppSettings, shareName: String, relativePath: String): Uri =
         buildSmbUri(settings.host, shareName, relativePath)
+
+    /**
+     * All playable video files under [shareName]/[folderPath], ignoring intermediate folders.
+     * Used by browser “Show all videos” (flat view).
+     */
+    suspend fun listVideosRecursive(
+        settings: AppSettings,
+        shareName: String,
+        folderPath: String,
+        maxDepth: Int = 12,
+        maxResults: Int = 2_000,
+    ): Result<List<SmbEntry>> = runCatching {
+        val hits = mutableListOf<SmbEntry>()
+        val seen = mutableSetOf<String>()
+        val queue = ArrayDeque<Pair<String, Int>>()
+        queue.add(folderPath.trim('/').replace('\\', '/') to 0)
+
+        while (queue.isNotEmpty() && hits.size < maxResults) {
+            val (path, depth) = queue.removeFirst()
+            val listed = list(settings, shareName, path, hideEmptyFolders = false).getOrNull()
+                ?: continue
+            for (entry in listed) {
+                if (hits.size >= maxResults) break
+                val key = entry.path.replace('\\', '/').trim('/').lowercase()
+                if (!seen.add(key)) continue
+                when {
+                    entry.isDirectory -> {
+                        if (depth < maxDepth) queue.add(entry.path to (depth + 1))
+                    }
+                    NasPaths.isVideoFile(entry.name) && !NasPaths.isProgressSidecar(entry.name) -> {
+                        hits += entry
+                    }
+                }
+            }
+        }
+        hits.sortedBy { it.path.lowercase() }
+    }
 
     /**
      * Recursively walk configured video roots. Returns all files (and directories).

@@ -69,6 +69,7 @@ class PodcastRepository(
         saveSubscriptions(distinct)
         _subscriptions.value = distinct
         prefs.edit().putLong(KEY_LAST_IMPORT_MS, System.currentTimeMillis()).apply()
+        clearCatalogSnapshot()
     }
 
     fun clearSubscriptions() {
@@ -76,6 +77,87 @@ class PodcastRepository(
         _subscriptions.value = emptyList()
         prefs.edit().putLong(KEY_LAST_IMPORT_MS, 0L).apply()
         cacheDir.listFiles()?.forEach { it.delete() }
+        clearCatalogSnapshot()
+    }
+
+    /** Instant reopen: last painted shows + recent episodes (no network). */
+    fun loadCatalogSnapshot(): PodcastCatalogSnapshot? {
+        val file = catalogSnapshotFile()
+        if (!file.isFile) return null
+        return runCatching {
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val showsArr = root.optJSONArray("shows") ?: return null
+            val epsArr = root.optJSONArray("episodes") ?: return null
+            val shows = parseShowsJson(showsArr)
+            val episodes = buildList {
+                for (i in 0 until epsArr.length()) {
+                    val o = epsArr.optJSONObject(i) ?: continue
+                    val guid = o.optString("guid").trim()
+                    val audio = o.optString("audioUrl").trim()
+                    if (guid.isBlank() || audio.isBlank()) continue
+                    add(
+                        PodcastEpisode(
+                            guid = guid,
+                            showId = o.optString("showId", ""),
+                            title = o.optString("title", "Episode"),
+                            description = o.optString("description", ""),
+                            audioUrl = audio,
+                            publishEpochMs = o.optLong("publishEpochMs", 0L),
+                            durationSec = o.optLong("durationSec", 0L),
+                            imageUrl = o.optString("imageUrl", ""),
+                        ),
+                    )
+                }
+            }
+            if (shows.isEmpty() || episodes.isEmpty()) return null
+            PodcastCatalogSnapshot(
+                shows = shows,
+                episodes = episodes,
+                savedAtMs = root.optLong("savedAtMs", file.lastModified()),
+            )
+        }.getOrNull()
+    }
+
+    fun saveCatalogSnapshot(shows: List<PodcastShow>, episodes: List<PodcastEpisode>) {
+        if (shows.isEmpty() || episodes.isEmpty()) return
+        val showsArr = JSONArray()
+        shows.forEach { s ->
+            showsArr.put(
+                JSONObject()
+                    .put("id", s.id)
+                    .put("title", s.title)
+                    .put("feedUrl", s.feedUrl)
+                    .put("siteUrl", s.siteUrl)
+                    .put("imageUrl", s.imageUrl)
+                    .put("genres", JSONArray(s.genres))
+                    .put("latestEpisodeEpochMs", s.latestEpisodeEpochMs),
+            )
+        }
+        val epsArr = JSONArray()
+        episodes.forEach { ep ->
+            epsArr.put(
+                JSONObject()
+                    .put("guid", ep.guid)
+                    .put("showId", ep.showId)
+                    .put("title", ep.title)
+                    .put("description", ep.description.take(500))
+                    .put("audioUrl", ep.audioUrl)
+                    .put("publishEpochMs", ep.publishEpochMs)
+                    .put("durationSec", ep.durationSec)
+                    .put("imageUrl", ep.imageUrl),
+            )
+        }
+        val root = JSONObject()
+            .put("savedAtMs", System.currentTimeMillis())
+            .put("shows", showsArr)
+            .put("episodes", epsArr)
+        runCatching {
+            catalogSnapshotFile().writeText(root.toString(), Charsets.UTF_8)
+        }
+    }
+
+    fun clearCatalogSnapshot() {
+        runCatching { catalogSnapshotFile().delete() }
     }
 
     fun exportSubscriptionsJson(): JSONArray {
@@ -455,40 +537,42 @@ class PodcastRepository(
     private fun feedCacheFile(showId: String): File =
         File(cacheDir, "${showId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }}.xml")
 
+    private fun catalogSnapshotFile(): File = File(cacheDir, CATALOG_SNAPSHOT_FILE)
+
     private fun loadSubscriptions(): List<PodcastShow> {
         val raw = prefs.getString(KEY_SUBS, null) ?: return emptyList()
-        return runCatching {
-            val arr = JSONArray(raw)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    val feed = o.optString("feedUrl").trim()
-                    if (feed.isBlank()) continue
-                    val genresArr = o.optJSONArray("genres")
-                    val genres = buildList {
-                        if (genresArr != null) {
-                            for (g in 0 until genresArr.length()) {
-                                genresArr.optString(g).trim().takeIf { it.isNotBlank() }?.let { add(it) }
-                            }
+        return runCatching { parseShowsJson(JSONArray(raw)) }.getOrDefault(emptyList())
+    }
+
+    private fun parseShowsJson(arr: JSONArray): List<PodcastShow> =
+        buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val feed = o.optString("feedUrl").trim()
+                if (feed.isBlank()) continue
+                val genresArr = o.optJSONArray("genres")
+                val genres = buildList {
+                    if (genresArr != null) {
+                        for (g in 0 until genresArr.length()) {
+                            genresArr.optString(g).trim().takeIf { it.isNotBlank() }?.let { add(it) }
                         }
                     }
-                    add(
-                        PodcastShow(
-                            id = o.optString("id").ifBlank {
-                                java.util.UUID.nameUUIDFromBytes(feed.lowercase().toByteArray()).toString()
-                            },
-                            title = o.optString("title", feed),
-                            feedUrl = feed,
-                            siteUrl = o.optString("siteUrl", ""),
-                            imageUrl = o.optString("imageUrl", ""),
-                            genres = genres,
-                            latestEpisodeEpochMs = o.optLong("latestEpisodeEpochMs", 0L),
-                        ),
-                    )
                 }
+                add(
+                    PodcastShow(
+                        id = o.optString("id").ifBlank {
+                            java.util.UUID.nameUUIDFromBytes(feed.lowercase().toByteArray()).toString()
+                        },
+                        title = o.optString("title", feed),
+                        feedUrl = feed,
+                        siteUrl = o.optString("siteUrl", ""),
+                        imageUrl = o.optString("imageUrl", ""),
+                        genres = genres,
+                        latestEpisodeEpochMs = o.optLong("latestEpisodeEpochMs", 0L),
+                    ),
+                )
             }
-        }.getOrDefault(emptyList())
-    }
+        }
 
     private fun saveSubscriptions(shows: List<PodcastShow>) {
         val arr = JSONArray()
@@ -561,6 +645,7 @@ class PodcastRepository(
         private const val KEY_LAST_IMPORT_MS = "last_import_ms"
         private const val KEY_SHOW_SORT = "show_sort"
         private const val KEY_EPISODE_SORT = "episode_sort"
+        private const val CATALOG_SNAPSHOT_FILE = "catalog_snapshot.json"
         private const val STALE_MS = 6L * 60L * 60L * 1000L
         private const val MAX_PROGRESS = 500
         private const val LABEL_MAX = 120

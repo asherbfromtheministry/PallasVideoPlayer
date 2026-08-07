@@ -1,8 +1,8 @@
 package com.vizvag.shieldvideo.ui.remote
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
@@ -31,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,8 +44,8 @@ import com.vizvag.shieldvideo.playback.remote.RemoteStatus
 import com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller
 import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
 import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
-import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.TextCream
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import kotlinx.coroutines.delay
@@ -222,26 +222,12 @@ private fun DeviceRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
+    var focused by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                when {
-                    selected -> Accent.copy(alpha = 0.22f)
-                    playing -> Accent.copy(alpha = 0.10f)
-                    else -> CardSurface
-                },
-                RoundedCornerShape(10.dp),
-            )
-            .border(
-                1.dp,
-                when {
-                    selected -> Accent
-                    playing -> Accent.copy(alpha = 0.45f)
-                    else -> Color.Transparent
-                },
-                RoundedCornerShape(10.dp),
-            )
+            .glassInteract(focused = focused, selected = selected || playing)
+            .onFocusChanged { focused = it.isFocused }
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,

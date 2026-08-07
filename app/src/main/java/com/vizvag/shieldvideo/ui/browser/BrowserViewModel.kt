@@ -15,9 +15,12 @@ import com.vizvag.shieldvideo.data.trakt.FilenameParser
 import com.vizvag.shieldvideo.data.trakt.ForcedMetadata
 import com.vizvag.shieldvideo.data.trakt.MediaKind
 import com.vizvag.shieldvideo.data.trakt.MetadataOverrideStore
+import com.vizvag.shieldvideo.data.trakt.QualityTags
 import com.vizvag.shieldvideo.data.trakt.TraktHistory
 import com.vizvag.shieldvideo.data.trakt.TraktMatch
 import com.vizvag.shieldvideo.data.trakt.TraktRepository
+import com.vizvag.shieldvideo.ShieldVideoApp
+import com.vizvag.shieldvideo.playback.LocalMediaProxyService
 import com.vizvag.shieldvideo.playback.LocalResumeStore
 import com.vizvag.shieldvideo.playback.MediaPlayerLauncher
 import com.vizvag.shieldvideo.playback.NasProgressSync
@@ -36,6 +39,12 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+
+data class FolderPreviewTile(
+    val title: String,
+    val posterUrl: String?,
+    val path: String = "",
+)
 
 data class MediaCardItem(
     val entry: SmbEntry,
@@ -60,14 +69,37 @@ data class MediaCardItem(
     val episodeTitle: String? = null,
     val metadataCleared: Boolean = false,
     /** Configured video-folder root (e.g. `/download`) when item comes from search. */
-    val videoRoot: String? = null
+    val videoRoot: String? = null,
+    /** Folder preview — videos found under this directory (index / sample). */
+    val folderVideoCount: Int? = null,
+    val folderWatchedCount: Int? = null,
+    /** Episodes with a resume sidecar but not finished (`watched: false`). */
+    val folderInProgressCount: Int? = null,
+    val folderSubfolderCount: Int? = null,
+    /** e.g. "TV SERIES" / "MOVIE" */
+    val metaKind: String? = null,
+    val ratingLabel: String? = null,
+    val genresLabel: String? = null,
+    /**
+     * Mixed library folders (e.g. `Films`) — preview shows child posters instead of
+     * a single title's fanart.
+     */
+    val isMixedFolder: Boolean = false,
+    val previewTiles: List<FolderPreviewTile> = emptyList(),
 )
 
 data class BrowserUiState(
     val settings: AppSettings = AppSettings(),
     val selectedShare: String = "download",
     val pathStack: List<String> = emptyList(),
+    /** When true, list every video under [pathStack] and hide intermediate folders. */
+    val flatView: Boolean = false,
     val items: List<MediaCardItem> = emptyList(),
+    /**
+     * Path of the list row that should own focus / preview in the current folder.
+     * Owned by navigation (enter / back), not reset by Compose remounts.
+     */
+    val focusedPath: String? = null,
     val loading: Boolean = true,
     val error: String? = null,
     val message: String? = null,
@@ -89,6 +121,8 @@ data class BrowserUiState(
 data class FolderAssignUi(
     val folder: MediaCardItem? = null,
     val loading: Boolean = false,
+    /** Editable Trakt/TMDB search string (folder name cleaned by default). */
+    val searchQuery: String = "",
     val candidates: List<TraktMatch> = emptyList(),
     val error: String? = null,
 )
@@ -141,13 +175,26 @@ class BrowserViewModel(
     private val _archiveExtract = MutableStateFlow(ArchiveExtractUi())
     val archiveExtract: StateFlow<ArchiveExtractUi> = _archiveExtract.asStateFlow()
 
+    /**
+     * Entry paths of folders the user opened, deepest last.
+     * [goUp] pops the last path and focuses that folder in the parent list.
+     */
+    private val folderFocusStack = ArrayDeque<String>()
+
     private var loadJob: Job? = null
     private var searchJob: Job? = null
     private var extractJob: Job? = null
+    private var focusEnrichJob: Job? = null
+    private var libraryRefreshJob: Job? = null
     private var history: TraktHistory = TraktHistory()
     private var assignJob: Job? = null
     /** Share + pathStack key for the items currently on screen — soft refresh only when unchanged. */
     private var listedLocationKey: String? = null
+    /**
+     * After a manual library refresh, show every NAS folder once even if the index has not
+     * yet marked playable media under it (so newly added folders appear immediately).
+     */
+    private var skipNextSoftPrune: Boolean = false
 
     init {
         val settings = settingsRepository.load()
@@ -192,11 +239,14 @@ class BrowserViewModel(
             _state.value.settings.password != settings.password ||
             _state.value.settings.connectionMode != settings.connectionMode ||
             !_state.value.selectedShare.equals(share, true)
+        if (resetPath) folderFocusStack.clear()
         _state.update {
             it.copy(
                 settings = settings,
                 selectedShare = share,
                 pathStack = if (resetPath) emptyList() else it.pathStack,
+                flatView = if (resetPath) false else it.flatView,
+                focusedPath = if (resetPath) null else it.focusedPath,
                 message = null,
                 error = null
             )
@@ -205,11 +255,14 @@ class BrowserViewModel(
     }
 
     fun selectShare(share: String) {
+        folderFocusStack.clear()
         _state.update {
             it.copy(
                 selectedShare = share,
                 pathStack = emptyList(),
+                flatView = false,
                 items = emptyList(),
+                focusedPath = null,
                 loading = true,
                 error = null,
                 message = null,
@@ -221,11 +274,37 @@ class BrowserViewModel(
 
     fun openFolderEntry(entry: SmbEntry) {
         if (!entry.isDirectory) return
+        folderFocusStack.addLast(entry.path)
         val relative = relativeToVideoRoot(entry.path)
         _state.update {
             it.copy(
                 pathStack = relative,
+                flatView = false,
                 items = emptyList(),
+                focusedPath = null,
+                loading = true,
+                error = null,
+                message = null,
+            )
+        }
+        listedLocationKey = null
+        refresh()
+    }
+
+    /**
+     * Flat view of [item]: every playable video under this folder, ignoring subfolders as rows.
+     */
+    fun showAllVideosInFolder(item: MediaCardItem) {
+        if (!item.entry.isDirectory) return
+        dismissItemOptions()
+        folderFocusStack.addLast(item.entry.path)
+        val relative = relativeToVideoRoot(item.entry.path)
+        _state.update {
+            it.copy(
+                pathStack = relative,
+                flatView = true,
+                items = emptyList(),
+                focusedPath = null,
                 loading = true,
                 error = null,
                 message = null,
@@ -238,16 +317,89 @@ class BrowserViewModel(
     fun goUp() {
         val stack = _state.value.pathStack
         if (stack.isEmpty()) return
+        val restorePath = folderFocusStack.removeLastOrNull()
         _state.update {
             it.copy(
                 pathStack = stack.dropLast(1),
+                flatView = false,
                 items = emptyList(),
+                focusedPath = restorePath,
                 loading = true,
                 error = null,
             )
         }
         listedLocationKey = null
         refresh()
+    }
+
+    /** D-pad / focus movement within the current folder list. */
+    fun setFocusedPath(path: String) {
+        if (_state.value.focusedPath == path) return
+        _state.update { it.copy(focusedPath = path) }
+        val item = _state.value.items.find { it.entry.path == path } ?: return
+        // Thorough enrich for whatever is on screen — cancel prior so we don't queue Trakt.
+        focusEnrichJob?.cancel()
+        val shareSnapshot = _state.value.selectedShare
+        val pathStackSnapshot = _state.value.pathStack
+        val flatViewSnapshot = _state.value.flatView
+        focusEnrichJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(120)
+            if (_state.value.focusedPath != path) return@launch
+            if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) return@launch
+            val settings = _state.value.settings
+            // Art already there (or metadata cleared): still pull NAS sidecars for watched/resume.
+            if ((previewLooksEnriched(item) || item.metadataCleared) && !item.isMixedFolder) {
+                if (item.entry.isDirectory) {
+                    refreshFolderWatchedFromNas(item, settings)
+                } else if (item.metadataCleared || item.resumePositionMs == null) {
+                    // Cleared files skip Trakt enrich — refresh progress from local/NAS only.
+                    val card = runCatching {
+                        enrichFile(item.entry, settings)
+                    }.getOrNull()
+                    if (card != null && _state.value.focusedPath == path) {
+                        replaceBrowseItem(path, card)
+                    }
+                }
+                return@launch
+            }
+            val card = runCatching {
+                if (item.entry.isDirectory) enrichFolder(item.entry, settings, thorough = true)
+                else enrichFile(item.entry, settings)
+            }.getOrNull() ?: return@launch
+            if (_state.value.focusedPath != path) return@launch
+            if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) return@launch
+            replaceBrowseItem(path, card)
+        }
+    }
+
+    /** Update episode/watched badges from NAS `*.pallas.json` without re-fetching artwork. */
+    private suspend fun refreshFolderWatchedFromNas(item: MediaCardItem, settings: AppSettings) {
+        val stats = folderContentStats(
+            item.entry,
+            art = null,
+            settings = settings,
+            resolveTraktWatched = false,
+            includeNasSidecars = true,
+        )
+        if (stats.videoCount <= 0 && stats.watchedCount <= 0 && stats.inProgressCount <= 0) return
+        val watchedN = stats.watchedCount
+        val videosN = stats.videoCount
+        val inProgressN = stats.inProgressCount
+        if (item.folderWatchedCount == watchedN &&
+            item.folderVideoCount == videosN &&
+            item.folderInProgressCount == inProgressN
+        ) {
+            return
+        }
+        replaceBrowseItem(
+            item.entry.path,
+            item.copy(
+                folderVideoCount = videosN.takeIf { it > 0 },
+                folderWatchedCount = watchedN.takeIf { it > 0 },
+                folderInProgressCount = inProgressN.takeIf { it > 0 },
+                watched = videosN > 0 && watchedN >= videosN,
+            ),
+        )
     }
 
     fun openFolderClearOptions(item: MediaCardItem) {
@@ -337,7 +489,7 @@ class BrowserViewModel(
         viewModelScope.launch {
             val settings = _state.value.settings
             val card = if (item.entry.isDirectory) {
-                enrichFolder(item.entry, settings)
+                enrichFolder(item.entry, settings, thorough = true)
             } else {
                 enrichFile(item.entry, settings)
             }.copy(videoRoot = item.videoRoot)
@@ -356,32 +508,81 @@ class BrowserViewModel(
     fun openFolderAssign(item: MediaCardItem) {
         dismissItemOptions()
         assignJob?.cancel()
-        _folderAssign.value = FolderAssignUi(folder = item, loading = true)
+        val seedQueries = folderAssignQueries(item.entry.name, item.entry.path)
+        val initialQuery = seedQueries.firstOrNull()
+            .orEmpty()
+            .ifBlank { cleanFolderDisplayName(item.entry.name) }
+        _folderAssign.value = FolderAssignUi(
+            folder = item,
+            loading = true,
+            searchQuery = initialQuery,
+        )
         assignJob = viewModelScope.launch {
-            val settings = _state.value.settings
-            val results = linkedMapOf<String, TraktMatch>()
-            val queries = folderAssignQueries(item.entry.name, item.entry.path)
-            for (query in queries) {
-                val hits = runCatching {
-                    traktRepository.searchCandidates(settings.traktClientId, query)
-                }.getOrElse { emptyList() }
-                hits.forEach { match ->
-                    val key = "${match.mediaType}:${match.tmdbId ?: match.traktId}"
-                    if (!results.containsKey(key)) results[key] = match
-                }
-                if (results.size >= 10) break
+            applyAssignSearchResults(
+                item = item,
+                queries = seedQueries.ifEmpty {
+                    listOfNotNull(initialQuery.takeIf { it.length >= 2 })
+                },
+            )
+        }
+    }
+
+    fun setFolderAssignQuery(query: String) {
+        _folderAssign.update { current ->
+            if (current.folder == null) current else current.copy(searchQuery = query)
+        }
+    }
+
+    /** Re-run assign search with the current [FolderAssignUi.searchQuery]. */
+    fun searchFolderAssign() {
+        val current = _folderAssign.value
+        val item = current.folder ?: return
+        val query = current.searchQuery.trim()
+        if (query.length < 2) {
+            _folderAssign.update {
+                it.copy(
+                    loading = false,
+                    candidates = emptyList(),
+                    error = "Enter at least 2 characters",
+                )
             }
-            // Trakt 429 / blank client id — fall back to TMDB search so assign still works.
-            if (results.isEmpty() &&
-                (settings.tmdbApiKey.isNotBlank() || settings.tmdbReadToken.isNotBlank())
-            ) {
-                for (query in queries) {
+            return
+        }
+        assignJob?.cancel()
+        _folderAssign.update { it.copy(loading = true, error = null, candidates = emptyList()) }
+        assignJob = viewModelScope.launch {
+            applyAssignSearchResults(item = item, queries = listOf(query))
+        }
+    }
+
+    private suspend fun applyAssignSearchResults(
+        item: MediaCardItem,
+        queries: List<String>,
+    ) {
+        val settings = _state.value.settings
+        val results = linkedMapOf<String, TraktMatch>()
+        val usable = queries.map { it.trim() }.filter { it.length >= 2 }.distinct()
+        for (query in usable) {
+            val hits = runCatching {
+                traktRepository.searchCandidates(settings.traktClientId, query)
+            }.getOrElse { emptyList() }
+            hits.forEach { match ->
+                val key = "${match.mediaType}:${match.tmdbId ?: match.traktId}"
+                if (!results.containsKey(key)) results[key] = match
+            }
+            if (results.size >= 10) break
+        }
+        if (results.isEmpty() &&
+            (settings.tmdbApiKey.isNotBlank() || settings.tmdbReadToken.isNotBlank())
+        ) {
+            for (preferTv in listOf(true, false)) {
+                for (query in usable) {
                     val hits = runCatching {
                         tmdbRepository.searchCandidates(
                             apiKey = settings.tmdbApiKey,
                             readToken = settings.tmdbReadToken,
                             query = query,
-                            preferTv = true,
+                            preferTv = preferTv,
                             limit = 12,
                         )
                     }.getOrElse { emptyList() }
@@ -400,23 +601,25 @@ class BrowserViewModel(
                     }
                     if (results.size >= 10) break
                 }
+                if (results.isNotEmpty()) break
             }
-            val list = results.values.toList()
-            _folderAssign.update { current ->
-                if (current.folder?.entry?.path != item.entry.path) current
-                else current.copy(
-                    loading = false,
-                    candidates = list,
-                    error = when {
-                        list.isNotEmpty() -> null
-                        settings.traktClientId.isBlank() &&
-                            settings.tmdbApiKey.isBlank() &&
-                            settings.tmdbReadToken.isBlank() ->
-                            "Add a Trakt Client ID or TMDB key in Settings"
-                        else -> "No matching shows or movies"
-                    },
-                )
-            }
+        }
+        val list = results.values.toList()
+        _folderAssign.update { current ->
+            if (current.folder?.entry?.path != item.entry.path) current
+            else current.copy(
+                loading = false,
+                candidates = list,
+                error = when {
+                    list.isNotEmpty() -> null
+                    usable.isEmpty() -> "Enter a search title"
+                    settings.traktClientId.isBlank() &&
+                        settings.tmdbApiKey.isBlank() &&
+                        settings.tmdbReadToken.isBlank() ->
+                        "Add a Trakt Client ID or TMDB key in Settings"
+                    else -> "No matching shows or movies — edit the search and try again"
+                },
+            )
         }
     }
 
@@ -520,6 +723,30 @@ class BrowserViewModel(
 
     fun rebuildVideoIndex() {
         videoIndex.rebuildNow(viewModelScope)
+    }
+
+    /**
+     * Top-bar Refresh: force-sync Synology Video Station (fallback folder walk), then
+     * reload the current folder so new NAS folders/files appear.
+     */
+    fun refreshLibrary() {
+        if (_state.value.indexBuilding && libraryRefreshJob?.isActive == true) return
+        libraryRefreshJob?.cancel()
+        libraryRefreshJob = viewModelScope.launch {
+            _state.update { it.copy(message = "Refreshing library from Video Station…") }
+            val result = videoIndex.ensureFresh(force = true)
+            skipNextSoftPrune = true
+            refresh()
+            val status = videoIndex.status.value
+            val detail = when {
+                result.isSuccess -> status.message?.takeIf { it.isNotBlank() }
+                    ?: "Library refreshed · ${status.entryCount} items"
+                else -> result.exceptionOrNull()?.message
+                    ?: status.error
+                    ?: "Library refresh failed"
+            }
+            _state.update { it.copy(message = detail) }
+        }
     }
 
     fun toggleSearchFolder(folder: String) {
@@ -647,7 +874,7 @@ class BrowserViewModel(
             async {
                 semaphore.withPermit {
                     val card = if (entry.isDirectory) {
-                        enrichFolder(entry, settings).copy(
+                        enrichFolder(entry, settings, thorough = true).copy(
                             videoRoot = root,
                             line2 = NasPaths.labelFor(root).takeIf { it.isNotBlank() }.orEmpty(),
                         )
@@ -687,10 +914,14 @@ class BrowserViewModel(
         val root = item.videoRoot ?: _state.value.selectedShare
         if (item.entry.isDirectory) {
             val relative = relativeToVideoRootFor(root, item.entry.path)
+            folderFocusStack.clear()
+            folderFocusStack.addLast(item.entry.path)
             _state.update {
                 it.copy(
                     selectedShare = root,
                     pathStack = relative,
+                    flatView = false,
+                    focusedPath = null,
                     searchOpen = false,
                     searchLoading = false
                 )
@@ -744,51 +975,55 @@ class BrowserViewModel(
         path: String,
         startPositionMs: Long?,
     ) {
-            val uriResult = nasRepository.playbackUri(
-                settings = settings,
-                shareName = shareName,
-                relativePath = path
+        // Same path as HA handoff / remote play: Range-capable localhost proxy → VLC.
+        // Raw File Station / smb:// URIs often play but refuse seek/pause on Shield.
+        val playerPkg = settings.playerPackage.ifBlank { MediaPlayerLauncher.VLC_PACKAGE }
+        val result = runCatching {
+            val mediaUri = LocalMediaProxyService.startAndAwait(
+                context = ShieldVideoApp.instance,
+                share = shareName,
+                path = path,
+                host = settings.host,
+                title = item.displayTitle,
             )
-            val result = uriResult.fold(
-                onSuccess = { uri ->
-                    runCatching {
-                        val playerPkg = settings.playerPackage.ifBlank { MediaPlayerLauncher.VLC_PACKAGE }
-                        vlcLauncher.play(
-                            playbackUri = uri,
-                            relativePath = path,
-                            title = item.displayTitle,
-                            playerPackage = playerPkg,
-                            startPositionMs = startPositionMs
-                        ) {
-                            nasWatchHistory.record(shareName, path, item.displayTitle)
-                            val handoff = nasRepository.handoffUri(settings, shareName, path).toString()
-                            resumeMonitor.start(
-                                path = path,
-                                playerPackage = playerPkg,
-                                playbackUri = handoff,
-                                title = item.displayTitle,
-                                share = shareName,
-                                host = settings.host
-                            )
-                        }
-                    }.getOrElse { error ->
-                        PlayerLaunchResult.Failed(error.message ?: "Playback failed")
-                    }
-                },
-                onFailure = { error ->
-                    PlayerLaunchResult.Failed(error.message ?: "Unable to build playback URL")
-                }
-            )
-            when (result) {
-                PlayerLaunchResult.Success -> Unit
-                PlayerLaunchResult.NotInstalled -> _state.update {
+            vlcLauncher.play(
+                playbackUri = mediaUri,
+                relativePath = path,
+                title = item.displayTitle,
+                playerPackage = playerPkg,
+                startPositionMs = startPositionMs,
+            ) {
+                nasWatchHistory.record(shareName, path, item.displayTitle)
+                val handoff = nasRepository.handoffUri(settings, shareName, path).toString()
+                resumeMonitor.start(
+                    path = path,
+                    playerPackage = playerPkg,
+                    playbackUri = handoff,
+                    title = item.displayTitle,
+                    share = shareName,
+                    host = settings.host,
+                )
+            }
+        }.getOrElse { error ->
+            LocalMediaProxyService.stop(ShieldVideoApp.instance)
+            PlayerLaunchResult.Failed(error.message ?: "Playback failed")
+        }
+        when (result) {
+            PlayerLaunchResult.Success -> Unit
+            PlayerLaunchResult.NotInstalled -> {
+                LocalMediaProxyService.stop(ShieldVideoApp.instance)
+                _state.update {
                     it.copy(
                         showVlcMissing = true,
-                        message = "Selected player is not installed — pick another in Settings"
+                        message = "Selected player is not installed — pick another in Settings",
                     )
                 }
-                is PlayerLaunchResult.Failed -> _state.update { it.copy(message = result.message) }
             }
+            is PlayerLaunchResult.Failed -> {
+                LocalMediaProxyService.stop(ShieldVideoApp.instance)
+                _state.update { it.copy(message = result.message) }
+            }
+        }
     }
 
     fun openArchiveExtract(item: MediaCardItem) {
@@ -926,8 +1161,10 @@ class BrowserViewModel(
             val settings = _state.value.settings
             val shareSnapshot = _state.value.selectedShare
             val pathStackSnapshot = _state.value.pathStack
+            val flatViewSnapshot = _state.value.flatView
             val (shareName, _) = parseVideoRoot(shareSnapshot)
-            val locationKey = "$shareSnapshot\u0000${pathStackSnapshot.joinToString("/")}"
+            val locationKey =
+                "$shareSnapshot\u0000${pathStackSnapshot.joinToString("/")}\u0000flat=$flatViewSnapshot"
             // Soft refresh only when staying in the same folder (resume bars / re-enrich).
             // Navigating must not keep the previous folder's cards or preview art.
             val soft = _state.value.items.isNotEmpty() &&
@@ -970,30 +1207,68 @@ class BrowserViewModel(
                 }
             }
 
-            val listed = nasRepository.list(settings, shareName, path)
+            val listed = if (flatViewSnapshot) {
+                listFlatVideos(settings, shareName, path)
+            } else {
+                // One directory list only — do not recursively probe every child for
+                // "empty" (that was multi-second on large shares like /video).
+                nasRepository.list(
+                    settings,
+                    shareName,
+                    path,
+                    hideEmptyFolders = false,
+                )
+            }
             listed.fold(
                 onSuccess = { entries ->
-                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot)) return@fold
+                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) return@fold
                     val placeholders = entries.map { placeholderCard(it) }
                     listedLocationKey = locationKey
                     _state.update {
-                        it.copy(loading = false, items = placeholders, error = null)
+                        it.copy(
+                            loading = false,
+                            items = placeholders,
+                            focusedPath = resolveFocusedPath(placeholders, it.focusedPath),
+                            error = null,
+                        )
+                    }
+                    if (!flatViewSnapshot) {
+                        // After paint: drop folders the local video index knows have no media
+                        // (e.g. /download/APK). Memory-only — does not re-list the NAS.
+                        softPruneEmptyFoldersFromIndex(
+                            entries = entries,
+                            shareName = shareName,
+                            shareSnapshot = shareSnapshot,
+                            pathStackSnapshot = pathStackSnapshot,
+                            flatViewSnapshot = flatViewSnapshot,
+                            locationKey = locationKey,
+                        )
+                    } else {
+                        skipNextSoftPrune = false
                     }
                     history = historyDeferred.await()
-                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot)) return@fold
+                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) return@fold
                     val videoPaths = entries
                         .filter { !it.isDirectory && NasPaths.isVideoFile(it.name) }
                         .map { it.path }
                     runCatching {
                         progressSync.mergeFolder(settings, shareName, path, videoPaths)
                     }
-                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot)) return@fold
+                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) return@fold
                     if (controllingRemote) return@fold
-                    enrichProgressively(entries, settings, shareSnapshot, pathStackSnapshot)
+                    val visibleEntries = _state.value.items.map { it.entry }
+                    enrichProgressively(
+                        visibleEntries.ifEmpty { entries },
+                        settings,
+                        shareSnapshot,
+                        pathStackSnapshot,
+                        flatViewSnapshot,
+                    )
                 },
                 onFailure = { error ->
                     historyDeferred.cancel()
-                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot)) return@fold
+                    skipNextSoftPrune = false
+                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) return@fold
                     _state.update {
                         it.copy(
                             loading = false,
@@ -1006,9 +1281,92 @@ class BrowserViewModel(
         }
     }
 
-    private fun isBrowseTarget(share: String, pathStack: List<String>): Boolean {
+    /** Prefer the video index when it already covers this folder; otherwise walk the NAS. */
+    private suspend fun listFlatVideos(
+        settings: AppSettings,
+        shareName: String,
+        path: String,
+    ): Result<List<SmbEntry>> {
+        val folderRel = pathRelativeToShare(path, shareName).ifBlank { path.trim('/') }
+        if (videoIndex.shareHasIndexedVideos(shareName)) {
+            val fromIndex = videoIndex.videosUnder(shareName, folderRel)
+            if (fromIndex.isNotEmpty()) return Result.success(fromIndex)
+        }
+        return nasRepository.listVideosRecursive(settings, shareName, path)
+    }
+
+    /**
+     * Hide directories that the video index reports as empty of playable media.
+     * Skips when the index has no coverage for this share (avoid wiping the list).
+     * Also skips document/photo/music shares — soft-prune is only for video bins
+     * (e.g. hide `/download/APK`); on `docs` it wrongly removed `Docs`.
+     */
+    private fun softPruneEmptyFoldersFromIndex(
+        entries: List<SmbEntry>,
+        shareName: String,
+        shareSnapshot: String,
+        pathStackSnapshot: List<String>,
+        flatViewSnapshot: Boolean,
+        locationKey: String,
+    ) {
+        if (skipNextSoftPrune) {
+            skipNextSoftPrune = false
+            return
+        }
+        if (isNonVideoBrowseShare(shareName)) return
+        if (!videoIndex.shareHasIndexedVideos(shareName)) return
+        val dirs = entries.filter { it.isDirectory }
+        if (dirs.isEmpty()) return
+        val hidePaths = dirs.mapNotNull { dir ->
+            val rel = pathRelativeToShare(dir.path, shareName)
+            if (videoIndex.hasPlayableUnder(shareName, rel)) null else dir.path
+        }.toHashSet()
+        if (hidePaths.isEmpty()) return
+        if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) return
+        if (listedLocationKey != locationKey) return
+        _state.update { state ->
+            val pruned = state.items.filterNot { item ->
+                item.entry.isDirectory && item.entry.path in hidePaths
+            }
+            state.copy(
+                items = pruned,
+                focusedPath = resolveFocusedPath(pruned, state.focusedPath),
+            )
+        }
+    }
+
+    /** Soft-prune is for video libraries only — never strip folders on docs/photo/music. */
+    private fun isNonVideoBrowseShare(shareName: String): Boolean {
+        val share = shareName.trim('/').substringBefore('/').lowercase()
+        return share in NON_VIDEO_BROWSE_SHARES
+    }
+
+    private fun isBrowseTarget(
+        share: String,
+        pathStack: List<String>,
+        flatView: Boolean = false,
+    ): Boolean {
         val s = _state.value
-        return s.selectedShare.equals(share, ignoreCase = true) && s.pathStack == pathStack
+        return s.selectedShare.equals(share, ignoreCase = true) &&
+            s.pathStack == pathStack &&
+            s.flatView == flatView
+    }
+
+    /** Keep [preferred] when it is still in the list; otherwise the first row. */
+    private fun resolveFocusedPath(items: List<MediaCardItem>, preferred: String?): String? {
+        if (items.isEmpty()) return null
+        if (preferred != null) {
+            items.firstOrNull { browsePathsEqual(it.entry.path, preferred) }?.entry?.path?.let {
+                return it
+            }
+        }
+        return items.first().entry.path
+    }
+
+    private fun browsePathsEqual(a: String, b: String): Boolean {
+        val na = a.replace('\\', '/').trim('/')
+        val nb = b.replace('\\', '/').trim('/')
+        return na.equals(nb, ignoreCase = true)
     }
 
     /** Immediate name/type card — no Trakt/TMDB wait. */
@@ -1061,75 +1419,399 @@ class BrowserViewModel(
         settings: AppSettings,
         shareSnapshot: String,
         pathStackSnapshot: List<String>,
+        flatViewSnapshot: Boolean = false,
     ) = coroutineScope {
-        val semaphore = Semaphore(2)
-        entries.map { entry ->
+        // One at a time. Trakt is ~2.5 req/s; fanning out just 429s and stalls art for minutes.
+        val semaphore = Semaphore(1)
+        val focused = _state.value.focusedPath
+        val ordered = if (focused.isNullOrBlank()) {
+            entries
+        } else {
+            entries.sortedByDescending { it.path.equals(focused, ignoreCase = true) }
+        }
+        ordered.map { entry ->
             async {
                 semaphore.withPermit {
-                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot)) return@withPermit
-                    val card = if (entry.isDirectory) {
-                        enrichFolder(entry, settings)
-                    } else {
-                        enrichFile(entry, settings)
+                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) {
+                        return@withPermit
                     }
-                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot)) return@withPermit
+                    val already = _state.value.items.find { it.entry.path == entry.path }
+                    if (already != null && previewLooksEnriched(already)) return@withPermit
+                    val thorough = entry.path.equals(focused, ignoreCase = true)
+                    val card = runCatching {
+                        when {
+                            entry.isDirectory -> enrichFolder(entry, settings, thorough = thorough)
+                            // Off-focus files: filename shell only — Trakt/TMDB wait for focus.
+                            thorough -> enrichFile(entry, settings)
+                            else -> shellFileCard(entry)
+                        }
+                    }.getOrNull() ?: return@withPermit
+                    if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) {
+                        return@withPermit
+                    }
                     replaceBrowseItem(entry.path, card)
                 }
             }
         }.awaitAll()
     }
 
+    private fun previewLooksEnriched(card: MediaCardItem): Boolean {
+        if (!card.fanartUrl.isNullOrBlank() || !card.posterUrl.isNullOrBlank()) return true
+        if (card.isMixedFolder && card.previewTiles.any { !it.posterUrl.isNullOrBlank() }) return true
+        if (card.metadataCleared && !card.isMixedFolder) return true
+        return false
+    }
+
     private fun replaceBrowseItem(path: String, card: MediaCardItem) {
         _state.update { state ->
             val idx = state.items.indexOfFirst { it.entry.path == path }
-            if (idx < 0) state
-            else state.copy(items = state.items.toMutableList().also { it[idx] = card })
+            if (idx < 0) return@update state
+            val existing = state.items[idx]
+            // Progressive enrich must not clobber a richer focused preview with a later empty card
+            // (Trakt 429 / timeout race — verified on Shield Lounge).
+            if (isRicherPreview(existing, card)) return@update state
+            state.copy(items = state.items.toMutableList().also { it[idx] = card })
         }
     }
 
-    private suspend fun enrichFolder(entry: SmbEntry, settings: AppSettings): MediaCardItem {
+    /** True when [existing] already has better art/tiles than [incoming]. */
+    private fun isRicherPreview(existing: MediaCardItem, incoming: MediaCardItem): Boolean {
+        // Explicit clear/restore must always win over a richer stale card.
+        if (incoming.metadataCleared && !existing.metadataCleared) return false
+        if (!incoming.metadataCleared && existing.metadataCleared) return false
+
+        val existingArt = !existing.fanartUrl.isNullOrBlank() || !existing.posterUrl.isNullOrBlank()
+        val incomingArt = !incoming.fanartUrl.isNullOrBlank() || !incoming.posterUrl.isNullOrBlank()
+        if (existingArt && !incomingArt && !incoming.isMixedFolder) return true
+
+        val existingTileArt = existing.previewTiles.count { !it.posterUrl.isNullOrBlank() }
+        val incomingTileArt = incoming.previewTiles.count { !it.posterUrl.isNullOrBlank() }
+        if (existing.isMixedFolder && incoming.isMixedFolder && existingTileArt > incomingTileArt) {
+            return true
+        }
+        if (existing.isMixedFolder && existingTileArt > 0 && !incoming.isMixedFolder && !incomingArt) {
+            return true
+        }
+        return false
+    }
+
+    private suspend fun enrichFolder(
+        entry: SmbEntry,
+        settings: AppSettings,
+        thorough: Boolean = false,
+    ): MediaCardItem {
         metadataOverrides.getForcedForFolder(entry.path)?.let { forced ->
             return forcedFolderCard(entry, forced, settings)
         }
 
-        if (metadataOverrides.isCleared(entry.path)) {
+        val genericBin = isGenericLibraryFolderName(entry.name)
+        val videoCategory = isVideoShareCategoryFolder()
+        val cleared = metadataOverrides.isCleared(entry.path)
+
+        // Cleared = no Trakt/TMDB art. Still count watched / resume from *.pallas.json.
+        if (cleared) {
+            val stats = folderContentStats(
+                entry,
+                art = null,
+                settings = settings,
+                resolveTraktWatched = false,
+                includeNasSidecars = thorough,
+            )
             return MediaCardItem(
                 entry = entry,
                 displayTitle = cleanFolderDisplayName(entry.name),
-                line1 = "Category",
+                line1 = if (genericBin || videoCategory) "Category" else "",
                 line2 = "Metadata cleared",
                 line3 = entry.name,
                 fanartUrl = null,
                 posterUrl = null,
                 overview = null,
                 metadataCleared = true,
+                isMixedFolder = false,
+                previewTiles = emptyList(),
+                folderVideoCount = stats.videoCount.takeIf { it > 0 },
+                folderWatchedCount = stats.watchedCount.takeIf { it > 0 },
+                folderInProgressCount = stats.inProgressCount.takeIf { it > 0 },
+                watched = stats.videoCount > 0 && stats.watchedCount >= stats.videoCount,
             )
         }
 
-        // Top-level folders under /video are category bins (Movies, TV, …).
-        if (isVideoShareCategoryFolder()) {
-            return genericFolderCard(entry, category = true)
+        // Mixed montage when a bin has multiple child folders.
+        if (videoCategory || genericBin) {
+            val children = listImmediateSubdirs(entry, settings)
+            if (children.size >= 2) {
+                val shell = mixedFolderShell(entry, children).copy(metadataCleared = cleared)
+                replaceBrowseItem(entry.path, shell)
+                // Only fetch tile posters when this bin is focused — otherwise we Trakt-stampede.
+                if (!thorough) return shell
+                return (buildMixedLibraryFolder(entry, settings, children) ?: shell).copy(
+                    metadataCleared = cleared,
+                )
+            }
         }
 
-        // Prefer folder-name match, then any video inside (index → live NAS list).
-        // Never leave a show/movie pack blank just because Video Station didn't index /download.
-        val art = lookupFolderArtwork(entry.name, entry.path, settings)
-            ?: sampleChildFolderArtwork(entry, settings)
-            ?: sampleNasChildFolderArtwork(entry, settings)
+        // Always TMDB for folder art — never wait on Trakt throttle/429 for posters.
+        // Samples only when focused and TMDB missed (still no Trakt in the sample path).
+        val art = lookupFolderArtwork(
+            entry.name,
+            entry.path,
+            settings,
+            maxQueries = if (thorough) 2 else 1,
+        )
+            ?: if (thorough) {
+                sampleChildFolderArtwork(entry, settings, maxChildren = 1)
+                    ?: sampleNasChildFolderArtwork(entry, settings)
+            } else {
+                null
+            }
 
-        if (art == null) {
-            return genericFolderCard(entry, category = false)
+        val quality = FilenameParser.qualityTags(entry.name)
+        // Focused: pull NAS *.pallas.json into local store so watched counts match the sidecars.
+        // Background: skip (SMB list per folder starved art).
+        val stats = folderContentStats(
+            entry,
+            art,
+            settings,
+            resolveTraktWatched = false,
+            includeNasSidecars = thorough,
+        )
+
+        if (art != null) {
+            val year = art.year
+            val ratingLabel = art.rating?.takeIf { it > 0 }?.let { "%.1f★".format(it) }
+            val metaKind = when (art.mediaType?.lowercase()) {
+                "movie" -> "MOVIE"
+                "show", "tv" -> "TV SERIES"
+                else -> null
+            }
+            val metaBits = buildList {
+                year?.let { add(it.toString()) }
+                ratingLabel?.let { add(it) }
+                art.statusLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+            val card = MediaCardItem(
+                entry = entry,
+                displayTitle = folderTitleWithSeason(art.title, entry.name),
+                line1 = metaKind.orEmpty(),
+                line2 = metaBits.joinToString("  ·  "),
+                line3 = "",
+                fanartUrl = art.fanartUrl,
+                posterUrl = art.posterUrl,
+                overview = art.overview,
+                folderVideoCount = stats.videoCount.takeIf { it > 0 },
+                folderWatchedCount = stats.watchedCount.takeIf { it > 0 },
+                folderInProgressCount = stats.inProgressCount.takeIf { it > 0 },
+                metaKind = metaKind,
+                ratingLabel = ratingLabel,
+                genresLabel = art.genresLabel,
+                resolutionLabel = quality.resolutionLabel,
+                isHdr = quality.isHdr,
+                watched = stats.videoCount > 0 && stats.watchedCount >= stats.videoCount,
+            )
+            replaceBrowseItem(entry.path, card)
+            return card
         }
 
+        if (thorough && !looksLikeSingleTitlePack(entry.name)) {
+            val subdirs = listImmediateSubdirs(entry, settings)
+            if (subdirs.size >= 4) {
+                return buildMixedLibraryFolder(entry, settings, subdirs)
+                    ?: genericFolderCard(entry, category = false).copy(
+                        folderVideoCount = stats.videoCount.takeIf { it > 0 },
+                        folderWatchedCount = stats.watchedCount.takeIf { it > 0 },
+                        folderInProgressCount = stats.inProgressCount.takeIf { it > 0 },
+                        resolutionLabel = quality.resolutionLabel,
+                        isHdr = quality.isHdr,
+                    )
+            }
+        }
+
+        return genericFolderCard(entry, category = false).copy(
+            folderVideoCount = stats.videoCount.takeIf { it > 0 },
+            folderWatchedCount = stats.watchedCount.takeIf { it > 0 },
+            folderInProgressCount = stats.inProgressCount.takeIf { it > 0 },
+            resolutionLabel = quality.resolutionLabel,
+            isHdr = quality.isHdr,
+        )
+    }
+
+    private fun isGenericLibraryFolderName(name: String): Boolean {
+        // Exact folder name only (e.g. "Films") — never match scene-release leftovers.
+        // Not tied to a specific share layout — any share with that folder name qualifies.
+        return name.trim().lowercase() in GENERIC_LIBRARY_FOLDER_NAMES
+    }
+
+    /** Prefer movie TMDB hits for film shelves; TV for show shelves. */
+    private fun preferMovieArtworkForBin(binName: String): Boolean {
+        val n = binName.trim().lowercase()
+        if (n in setOf(
+                "tv", "tvs", "shows", "series", "television",
+                "anime", "kids", "children", "cartoons", "cartoon",
+            )
+        ) {
+            return false
+        }
+        if (n in setOf("films", "movies", "movie", "cinema", "film")) return true
+        // /video root genre bins (Action, Comedy, Drama, …) are movie shelves.
+        return isVideoShareCategoryFolder()
+    }
+
+    private fun looksLikeSingleTitlePack(folderName: String): Boolean {
+        if (extractSeasonLabel(folderName) != null) return true
+        val parsed = FilenameParser.parseFolder(folderName, folderName)
+        return when (parsed.kind) {
+            MediaKind.EPISODE -> true
+            MediaKind.MOVIE ->
+                parsed.searchQuery.length >= 3 && parsed.year != null
+            else -> parsed.season != null
+        }
+    }
+
+    private suspend fun listImmediateSubdirs(
+        folder: SmbEntry,
+        settings: AppSettings,
+    ): List<SmbEntry> {
+        val (shareName, _) = parseVideoRoot(_state.value.selectedShare)
+        val folderPath = pathRelativeToShare(folder.path, shareName)
+        return nasRepository.list(
+            settings,
+            shareName,
+            folderPath,
+            hideEmptyFolders = false,
+        ).getOrNull().orEmpty()
+            .filter { it.isDirectory }
+            .sortedBy { it.name.lowercase() }
+    }
+
+    private fun mixedFolderShell(
+        entry: SmbEntry,
+        children: List<SmbEntry>,
+        tileLimit: Int = 8,
+    ): MediaCardItem {
+        val tiles = children.take(tileLimit).map { sub ->
+            FolderPreviewTile(
+                title = cleanFolderDisplayName(sub.name),
+                posterUrl = null,
+                path = sub.path,
+            )
+        }
         return MediaCardItem(
             entry = entry,
-            displayTitle = folderTitleWithSeason(art.title, entry.name),
-            line1 = "",
-            line2 = art.subtitle,
+            displayTitle = cleanFolderDisplayName(entry.name),
+            line1 = "LIBRARY",
+            line2 = "${children.size} ${if (children.size == 1) "folder" else "folders"}",
             line3 = "",
-            fanartUrl = art.fanartUrl,
-            posterUrl = art.posterUrl,
-            overview = art.overview,
+            fanartUrl = null,
+            posterUrl = null,
+            overview = null,
+            folderSubfolderCount = children.size,
+            metaKind = "LIBRARY",
+            isMixedFolder = true,
+            previewTiles = tiles,
+        )
+    }
+
+    private suspend fun buildMixedLibraryFolder(
+        entry: SmbEntry,
+        settings: AppSettings,
+        subdirs: List<SmbEntry>? = null,
+    ): MediaCardItem? = coroutineScope {
+        val children = subdirs ?: listImmediateSubdirs(entry, settings)
+        if (children.isEmpty()) return@coroutineScope null
+
+        val tileLimit = 4
+        val semaphore = Semaphore(1)
+        val preferMovie = preferMovieArtworkForBin(entry.name)
+        val tiles = children.take(tileLimit).map { sub ->
+            async {
+                semaphore.withPermit {
+                    // TMDB only for montage tiles — never Trakt (that 429s the whole browse).
+                    val art = lookupFolderArtworkLight(
+                        sub.name,
+                        sub.path,
+                        settings,
+                        preferMovie = preferMovie ||
+                            FilenameParser.parseFolder(sub.name, sub.path).kind == MediaKind.MOVIE,
+                    )
+                    FolderPreviewTile(
+                        title = art?.title?.takeIf { it.isNotBlank() }
+                            ?: cleanFolderDisplayName(sub.name),
+                        posterUrl = art?.posterUrl ?: art?.fanartUrl,
+                        path = sub.path,
+                    )
+                }
+            }
+        }.awaitAll()
+
+        // Cheap counts only — never deep-list / sidecar-merge the whole bin here
+        // (that left Films stuck on an empty placeholder for minutes).
+        val indexedCount = indexedVideosUnder(entry, limit = 500).size
+
+        MediaCardItem(
+            entry = entry,
+            displayTitle = cleanFolderDisplayName(entry.name),
+            line1 = "LIBRARY",
+            line2 = buildList {
+                add("${children.size} ${if (children.size == 1) "folder" else "folders"}")
+                if (indexedCount > 0) {
+                    add("$indexedCount ${if (indexedCount == 1) "video" else "videos"}")
+                }
+                if (children.size > tileLimit) {
+                    add("+${children.size - tileLimit} more")
+                }
+            }.joinToString("  ·  "),
+            line3 = "",
+            fanartUrl = null,
+            posterUrl = null,
+            overview = null,
+            folderVideoCount = indexedCount.takeIf { it > 0 },
+            folderSubfolderCount = children.size,
+            metaKind = "LIBRARY",
+            isMixedFolder = true,
+            previewTiles = tiles,
+        )
+    }
+
+    /** TMDB-only title search when Trakt lookup returned nothing useful for a tile. */
+    private suspend fun lookupFolderArtworkLight(
+        folderName: String,
+        folderPath: String,
+        settings: AppSettings,
+        preferMovie: Boolean,
+    ): FolderArtwork? {
+        val parsed = FilenameParser.parseFolder(folderName, folderPath)
+        val query = parsed.searchQuery
+            .ifBlank { cleanFolderDisplayName(folderName) }
+            .ifBlank { return null }
+        val hit = runCatching {
+            tmdbRepository.searchTitle(
+                apiKey = settings.tmdbApiKey,
+                readToken = settings.tmdbReadToken,
+                query = query,
+                preferTv = !preferMovie,
+                year = parsed.year,
+            )
+        }.getOrNull() ?: return null
+        val images = runCatching {
+            tmdbRepository.images(
+                apiKey = settings.tmdbApiKey,
+                readToken = settings.tmdbReadToken,
+                mediaType = hit.mediaType,
+                tmdbId = hit.tmdbId,
+            )
+        }.getOrNull()
+        if (images?.posterUrl.isNullOrBlank() && images?.fanartUrl.isNullOrBlank()) return null
+        return FolderArtwork(
+            title = hit.title,
+            subtitle = (hit.year ?: images?.year)?.toString().orEmpty(),
+            fanartUrl = images?.fanartUrl,
+            posterUrl = images?.posterUrl,
+            overview = hit.overview ?: images?.overview,
+            year = hit.year ?: images?.year,
+            rating = images?.rating,
+            mediaType = hit.mediaType,
+            genresLabel = images?.genresLabel,
+            statusLabel = images?.statusLabel,
         )
     }
 
@@ -1146,15 +1828,50 @@ class BrowserViewModel(
                 tmdbId = forced.tmdbId,
             )
         }.getOrNull()
+        val metaKind = when (forced.mediaType.lowercase()) {
+            "movie" -> "MOVIE"
+            "show", "tv" -> "TV SERIES"
+            else -> null
+        }
+        val year = forced.year ?: images?.year
+        val ratingLabel = images?.rating?.takeIf { it > 0 }?.let { "%.1f★".format(it) }
+        val metaBits = buildList {
+            year?.let { add(it.toString()) }
+            ratingLabel?.let { add(it) }
+            images?.statusLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }
+        val art = FolderArtwork(
+            title = forced.title,
+            year = year,
+            rating = images?.rating,
+            mediaType = forced.mediaType,
+            traktId = forced.traktId,
+            fanartUrl = images?.fanartUrl,
+            posterUrl = images?.posterUrl,
+            overview = forced.overview ?: images?.overview,
+            genresLabel = images?.genresLabel,
+            statusLabel = images?.statusLabel,
+        )
+        val stats = folderContentStats(entry, art, settings)
+        val quality = FilenameParser.qualityTags(entry.name)
         return MediaCardItem(
             entry = entry,
             displayTitle = folderTitleWithSeason(forced.title, entry.name),
-            line1 = "",
-            line2 = forced.year?.toString().orEmpty(),
+            line1 = metaKind.orEmpty(),
+            line2 = metaBits.joinToString("  ·  "),
             line3 = "",
             fanartUrl = images?.fanartUrl,
             posterUrl = images?.posterUrl,
-            overview = forced.overview,
+            overview = forced.overview ?: images?.overview,
+            folderVideoCount = stats.videoCount.takeIf { it > 0 },
+            folderWatchedCount = stats.watchedCount.takeIf { it > 0 },
+            folderInProgressCount = stats.inProgressCount.takeIf { it > 0 },
+            metaKind = metaKind,
+            ratingLabel = ratingLabel,
+            genresLabel = images?.genresLabel,
+            resolutionLabel = quality.resolutionLabel,
+            isHdr = quality.isHdr,
+            watched = stats.videoCount > 0 && stats.watchedCount >= stats.videoCount,
         )
     }
 
@@ -1176,7 +1893,10 @@ class BrowserViewModel(
         return share == "video" && _state.value.pathStack.isEmpty()
     }
 
-    private fun indexedVideosUnder(folder: SmbEntry): List<com.vizvag.shieldvideo.data.index.IndexedVideo> {
+    private fun indexedVideosUnder(
+        folder: SmbEntry,
+        limit: Int = 48,
+    ): List<com.vizvag.shieldvideo.data.index.IndexedVideo> {
         val share = _state.value.selectedShare.trim('/').substringBefore('/').lowercase()
         val folderNorm = normalizeIndexRelativePath(folder.path, share)
         if (folderNorm.isBlank() && folder.name.isBlank()) return emptyList()
@@ -1203,8 +1923,227 @@ class BrowserViewModel(
                     else -> false
                 }
             }
-            .take(48)
+            .take(limit)
             .toList()
+    }
+
+    private data class FolderContentStats(
+        val videoCount: Int,
+        val watchedCount: Int,
+        val inProgressCount: Int = 0,
+    )
+
+    /**
+     * Folder episode / watched counts.
+     * [includeNasSidecars]: merge `*.pallas.json` for this folder (focused preview only —
+     * doing it for every row during progressive enrich blocked art on Lounge).
+     */
+    private suspend fun folderContentStats(
+        folder: SmbEntry,
+        art: FolderArtwork?,
+        settings: AppSettings,
+        resolveTraktWatched: Boolean = false,
+        includeNasSidecars: Boolean = false,
+    ): FolderContentStats {
+        var videos = indexedVideosUnder(folder, limit = 500).map { it.toEntry() }
+        if (videos.isEmpty() && includeNasSidecars) {
+            videos = listNasVideosUnder(folder, settings)
+        }
+
+        val sidecarProgress = if (includeNasSidecars) {
+            mergeNasSidecarsForFolderStats(folder, settings, videos)
+        } else {
+            NasProgressSync.SidecarFolderProgress(0, 0)
+        }
+
+        if (videos.isEmpty()) {
+            if (sidecarProgress.watched > 0 || sidecarProgress.inProgress > 0) {
+                val n = (sidecarProgress.watched + sidecarProgress.inProgress)
+                    .coerceAtLeast(sidecarProgress.watched)
+                return FolderContentStats(
+                    videoCount = n,
+                    watchedCount = sidecarProgress.watched,
+                    inProgressCount = sidecarProgress.inProgress,
+                )
+            }
+            return FolderContentStats(0, 0, 0)
+        }
+
+        val showTraktId = if (resolveTraktWatched) {
+            resolveFolderShowTraktId(art, settings)
+        } else {
+            art?.traktId?.takeIf {
+                art.mediaType.equals("show", ignoreCase = true) ||
+                    art.mediaType.equals("tv", ignoreCase = true) ||
+                    art.mediaType.isNullOrBlank()
+            }
+        }
+        val movieTraktId = art?.traktId?.takeIf {
+            art.mediaType.equals("movie", ignoreCase = true)
+        }
+
+        var watched = 0
+        var inProgress = 0
+        for (video in videos) {
+            val local = resumePathCandidates(video.path)
+                .firstNotNullOfOrNull { resumeStore.getIncludingWatched(it) }
+            when {
+                local?.watched == true -> {
+                    watched++
+                    continue
+                }
+                local?.isMeaningful == true -> inProgress++
+            }
+            val parsed = FilenameParser.parse(video.name, video.path)
+            val season = parsed.season
+            val episode = parsed.episode
+            val traktWatched = when {
+                movieTraktId != null -> history.isMovieWatched(movieTraktId)
+                showTraktId != null && season != null && episode != null ->
+                    history.isEpisodeWatched(showTraktId, season, episode)
+                else -> false
+            }
+            if (traktWatched && local?.watched != true) {
+                // Don't double-count if already in inProgress from resume
+                if (local?.isMeaningful == true) {
+                    inProgress = (inProgress - 1).coerceAtLeast(0)
+                }
+                watched++
+            }
+        }
+        watched = maxOf(watched, sidecarProgress.watched)
+        inProgress = maxOf(inProgress, sidecarProgress.inProgress)
+        return FolderContentStats(
+            videoCount = videos.size,
+            watchedCount = watched,
+            inProgressCount = inProgress,
+        )
+    }
+
+    /** Pull NAS progress sidecars into [resumeStore] for folder preview badges. */
+    private suspend fun mergeNasSidecarsForFolderStats(
+        folder: SmbEntry,
+        settings: AppSettings,
+        videos: List<SmbEntry>,
+    ): NasProgressSync.SidecarFolderProgress {
+        val (shareName, _) = parseVideoRoot(_state.value.selectedShare)
+        if (shareName.isBlank()) return NasProgressSync.SidecarFolderProgress(0, 0)
+        val folderRel = pathRelativeToShare(folder.path, shareName)
+        val fromFolder = runCatching {
+            progressSync.mergeAllSidecarsInFolder(settings, shareName, folderRel)
+        }.getOrDefault(NasProgressSync.SidecarFolderProgress(0, 0))
+        if (videos.isNotEmpty()) {
+            val paths = videos.map { pathRelativeToShare(it.path, shareName) }
+                .filter { it.isNotBlank() }
+            runCatching {
+                progressSync.mergeVideos(settings, shareName, paths)
+            }
+        }
+        return fromFolder
+    }
+
+    private suspend fun resolveFolderShowTraktId(
+        art: FolderArtwork?,
+        settings: AppSettings,
+    ): Int? {
+        if (art == null) return null
+        art.traktId?.takeIf {
+            art.mediaType.equals("show", ignoreCase = true) ||
+                art.mediaType.equals("tv", ignoreCase = true) ||
+                art.mediaType.isNullOrBlank()
+        }?.let { return it }
+
+        if (art.mediaType.equals("movie", ignoreCase = true)) return null
+        if (art.title.isBlank() || settings.traktClientId.isBlank()) return null
+
+        val match = runCatching {
+            traktRepository.lookup(
+                settings.traktClientId,
+                com.vizvag.shieldvideo.data.trakt.ParsedMediaQuery(
+                    searchQuery = art.title,
+                    kind = MediaKind.EPISODE,
+                    year = art.year,
+                    showTitle = art.title,
+                ),
+            )
+        }.getOrNull()
+        return match?.traktId?.takeIf {
+            match.mediaType.equals("show", ignoreCase = true)
+        }
+    }
+
+    /** Local resume lookup across common NAS/index path shapes. */
+    private fun isVideoMarkedWatched(path: String): Boolean {
+        for (candidate in resumePathCandidates(path)) {
+            if (resumeStore.getIncludingWatched(candidate)?.watched == true) return true
+        }
+        return false
+    }
+
+    private fun resumePathCandidates(path: String): List<String> {
+        val p = path.replace('\\', '/').trim('/')
+        if (p.isBlank()) return emptyList()
+        val share = _state.value.selectedShare.trim('/').substringBefore('/')
+        return buildList {
+            add(p)
+            if (share.isNotBlank()) {
+                if (p.startsWith("$share/", ignoreCase = true)) {
+                    add(p.substring(share.length + 1).trim('/'))
+                } else {
+                    add("$share/$p")
+                }
+                val vol = "volume1/$share"
+                if (p.startsWith("$vol/", ignoreCase = true)) {
+                    add(p.substring(vol.length + 1).trim('/'))
+                }
+            }
+        }.map { it.trim('/') }.filter { it.isNotBlank() }.distinct()
+    }
+
+    /** Light NAS listing for folder stats when the video index has nothing under this path. */
+    private suspend fun listNasVideosUnder(
+        folder: SmbEntry,
+        settings: AppSettings,
+    ): List<SmbEntry> {
+        val (shareName, _) = parseVideoRoot(_state.value.selectedShare)
+        val folderPath = pathRelativeToShare(folder.path, shareName)
+        val listed = nasRepository.list(
+            settings,
+            shareName,
+            folderPath,
+            hideEmptyFolders = false,
+        ).getOrNull().orEmpty()
+        val direct = listed.filter { !it.isDirectory && NasPaths.isVideoFile(it.name) }
+        if (direct.isNotEmpty()) return direct.take(200)
+
+        val out = mutableListOf<SmbEntry>()
+        val subdirs = listed.filter { it.isDirectory }
+            .sortedByDescending { FilenameParser.isSeasonOrJunkFolderName(it.name) }
+            .take(12)
+        for (sub in subdirs) {
+            if (out.size >= 200) break
+            val subPath = pathRelativeToShare(sub.path, shareName)
+            val nested = nasRepository.list(
+                settings,
+                shareName,
+                subPath,
+                hideEmptyFolders = false,
+            ).getOrNull().orEmpty()
+            out += nested.filter { !it.isDirectory && NasPaths.isVideoFile(it.name) }
+            if (out.size >= 200) break
+            for (deep in nested.filter { it.isDirectory }.take(4)) {
+                if (out.size >= 200) break
+                val deepPath = pathRelativeToShare(deep.path, shareName)
+                val deepListed = nasRepository.list(
+                    settings,
+                    shareName,
+                    deepPath,
+                    hideEmptyFolders = false,
+                ).getOrNull().orEmpty()
+                out += deepListed.filter { !it.isDirectory && NasPaths.isVideoFile(it.name) }
+            }
+        }
+        return out.take(200)
     }
 
     /** Strip share / root prefixes so browse paths match index-relative paths. */
@@ -1234,6 +2173,13 @@ class BrowserViewModel(
         val fanartUrl: String?,
         val posterUrl: String?,
         val overview: String?,
+        val year: Int? = null,
+        val rating: Double? = null,
+        /** Trakt media type: `show` / `movie`. */
+        val mediaType: String? = null,
+        val traktId: Int? = null,
+        val genresLabel: String? = null,
+        val statusLabel: String? = null,
     )
 
     /** Match the folder name as a show/movie (e.g. season packs, release folders). */
@@ -1241,39 +2187,18 @@ class BrowserViewModel(
         folderName: String,
         folderPath: String,
         settings: AppSettings,
+        maxQueries: Int = 1,
     ): FolderArtwork? {
-        val queries = folderLookupQueries(folderName, folderPath)
+        val queries = folderLookupQueries(folderName, folderPath).take(maxQueries.coerceAtLeast(1))
         for (query in queries) {
             if (query.searchQuery.isBlank()) continue
-            // Season-only folder names are not searchable titles.
             if (FilenameParser.isSeasonOrJunkFolderName(query.searchQuery) &&
                 query.searchQuery.equals(folderName, ignoreCase = true)
             ) {
                 continue
             }
-            val match = runCatching {
-                traktRepository.lookup(settings.traktClientId, query)
-            }.getOrNull()
-            val images = if (match?.tmdbId != null) {
-                runCatching {
-                    tmdbRepository.images(
-                        apiKey = settings.tmdbApiKey,
-                        readToken = settings.tmdbReadToken,
-                        mediaType = match.mediaType,
-                        tmdbId = match.tmdbId,
-                    )
-                }.getOrNull()
-            } else null
-            if (!images?.posterUrl.isNullOrBlank() || !images?.fanartUrl.isNullOrBlank()) {
-                return FolderArtwork(
-                    title = match!!.title,
-                    subtitle = match.year?.toString().orEmpty(),
-                    fanartUrl = images?.fanartUrl,
-                    posterUrl = images?.posterUrl,
-                    overview = match.overview,
-                )
-            }
-            // Trakt often 429s when enriching a whole download share — fall back to TMDB search.
+
+            // TMDB only — never Trakt (global 400ms + 429 stalls all browse art).
             val preferTv = query.kind != com.vizvag.shieldvideo.data.trakt.MediaKind.MOVIE
             val hit = runCatching {
                 tmdbRepository.searchTitle(
@@ -1293,12 +2218,18 @@ class BrowserViewModel(
                 )
             }.getOrNull()
             if (tmdbImages?.posterUrl.isNullOrBlank() && tmdbImages?.fanartUrl.isNullOrBlank()) continue
+            val year = hit.year ?: tmdbImages?.year
             return FolderArtwork(
                 title = hit.title,
-                subtitle = hit.year?.toString().orEmpty(),
+                subtitle = year?.toString().orEmpty(),
                 fanartUrl = tmdbImages?.fanartUrl,
                 posterUrl = tmdbImages?.posterUrl,
-                overview = hit.overview,
+                overview = hit.overview?.takeIf { it.isNotBlank() } ?: tmdbImages?.overview,
+                year = year,
+                rating = tmdbImages?.rating,
+                mediaType = hit.mediaType,
+                genresLabel = tmdbImages?.genresLabel,
+                statusLabel = tmdbImages?.statusLabel,
             )
         }
         return null
@@ -1367,20 +2298,12 @@ class BrowserViewModel(
         folder: SmbEntry,
         settings: AppSettings,
         children: List<com.vizvag.shieldvideo.data.index.IndexedVideo> = indexedVideosUnder(folder),
+        maxChildren: Int = 1,
     ): FolderArtwork? {
-        for (child in children.take(12)) {
-            val card = enrichFile(child.toEntry(), settings)
-            if (!card.posterUrl.isNullOrBlank() || !card.fanartUrl.isNullOrBlank()) {
-                return FolderArtwork(
-                    title = card.displayTitle,
-                    subtitle = card.line2,
-                    fanartUrl = card.fanartUrl,
-                    posterUrl = card.posterUrl,
-                    overview = card.overview,
-                )
-            }
-        }
-        return null
+        return artworkFromEntriesLight(
+            children.take(maxChildren).map { it.toEntry() },
+            settings,
+        )
     }
 
     /**
@@ -1393,45 +2316,42 @@ class BrowserViewModel(
     ): FolderArtwork? {
         val (shareName, _) = parseVideoRoot(_state.value.selectedShare)
         val folderPath = pathRelativeToShare(folder.path, shareName)
-        val listed = nasRepository.list(settings, shareName, folderPath).getOrNull().orEmpty()
+        val listed = nasRepository.list(
+            settings,
+            shareName,
+            folderPath,
+            hideEmptyFolders = false,
+        ).getOrNull().orEmpty()
         val videos = listed.filter { !it.isDirectory && NasPaths.isVideoFile(it.name) }
-        artworkFromEntries(videos, settings)?.let { return it }
+        artworkFromEntriesLight(videos, settings)?.let { return it }
 
-        // Nested: ShowName/Season 01/*.mkv or ShowName/S01/*.mkv (and one more level).
+        // Nested: ShowName/Season 01 — one season folder, TMDB on name, no Trakt.
         val subdirs = listed.filter { it.isDirectory }
             .sortedByDescending { FilenameParser.isSeasonOrJunkFolderName(it.name) }
-            .take(8)
+            .take(2)
         for (sub in subdirs) {
+            if (!FilenameParser.isSeasonOrJunkFolderName(sub.name)) {
+                lookupFolderArtwork(sub.name, sub.path, settings, maxQueries = 1)?.let { return it }
+            }
             val subPath = pathRelativeToShare(sub.path, shareName)
-            val nested = nasRepository.list(settings, shareName, subPath)
+            val nested = nasRepository.list(
+                settings,
+                shareName,
+                subPath,
+                hideEmptyFolders = false,
+            )
                 .getOrNull()
                 .orEmpty()
             val nestedVideos = nested.filter { !it.isDirectory && NasPaths.isVideoFile(it.name) }
-            artworkFromEntries(nestedVideos, settings)?.let { return it }
-
-            // Season → episode files two levels down, or child pack folder.
-            for (deep in nested.filter { it.isDirectory }.take(4)) {
-                val deepPath = pathRelativeToShare(deep.path, shareName)
-                val deepListed = nasRepository.list(settings, shareName, deepPath)
-                    .getOrNull()
-                    .orEmpty()
-                val deepVideos = deepListed.filter { !it.isDirectory && NasPaths.isVideoFile(it.name) }
-                artworkFromEntries(deepVideos, settings)?.let { return it }
-            }
-
-            // Subfolder name itself may be the show (e.g. parent is "TV", child is the pack)
-            if (!FilenameParser.isSeasonOrJunkFolderName(sub.name)) {
-                lookupFolderArtwork(sub.name, sub.path, settings)?.let { return it }
-            }
+            artworkFromEntriesLight(nestedVideos, settings)?.let { return it }
         }
 
-        // Last resort: folder name may be noisy; try cleaned show title only.
         if (FilenameParser.isSeasonOrJunkFolderName(folder.name)) {
             val showParent = folderPath.substringBeforeLast('/', missingDelimiterValue = "")
                 .substringAfterLast('/')
                 .takeIf { it.isNotBlank() && !FilenameParser.isSeasonOrJunkFolderName(it) }
             if (showParent != null) {
-                lookupFolderArtwork(showParent, folderPath, settings)?.let { return it }
+                lookupFolderArtwork(showParent, folderPath, settings, maxQueries = 1)?.let { return it }
             }
         }
         return null
@@ -1442,30 +2362,96 @@ class BrowserViewModel(
         var p = rawPath.trim('/').replace('\\', '/')
         val share = shareName.trim('/')
         if (share.isBlank() || p.isBlank()) return p
-        if (p.equals(share, ignoreCase = true)) return ""
         if (p.startsWith("$share/", ignoreCase = true)) {
-            p = p.substring(share.length + 1).trim('/')
+            return p.substring(share.length + 1).trim('/')
+        }
+        // Lone segment matching share only by case (e.g. Docs under docs) is a folder name.
+        if (p.equals(share, ignoreCase = true)) {
+            return if (p == share) "" else p
         }
         return p
     }
 
-    private suspend fun artworkFromEntries(
+    /** TMDB-only sample from episode filenames — never Trakt (used when folder name lookup misses). */
+    private suspend fun artworkFromEntriesLight(
         entries: List<SmbEntry>,
         settings: AppSettings,
     ): FolderArtwork? {
-        for (entry in entries.take(10)) {
-            val card = enrichFile(entry, settings)
-            if (!card.posterUrl.isNullOrBlank() || !card.fanartUrl.isNullOrBlank()) {
-                return FolderArtwork(
-                    title = card.displayTitle,
-                    subtitle = card.line2,
-                    fanartUrl = card.fanartUrl,
-                    posterUrl = card.posterUrl,
-                    overview = card.overview,
+        for (entry in entries.take(2)) {
+            val parsed = FilenameParser.parse(entry.name, entry.path)
+            val query = parsed.showTitle?.takeIf { it.isNotBlank() }
+                ?: parsed.searchQuery.takeIf { it.isNotBlank() }
+                ?: continue
+            val preferTv = parsed.kind != MediaKind.MOVIE
+            val hit = runCatching {
+                tmdbRepository.searchTitle(
+                    apiKey = settings.tmdbApiKey,
+                    readToken = settings.tmdbReadToken,
+                    query = query,
+                    preferTv = preferTv,
+                    year = parsed.year,
                 )
-            }
+            }.getOrNull() ?: continue
+            val images = runCatching {
+                tmdbRepository.images(
+                    apiKey = settings.tmdbApiKey,
+                    readToken = settings.tmdbReadToken,
+                    mediaType = hit.mediaType,
+                    tmdbId = hit.tmdbId,
+                )
+            }.getOrNull()
+            if (images?.posterUrl.isNullOrBlank() && images?.fanartUrl.isNullOrBlank()) continue
+            return FolderArtwork(
+                title = hit.title,
+                subtitle = (hit.year ?: images?.year)?.toString().orEmpty(),
+                fanartUrl = images?.fanartUrl,
+                posterUrl = images?.posterUrl,
+                overview = hit.overview?.takeIf { it.isNotBlank() } ?: images?.overview,
+                year = hit.year ?: images?.year,
+                rating = images?.rating,
+                mediaType = hit.mediaType,
+                genresLabel = images?.genresLabel,
+                statusLabel = images?.statusLabel,
+            )
         }
         return null
+    }
+
+    private fun shellFileCard(entry: SmbEntry): MediaCardItem {
+        val quality = FilenameParser.qualityTags(entry.name, entry.path)
+        return fileCardWithLocalProgress(entry, quality, metadataCleared = false)
+    }
+
+    /**
+     * Filename + quality + resume/watched from [resumeStore] (NAS sidecars merged on folder open).
+     * Used for off-focus shells and metadata-cleared files (no Trakt/TMDB).
+     */
+    private fun fileCardWithLocalProgress(
+        entry: SmbEntry,
+        quality: QualityTags,
+        metadataCleared: Boolean,
+    ): MediaCardItem {
+        val local = resumePathCandidates(entry.path)
+            .firstNotNullOfOrNull { resumeStore.getIncludingWatched(it) }
+        val watched = local?.watched == true
+        val resumeMs = local?.takeIf { it.isMeaningful }?.positionMs
+        return MediaCardItem(
+            entry = entry,
+            displayTitle = entry.name.substringBeforeLast('.').ifBlank { entry.name },
+            line1 = "",
+            line2 = if (metadataCleared) "Metadata cleared" else "",
+            line3 = entry.name,
+            fanartUrl = null,
+            posterUrl = null,
+            overview = null,
+            watched = watched,
+            resumePositionMs = resumeMs,
+            resumeProgress = local?.takeIf { it.isMeaningful }?.progress,
+            resolutionLabel = quality.resolutionLabel,
+            isHdr = quality.isHdr,
+            fpsLabel = quality.fpsLabel,
+            metadataCleared = metadataCleared,
+        )
     }
 
     private fun parseFolderQuery(
@@ -1532,19 +2518,18 @@ class BrowserViewModel(
         val quality = FilenameParser.qualityTags(entry.name, entry.path)
         val forced = metadataOverrides.getForced(entry.path)
         if (forced == null && metadataOverrides.isCleared(entry.path)) {
-            return MediaCardItem(
+            // No Trakt/TMDB — still use local / NAS progress sidecars for watched + resume.
+            runCatching {
+                val (shareName, _) = parseVideoRoot(_state.value.selectedShare)
+                val rel = pathRelativeToShare(entry.path, shareName)
+                if (shareName.isNotBlank() && rel.isNotBlank()) {
+                    progressSync.readAndMerge(settings, shareName, rel)
+                }
+            }
+            return fileCardWithLocalProgress(
                 entry = entry,
-                displayTitle = entry.name.substringBeforeLast('.').ifBlank { entry.name },
-                line1 = "",
-                line2 = "",
-                line3 = entry.name,
-                fanartUrl = null,
-                posterUrl = null,
-                overview = null,
-                resolutionLabel = quality.resolutionLabel,
-                isHdr = quality.isHdr,
-                fpsLabel = quality.fpsLabel,
-                metadataCleared = true
+                quality = quality,
+                metadataCleared = true,
             )
         }
 
@@ -1648,7 +2633,8 @@ class BrowserViewModel(
             "movie" -> history.isMovieWatched(match.traktId)
             else -> history.isEpisodeWatched(match?.traktId, season, episode)
         }
-        val localMarker = resumeStore.getIncludingWatched(entry.path)
+        val localMarker = resumePathCandidates(entry.path)
+            .firstNotNullOfOrNull { resumeStore.getIncludingWatched(it) }
         val watched = traktWatched || localMarker?.watched == true
         val traktResumeMs = when (match?.mediaType) {
             "movie" -> history.resumeMs(null, null, null, match.traktId)
@@ -1732,6 +2718,18 @@ class BrowserViewModel(
     }
 
     companion object {
+        /** Soft-prune must not run here — folders are not video bins. */
+        private val NON_VIDEO_BROWSE_SHARES = setOf(
+            "docs", "documents", "photo", "photos", "music", "homes", "home",
+        )
+
+        private val GENERIC_LIBRARY_FOLDER_NAMES = setOf(
+            "films", "movies", "movie", "tv", "tvs", "shows", "series", "television",
+            "downloads", "download", "videos", "video", "documentaries", "docs",
+            "anime", "kids", "children", "cartoons", "misc", "other", "unsorted",
+            "incoming", "music videos", "concerts", "standup", "stand-up",
+        )
+
         /** e.g. `New Zealand Town (Series 2, Episode 8)` */
         fun formatEpisodeLabel(season: Int?, episode: Int?, episodeTitle: String?): String? {
             val location = when {

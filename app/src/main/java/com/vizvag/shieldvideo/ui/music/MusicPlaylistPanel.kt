@@ -33,7 +33,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -55,7 +54,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -65,7 +63,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -83,17 +80,19 @@ import com.vizvag.shieldvideo.music.data.local.TrackEntity
 import com.vizvag.shieldvideo.music.data.metadata.MetadataResolver
 import com.vizvag.shieldvideo.music.data.trackDiscNumber
 import com.vizvag.shieldvideo.music.ui.AlbumArt
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.AudioAccent
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
+import com.vizvag.shieldvideo.ui.theme.PallasShapes
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Playlist reorder highlight — ice blue, never accent (accent = now playing). */
 private val PlaylistMoveAccent = Color(0xFF5EC8FF)
-private val PlaylistFocusRing = PlaylistMoveAccent
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -441,30 +440,18 @@ private fun PlaylistActionChip(
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val chrome = LocalScreenChrome.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
         modifier = Modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .clip(RoundedCornerShape(20.dp))
-            .background(
-                when {
-                    focused -> Color.White
-                    emphasized -> AudioAccent.copy(alpha = 0.16f)
-                    else -> Color.White.copy(alpha = 0.06f)
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = when {
-                    focused -> PlaylistFocusRing
-                    emphasized -> AudioAccent.copy(alpha = 0.45f)
-                    else -> Color.White.copy(alpha = 0.10f)
-                },
-                shape = RoundedCornerShape(20.dp),
+            .glassInteract(
+                focused = focused,
+                selected = emphasized,
+                idleSurface = Color.White.copy(alpha = 0.06f),
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
@@ -476,19 +463,14 @@ private fun PlaylistActionChip(
             icon,
             contentDescription = null,
             tint = when {
-                focused -> Color(0xFF1A1206)
-                emphasized -> AudioAccent
+                emphasized -> chrome.accent
                 else -> Color.White.copy(alpha = 0.85f)
             },
             modifier = Modifier.size(14.dp),
         )
         Text(
             text = label,
-            color = when {
-                focused -> Color(0xFF1A1206)
-                emphasized -> AudioAccent
-                else -> Color.White.copy(alpha = 0.88f)
-            },
+            color = Color.White.copy(alpha = if (emphasized || focused) 0.95f else 0.88f),
             fontSize = 12.sp,
             fontWeight = if (emphasized) FontWeight.Bold else FontWeight.Medium,
             fontFamily = PallasFontFamily,
@@ -513,13 +495,13 @@ private fun PlaylistEmptyState(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .size(72.dp)
-                .clip(CircleShape)
+                .clip(RoundedCornerShape(PallasShapes.control))
                 .background(
                     Brush.radialGradient(
                         listOf(AudioAccent.copy(alpha = 0.22f), Color.Transparent),
                     ),
                 )
-                .border(1.dp, AudioAccent.copy(alpha = 0.35f), CircleShape),
+                .border(1.dp, AudioAccent.copy(alpha = 0.35f), RoundedCornerShape(PallasShapes.control)),
         ) {
             Icon(
                 Icons.AutoMirrored.Filled.QueueMusic,
@@ -650,57 +632,18 @@ private fun PlaylistTrackRow(
     val scope = rememberCoroutineScope()
     val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
     val interaction = remember { MutableInteractionSource() }
-    val scale by animateFloatAsState(
-        targetValue = when {
-            moving -> 1.02f
-            focused -> 1.015f
-            else -> 1f
-        },
-        animationSpec = tween(140),
-        label = "rowScale",
-    )
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 6.dp, vertical = 1.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                when {
-                    moving -> PlaylistMoveAccent.copy(alpha = 0.18f)
-                    current && focused -> AudioAccent.copy(alpha = 0.18f)
-                    current -> AudioAccent.copy(alpha = 0.10f)
-                    focused -> Color.White.copy(alpha = 0.09f)
-                    else -> Color.Transparent
-                },
-            )
-            .then(
-                if (focused || moving) {
-                    Modifier.border(
-                        width = 2.dp,
-                        color = if (moving) PlaylistMoveAccent else PlaylistFocusRing,
-                        shape = RoundedCornerShape(8.dp),
-                    )
+            .glassInteract(
+                focused = focused,
+                selected = current && !moving,
+                idleSurface = if (moving) {
+                    PlaylistMoveAccent.copy(alpha = 0.22f)
                 } else {
-                    Modifier
-                },
-            )
-            .then(
-                if (current && !moving) {
-                    Modifier.drawBehind {
-                        drawRoundRect(
-                            color = AudioAccent.copy(alpha = 0.85f),
-                            topLeft = Offset(0f, size.height * 0.18f),
-                            size = Size(3.dp.toPx(), size.height * 0.64f),
-                            cornerRadius = CornerRadius(2.dp.toPx()),
-                        )
-                    }
-                } else {
-                    Modifier
+                    Color.Transparent
                 },
             )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
@@ -916,15 +859,12 @@ private fun PlaylistIconButton(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(36.dp)
-            .clip(CircleShape)
-            .background(if (focused) Color.White.copy(alpha = 0.14f) else Color.Transparent)
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) PlaylistFocusRing else Color.Transparent,
-                shape = CircleShape,
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.Transparent,
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },

@@ -41,6 +41,12 @@ class PlayerController constructor(
      */
     private var playEpoch: Int = 0
 
+    /**
+     * Set while [stop] tears down ExoPlayer so a STATE_ENDED callback cannot auto-advance
+     * and restart audio. Cleared when a new track is intentionally started.
+     */
+    private var hardStopped: Boolean = true
+
     val player: ExoPlayer = ExoPlayer.Builder(appContext)
         .setRenderersFactory(
             object : DefaultRenderersFactory(appContext) {
@@ -69,8 +75,9 @@ class PlayerController constructor(
                         isBuffering = playbackState == Player.STATE_BUFFERING,
                     )
                     if (playbackState == Player.STATE_ENDED) {
-                        // Only advance if we still have an active now-playing track (stop clears it).
-                        if (_uiState.value.track != null) {
+                        // Do not advance after hard stop (leave Music / quit) — queue metadata
+                        // stays so the UI can show the current track without restarting audio.
+                        if (!hardStopped && _uiState.value.track != null) {
                             scope.launch { playNext() }
                         }
                     }
@@ -136,6 +143,7 @@ class PlayerController constructor(
         epoch: Int = playEpoch,
     ) {
         if (epoch != playEpoch) return
+        hardStopped = false
         val url = streamUrlBuilder.buildStreamUrl(track.nasPath)
         if (epoch != playEpoch) return
         player.setMediaItem(MediaItem.fromUri(url))
@@ -217,12 +225,26 @@ class PlayerController constructor(
         queueManager.updateTrackMetadata(updated)
     }
 
-    /** Hard stop — used when leaving Music so audio cannot keep playing. */
+    /**
+     * Hard stop — used when leaving Music so audio cannot keep playing.
+     * Keeps queue current-track metadata in [uiState] so reopening Music still shows
+     * the song you were on (playlist already persists separately).
+     */
     fun stop() {
         playEpoch++
+        hardStopped = true
+        val track = queueManager.currentTrack ?: _uiState.value.track
         hardStopPlayer()
         energyProbe.resetLevels()
-        _uiState.value = PlayerUiState()
+        _uiState.value = if (track != null) {
+            PlayerUiState(
+                track = track,
+                isPlaying = false,
+                durationMs = track.durationMs,
+            )
+        } else {
+            PlayerUiState()
+        }
     }
 
     private fun hardStopPlayer() {

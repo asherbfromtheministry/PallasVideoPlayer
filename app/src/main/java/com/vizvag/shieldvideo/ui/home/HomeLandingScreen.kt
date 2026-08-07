@@ -1,9 +1,7 @@
 package com.vizvag.shieldvideo.ui.home
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
@@ -36,13 +34,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -58,8 +54,18 @@ import com.vizvag.shieldvideo.data.settings.IptvRecordingStorage
 import com.vizvag.shieldvideo.ui.browser.nasShareIcon
 import com.vizvag.shieldvideo.ui.browser.orderedSharesForRail
 import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
-import com.vizvag.shieldvideo.ui.theme.Motion
+import com.vizvag.shieldvideo.ui.theme.LiveTvChrome
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
+import com.vizvag.shieldvideo.ui.theme.MusicChrome
+import com.vizvag.shieldvideo.ui.theme.PodcastChrome
+import com.vizvag.shieldvideo.ui.theme.RadioChrome
+import com.vizvag.shieldvideo.ui.theme.ScreenChrome
+import com.vizvag.shieldvideo.ui.theme.ScreenTheme
+import com.vizvag.shieldvideo.ui.theme.SettingsChrome
+import com.vizvag.shieldvideo.ui.theme.VideoChrome
+import com.vizvag.shieldvideo.ui.theme.YoutubeChrome
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import com.vizvag.shieldvideo.ui.theme.TextCream
 import com.vizvag.shieldvideo.ui.theme.TextMuted
@@ -81,6 +87,7 @@ private data class RoomHotspot(
     val y: Float,
     val w: Float,
     val h: Float,
+    val chrome: ScreenChrome,
     val onOpen: () -> Unit,
 )
 
@@ -142,6 +149,7 @@ fun HomeLandingScreen(
                         label = "Radio",
                         kind = "ON AIR",
                         x = 0f, y = 0.34f, w = 0.18f, h = 0.28f,
+                        chrome = RadioChrome,
                         onOpen = onOpenRadio,
                     ),
                 )
@@ -153,6 +161,7 @@ fun HomeLandingScreen(
                         label = "Music",
                         kind = "HI-FI",
                         x = 0.18f, y = 0.14f, w = 0.17f, h = 0.48f,
+                        chrome = MusicChrome,
                         onOpen = onOpenMusic,
                     ),
                 )
@@ -164,6 +173,7 @@ fun HomeLandingScreen(
                         label = "Podcasts",
                         kind = "SHOWS",
                         x = 0.17f, y = 0.64f, w = 0.22f, h = 0.28f,
+                        chrome = PodcastChrome,
                         onOpen = onOpenPodcasts,
                     ),
                 )
@@ -175,6 +185,7 @@ fun HomeLandingScreen(
                         label = defaultShare?.let { NasPaths.labelFor(it) } ?: "Library",
                         kind = "HOME THEATRE",
                         x = 0.34f, y = 0.20f, w = 0.32f, h = 0.42f,
+                        chrome = VideoChrome,
                         onOpen = {
                             if (defaultShare != null) onOpenShare(defaultShare) else onOpenLiveTv()
                         },
@@ -188,6 +199,7 @@ fun HomeLandingScreen(
                         label = "YouTube",
                         kind = "STREAM",
                         x = 0.67f, y = 0.18f, w = 0.16f, h = 0.34f,
+                        chrome = YoutubeChrome,
                         onOpen = onOpenYouTube,
                     ),
                 )
@@ -199,6 +211,7 @@ fun HomeLandingScreen(
                         label = "Live TV",
                         kind = "IPTV",
                         x = 0.83f, y = 0.34f, w = 0.17f, h = 0.36f,
+                        chrome = LiveTvChrome,
                         onOpen = onOpenLiveTv,
                     ),
                 )
@@ -308,45 +321,49 @@ fun HomeLandingScreen(
                     ),
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconActionButton(selected = false, onClick = onOpenRemote) {
-                        Icon(
-                            Icons.Filled.Phonelink,
-                            contentDescription = "Remote",
-                            tint = Color.White,
-                            modifier = Modifier.size(if (compactChrome) 22.dp else 26.dp),
-                        )
-                    }
-                    IconActionButton(selected = false, onClick = onOpenSettings) {
-                        Icon(
-                            Icons.Filled.Settings,
-                            contentDescription = "Settings",
-                            tint = Color.White,
-                            modifier = Modifier.size(if (compactChrome) 22.dp else 26.dp),
-                        )
+                    ScreenTheme(SettingsChrome) {
+                        IconActionButton(selected = false, onClick = onOpenRemote) {
+                            Icon(
+                                Icons.Filled.Phonelink,
+                                contentDescription = "Remote",
+                                tint = Color.White,
+                                modifier = Modifier.size(if (compactChrome) 22.dp else 26.dp),
+                            )
+                        }
+                        IconActionButton(selected = false, onClick = onOpenSettings) {
+                            Icon(
+                                Icons.Filled.Settings,
+                                contentDescription = "Settings",
+                                tint = Color.White,
+                                modifier = Modifier.size(if (compactChrome) 22.dp else 26.dp),
+                            )
+                        }
                     }
                 }
             }
 
             hotspots.forEachIndexed { index, spot ->
-                RoomHotspotFrame(
-                    label = spot.label,
-                    kind = spot.kind,
-                    compact = compactChrome,
-                    onOpen = spot.onOpen,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .offset(
-                            x = coverW * spot.x + coverOffsetX,
-                            y = coverH * spot.y + coverOffsetY,
-                        )
-                        .width(coverW * spot.w)
-                        .height(coverH * spot.h)
-                        .then(
-                            if (spot.key == initialFocusKey) Modifier.focusRequester(firstFocus)
-                            else Modifier
-                        )
-                        .staggeredEntrance(entered, index + 1),
-                )
+                ScreenTheme(spot.chrome) {
+                    RoomHotspotFrame(
+                        label = spot.label,
+                        kind = spot.kind,
+                        compact = compactChrome,
+                        onOpen = spot.onOpen,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset(
+                                x = coverW * spot.x + coverOffsetX,
+                                y = coverH * spot.y + coverOffsetY,
+                            )
+                            .width(coverW * spot.w)
+                            .height(coverH * spot.h)
+                            .then(
+                                if (spot.key == initialFocusKey) Modifier.focusRequester(firstFocus)
+                                else Modifier
+                            )
+                            .staggeredEntrance(entered, index + 1),
+                    )
+                }
             }
 
             val corridor = buildList {
@@ -401,37 +418,18 @@ private fun RoomHotspotFrame(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
+    val chrome = LocalScreenChrome.current
     val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
-    val glow by animateFloatAsState(
-        targetValue = if (focused) 1f else 0f,
-        animationSpec = Motion.focusSpring(),
-        label = "hotspotGlow",
-    )
-    val shape = RoundedCornerShape(12.dp)
 
     Box(
         modifier = modifier
-            .graphicsLayer {
-                scaleX = 1f + 0.02f * glow
-                scaleY = 1f + 0.02f * glow
-            }
-            .clip(shape)
-            .border(
-                width = if (focused) 3.dp else 1.5.dp,
-                color = if (focused) Accent else Color.White.copy(alpha = 0.12f),
-                shape = shape,
-            )
-            .background(
-                if (focused) Accent.copy(alpha = 0.10f)
-                else Color.Transparent,
-            )
+            .glassInteract(focused = focused, selected = false, idleSurface = Color.Transparent)
             .onFocusChanged {
                 val gained = it.isFocused && !focused
                 focused = it.isFocused
                 if (gained) feedback.focus()
             }
-            .focusable()
             .clickable(role = Role.Button, onClick = {
                 feedback.click()
                 onOpen()
@@ -452,7 +450,7 @@ private fun RoomHotspotFrame(
         ) {
             Text(
                 text = kind,
-                color = if (focused) Accent else TextMuted,
+                color = if (focused) chrome.accent else TextMuted,
                 fontFamily = PallasFontFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = if (compact) 8.sp else 10.sp,
@@ -483,25 +481,18 @@ private fun CorridorPlaque(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val chrome = LocalScreenChrome.current
     val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(8.dp)
 
     Row(
         modifier = modifier
-            .clip(shape)
-            .background(Color.Black.copy(alpha = if (focused) 0.78f else 0.5f))
-            .border(
-                width = if (focused) 1.5.dp else 1.dp,
-                color = if (focused) Accent else Color.White.copy(alpha = 0.18f),
-                shape = shape,
-            )
+            .glassInteract(focused = focused, selected = false)
             .onFocusChanged {
                 val gained = it.isFocused && !focused
                 focused = it.isFocused
                 if (gained) feedback.focus()
             }
-            .focusable()
             .clickable(role = Role.Button, onClick = {
                 feedback.click()
                 onOpen()
@@ -513,12 +504,12 @@ private fun CorridorPlaque(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (focused) Accent else Color.White.copy(alpha = 0.8f),
+            tint = if (focused) chrome.accent else Color.White.copy(alpha = 0.8f),
             modifier = Modifier.size(16.dp),
         )
         Text(
             text = title,
-            color = if (focused) Accent else TextCream,
+            color = if (focused) chrome.accent else TextCream,
             fontFamily = PallasFontFamily,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,

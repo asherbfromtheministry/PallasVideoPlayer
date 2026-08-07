@@ -6,58 +6,69 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
-// --- App chrome: cinema black + luminous brand lime (all surfaces) ---
+// --- Option B: Glass Drift — cinema black + per-section accents ---
 
-/** Brand lime — focus / selected / primary accent */
+/** Brand lime — video / library default */
 val Accent = Color(0xFFC6F255)
 
 /** Warm alert / destructive punch */
 val AccentWarm = Color(0xFFFF5C5C)
 
 /** Near-black cinema backdrop */
-val AppBackground = Color(0xFF070708)
+val AppBackground = Color(0xFF05050A)
 
 /** Soft tonal glass panel / card fill */
-val CardSurface = Color(0xE0141418)
+val CardSurface = Color(0xCC14141C)
 
 /** Zinc-400 secondary text */
 val TextMuted = Color(0xFFA1A1AA)
 
-/** Pure white for strong labels (alias kept for callers) */
+/** Pure white for strong labels */
 val TextCream = Color(0xFFFFFFFF)
 
 /** Cool zinc border / progress track */
 val SmokeBlue = Color(0xFF71717A)
 
-/** Crisp white focus ring (+ soft outer glow applied at call sites) */
+/**
+ * Focus uses an animated gradient border (accent → accentSecondary), not a solid white ring.
+ * Kept as white for hairline contrast inside the glass border where needed.
+ */
 val FocusRing = Color(0xFFFFFFFF)
 
-/** Back-compat alias used across screens */
+/** Back-compat alias */
 val CyanAccent = Accent
 
-// --- Audio aliases → same chrome as NAS / IPTV / video ---
+// --- Audio aliases (point at music chrome via ScreenTheme; values match video defaults) ---
 
-/** @deprecated Use [AppBackground]; kept so Music/Radio call sites compile. */
 val AudioBackground = AppBackground
-
-/** @deprecated Use [CardSurface]. */
 val AudioSurface = CardSurface
-
-/** @deprecated Use [Accent]. */
 val AudioAccent = Accent
-
-/** Soft warm secondary (kept distinct from destructive [AccentWarm]). */
 val AudioAccentWarm = Color(0xFFE8A04A)
-
-/** @deprecated Use [TextMuted]. */
 val AudioTextMuted = TextMuted
-
-/** @deprecated Use [TextCream]. */
 val AudioText = TextCream
+
+/**
+ * Unified Glass Drift shape ladder — every interactive control uses [control].
+ * No circles for buttons.
+ */
+object PallasShapes {
+    /** All buttons, rail tiles, transport, chips */
+    val control: Dp = 20.dp
+    /** Cards, panels, glass sheets */
+    val panel: Dp = 20.dp
+    /** Art / poster insets */
+    val art: Dp = 16.dp
+    /** Progress track ends (still squared family, not circle) */
+    val track: Dp = 6.dp
+}
 
 data class ScreenChrome(
     val accent: Color,
+    /** Second stop for gradient focus borders / aurora wash */
+    val accentSecondary: Color,
     val accentWarm: Color,
     val background: Color,
     val surface: Color,
@@ -66,7 +77,8 @@ data class ScreenChrome(
 )
 
 val VideoChrome = ScreenChrome(
-    accent = Accent,
+    accent = Color(0xFFC6F255),
+    accentSecondary = Color(0xFF7CF5C8),
     accentWarm = AccentWarm,
     background = AppBackground,
     surface = CardSurface,
@@ -74,20 +86,92 @@ val VideoChrome = ScreenChrome(
     muted = TextMuted,
 )
 
-/** Same as [VideoChrome] — Music/Radio no longer fork the palette. */
-val AudioChrome = VideoChrome
+val MusicChrome = ScreenChrome(
+    accent = Color(0xFF7C6CFF),
+    accentSecondary = Color(0xFFB4A0FF),
+    accentWarm = AccentWarm,
+    background = AppBackground,
+    surface = CardSurface,
+    text = TextCream,
+    muted = TextMuted,
+)
+
+val LiveTvChrome = ScreenChrome(
+    accent = Color(0xFF00E5C8),
+    accentSecondary = Color(0xFF3D8BFF),
+    accentWarm = AccentWarm,
+    background = AppBackground,
+    surface = CardSurface,
+    text = TextCream,
+    muted = TextMuted,
+)
+
+val RadioChrome = ScreenChrome(
+    accent = Color(0xFFFF8A5C),
+    accentSecondary = Color(0xFFFF4D8D),
+    accentWarm = AccentWarm,
+    background = AppBackground,
+    surface = CardSurface,
+    text = TextCream,
+    muted = TextMuted,
+)
+
+val PodcastChrome = ScreenChrome(
+    accent = Color(0xFFFF2D95),
+    accentSecondary = Color(0xFFC026FF),
+    accentWarm = AccentWarm,
+    background = AppBackground,
+    surface = CardSurface,
+    text = TextCream,
+    muted = TextMuted,
+)
+
+val YoutubeChrome = ScreenChrome(
+    accent = Color(0xFFFF6A00),
+    accentSecondary = Color(0xFFFFB020),
+    accentWarm = AccentWarm,
+    background = AppBackground,
+    surface = CardSurface,
+    text = TextCream,
+    muted = TextMuted,
+)
+
+val SettingsChrome = ScreenChrome(
+    // Sky blue — distinct from muted zinc text and from Live TV teal / Music indigo.
+    accent = Color(0xFF38BDF8),
+    accentSecondary = Color(0xFF818CF8),
+    accentWarm = AccentWarm,
+    background = AppBackground,
+    surface = CardSurface,
+    text = TextCream,
+    muted = TextMuted,
+)
+
+val HomeChrome = VideoChrome
+
+/** @deprecated Prefer [MusicChrome] via [ScreenTheme]. */
+val AudioChrome = MusicChrome
 
 val LocalScreenChrome = staticCompositionLocalOf { VideoChrome }
 
 /**
- * When true, skip expensive continuous visuals (blur, looping EQ/ambient).
+ * When true, skip expensive continuous visuals (blur, looping EQ/ambient, border orbit).
  * Set from Settings → Display → Lite visuals.
  */
 val LocalLiteVisuals = staticCompositionLocalOf { false }
 
 @Composable
+fun ScreenTheme(
+    chrome: ScreenChrome,
+    content: @Composable () -> Unit,
+) {
+    CompositionLocalProvider(LocalScreenChrome provides chrome, content = content)
+}
+
+/** @deprecated Use [ScreenTheme] with [MusicChrome] / [RadioChrome]. */
+@Composable
 fun AudioScreenTheme(content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalScreenChrome provides VideoChrome, content = content)
+    ScreenTheme(MusicChrome, content)
 }
 
 @Composable

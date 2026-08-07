@@ -1,6 +1,5 @@
 package com.vizvag.shieldvideo.ui.browser
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,7 +31,6 @@ import androidx.compose.ui.draw.clipToBounds
 import com.vizvag.shieldvideo.ui.components.LocalForcedLandscapeRotated
 import com.vizvag.shieldvideo.ui.components.touchFriendlyVerticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FiberDvr
@@ -67,7 +65,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -84,15 +81,15 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.settings.AppSettings
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
-import com.vizvag.shieldvideo.ui.theme.Motion
+import com.vizvag.shieldvideo.ui.theme.PallasShapes
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** Mockup A — portrait poster art ratio ~2:3 */
-private val PosterShape = RoundedCornerShape(14.dp)
+private val PosterShape = RoundedCornerShape(PallasShapes.art)
 private val PosterArtBg = Color(0xFF101014)
 private val RailWidth = 76.dp
 
@@ -144,8 +141,6 @@ fun BrowserNavRail(
     sleepTimerLabel: String?,
     onCycleSleepTimer: () -> Unit,
     onSettings: () -> Unit,
-    canGoUp: Boolean,
-    onGoUp: () -> Unit,
     destination: RailDestination = RailDestination.Browser,
     /** When false, rail icons stay visible but are removed from the D-pad focus tree. */
     focusEnabled: Boolean = true,
@@ -164,7 +159,6 @@ fun BrowserNavRail(
         shares.any { it.equals(selectedShare, ignoreCase = true) }
     val showDvr = !recordingFolder.isNullOrBlank() &&
         shares.none { it.equals(recordingFolder, ignoreCase = true) }
-    val showUp = canGoUp && onBrowser
     val showLiveTv = players.liveTv
     val showYouTube = players.youtube
     val showRadio = players.radio
@@ -176,8 +170,8 @@ fun BrowserNavRail(
             (if (showRadio) 1 else 0) +
             (if (showMusic) 1 else 0) +
             (if (showPodcasts) 1 else 0)
-    // Focusable rows: shares + optional DVR + players + Sleep + Settings + optional Up
-    val focusableCount = shares.size + (if (showDvr) 1 else 0) + playerCount + 2 + (if (showUp) 1 else 0)
+    // Focusable rows: shares + optional DVR + players + Sleep + Settings
+    val focusableCount = shares.size + (if (showDvr) 1 else 0) + playerCount + 2
     var focusIndex = 0
     fun nextEdge(): Pair<Boolean, Boolean> {
         val i = focusIndex
@@ -364,21 +358,6 @@ fun BrowserNavRail(
                         compact = compact,
                     )
                 }
-
-                if (showUp) {
-                    Spacer(Modifier.height(sectionGap))
-                    val (isFirst, isLast) = nextEdge()
-                    RailItem(
-                        label = "Up",
-                        selected = false,
-                        onClick = onGoUp,
-                        icon = Icons.AutoMirrored.Filled.ArrowBack,
-                        focusEnabled = focusEnabled,
-                        blockFocusUp = isFirst,
-                        blockFocusDown = isLast,
-                        compact = compact,
-                    )
-                }
             }
 
             Box(
@@ -408,18 +387,12 @@ private fun RailItem(
     val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
     val tint = when {
-        selected -> chrome.background
+        selected -> Color.White
         focused -> chrome.accent
         else -> Color.White.copy(alpha = 0.78f)
     }
-    val itemBg = if (selected) chrome.accent else Color.Transparent
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val scope = rememberCoroutineScope()
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.06f else 1f,
-        animationSpec = Motion.focusSpring(),
-        label = "railScale",
-    )
     val iconSize = if (compact) 18.dp else 22.dp
     val labelSize = if (compact) 8.sp else 9.sp
     val vPad = if (compact) 2.dp else 5.dp
@@ -428,14 +401,13 @@ private fun RailItem(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(72.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(itemBg)
+            .glassInteract(
+                focused = focused,
+                selected = selected,
+                idleSurface = Color.Transparent,
+            )
             .bringIntoViewRequester(bringIntoViewRequester)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
             .onFocusChanged {
                 val gained = it.isFocused && !focused
                 focused = it.isFocused
@@ -449,7 +421,6 @@ private fun RailItem(
                 if (blockFocusUp) up = FocusRequester.Cancel
                 if (blockFocusDown) down = FocusRequester.Cancel
             }
-            .focusable(enabled = focusEnabled)
             .clickable(enabled = focusEnabled, role = Role.Button, onClick = {
                 feedback.click()
                 onClick()
@@ -470,18 +441,6 @@ private fun RailItem(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(top = if (compact) 1.dp else 3.dp, start = 2.dp, end = 2.dp),
-        )
-        // Focus underline — selected state uses filled inverse pill instead
-        Box(
-            modifier = Modifier
-                .padding(top = if (compact) 1.dp else 3.dp)
-                .width(18.dp)
-                .height(if (compact) 1.dp else 2.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(
-                    if (focused && !selected) Color.White.copy(alpha = 0.55f)
-                    else Color.Transparent,
-                ),
         )
     }
 }
@@ -514,22 +473,18 @@ fun HeroBillboard(
         modifier = modifier
             .fillMaxWidth()
             .height(380.dp)
-            .clip(RoundedCornerShape(4.dp))
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.Transparent,
+            )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged {
                 val gained = it.isFocused && !focused
                 focused = it.isFocused
                 if (gained) feedback.focus()
             }
-            .focusable()
-            .clickable(role = Role.Button, onClick = onActivate)
-            .then(
-                if (focused) {
-                    Modifier.border(3.dp, Color.White, RoundedCornerShape(4.dp))
-                } else {
-                    Modifier
-                },
-            ),
+            .clickable(role = Role.Button, onClick = onActivate),
     ) {
         if (art != null) {
             AsyncImage(
@@ -651,40 +606,24 @@ fun HeroBillboard(
 private fun HeroPlayButton(label: String, onClick: () -> Unit) {
     val chrome = LocalScreenChrome.current
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.06f else 1f,
-        animationSpec = Motion.focusSpring(),
-        label = "playScale",
-    )
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(RoundedCornerShape(12.dp))
-            .background(chrome.accent)
-            .border(
-                width = if (focused) 3.dp else 0.dp,
-                color = Color.White,
-                shape = RoundedCornerShape(12.dp),
-            )
+            .glassInteract(focused = focused, selected = true)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 28.dp, vertical = 14.dp),
     ) {
         Icon(
             imageVector = Icons.Filled.PlayArrow,
             contentDescription = null,
-            tint = Color.Black,
+            tint = Color.White,
             modifier = Modifier.size(26.dp),
         )
         Text(
             text = label,
-            color = Color.Black,
+            color = Color.White,
             fontSize = 17.sp,
             fontWeight = FontWeight.Bold,
         )
@@ -708,11 +647,6 @@ fun PosterShelfCard(
     val scope = rememberCoroutineScope()
     val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
     val interaction = remember { MutableInteractionSource() }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.1f else 1f,
-        animationSpec = Motion.cardSpring(),
-        label = "posterScale",
-    )
     val contentAlpha = if (item.watched) 0.42f else 1f
     val hasResume = item.resumePositionMs != null && !item.watched
     val art = item.posterUrl ?: item.fanartUrl
@@ -735,10 +669,11 @@ fun PosterShelfCard(
     Column(
         modifier = modifier
             .width(152.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
+            .glassInteract(
+                focused = focused,
+                selected = longPressHandled,
+                idleSurface = Color.Transparent,
+            )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged {
                 val gained = it.isFocused && !focused
@@ -794,20 +729,11 @@ fun PosterShelfCard(
             )
             .focusable(interactionSource = interaction),
     ) {
-        // Soft outer glow when focused (mockup white ring)
+        // Poster art frame
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(228.dp)
-                .then(
-                    if (focused) {
-                        Modifier
-                            .border(4.dp, Color.White.copy(alpha = 0.95f), PosterShape)
-                            .padding(0.dp)
-                    } else {
-                        Modifier
-                    },
-                ),
+                .height(228.dp),
         ) {
             Box(
                 modifier = Modifier
@@ -919,7 +845,7 @@ fun ShelfRow(
             modifier = Modifier.padding(horizontal = 2.dp),
         )
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             itemsIndexed(items, key = { _, item -> item.entry.path }) { index, item ->

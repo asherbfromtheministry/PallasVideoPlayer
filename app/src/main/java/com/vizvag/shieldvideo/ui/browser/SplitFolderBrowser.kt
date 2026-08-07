@@ -1,5 +1,4 @@
 package com.vizvag.shieldvideo.ui.browser
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,16 +22,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -64,8 +67,8 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
-import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import com.vizvag.shieldvideo.ui.theme.staggeredEntrance
 import kotlinx.coroutines.Job
@@ -73,7 +76,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 private val ListPaneWidth = 340.dp
 private val ListPaneBg = Color(0xE00E0E12)
-private val RowHighlight = Color.White.copy(alpha = 0.10f)
 /**
  * Option C — Split Command: left list of folder contents, right cinematic preview.
  */
@@ -88,6 +90,8 @@ fun SplitFolderBrowser(
     onLongClick: (MediaCardItem) -> Unit,
     onPlay: (MediaCardItem) -> Unit,
     onSearch: () -> Unit = {},
+    onRefresh: () -> Unit = {},
+    refreshing: Boolean = false,
     listFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -101,6 +105,8 @@ fun SplitFolderBrowser(
             onClick = onClick,
             onLongClick = onLongClick,
             onSearch = onSearch,
+            onRefresh = onRefresh,
+            refreshing = refreshing,
             listFocusRequester = listFocusRequester,
             modifier = Modifier
                 .width(ListPaneWidth)
@@ -125,10 +131,29 @@ private fun SplitListPane(
     onClick: (MediaCardItem) -> Unit,
     onLongClick: (MediaCardItem) -> Unit,
     onSearch: () -> Unit,
+    onRefresh: () -> Unit,
+    refreshing: Boolean,
     listFocusRequester: FocusRequester?,
     modifier: Modifier = Modifier,
 ) {
     val chrome = LocalScreenChrome.current
+    val listState = rememberLazyListState()
+    LaunchedEffect(focusedPath, items) {
+        if (items.isEmpty()) return@LaunchedEffect
+        val index = items.indexOfFirst { it.entry.path == focusedPath }
+            .takeIf { it >= 0 }
+            ?: items.indexOfFirst {
+                focusedPath != null &&
+                    it.entry.path.replace('\\', '/').trim('/')
+                        .equals(focusedPath.replace('\\', '/').trim('/'), ignoreCase = true)
+            }.takeIf { it >= 0 }
+            ?: 0
+        val visible = listState.layoutInfo.visibleItemsInfo
+        val alreadyVisible = visible.any { it.index == index }
+        if (!alreadyVisible) {
+            listState.scrollToItem(index)
+        }
+    }
     Column(
         modifier = modifier
             .background(ListPaneBg)
@@ -159,6 +184,18 @@ private fun SplitListPane(
                     modifier = Modifier.padding(top = 6.dp),
                 )
             }
+            IconActionButton(
+                selected = refreshing,
+                onClick = onRefresh,
+                enabled = !refreshing,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = if (refreshing) "Refreshing library" else "Refresh library",
+                    tint = chrome.accent,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
             IconActionButton(selected = false, onClick = onSearch) {
                 Icon(
                     imageVector = Icons.Filled.Search,
@@ -170,18 +207,24 @@ private fun SplitListPane(
         }
         Spacer(Modifier.height(14.dp))
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             itemsIndexed(items, key = { _, item -> item.entry.path }) { index, item ->
                 val isFocusedRow = when {
-                    focusedPath != null -> item.entry.path == focusedPath
+                    focusedPath != null -> item.entry.path == focusedPath ||
+                        item.entry.path.replace('\\', '/').trim('/')
+                            .equals(
+                                focusedPath.replace('\\', '/').trim('/'),
+                                ignoreCase = true,
+                            )
                     else -> index == 0
                 }
                 SplitListRow(
                     item = item,
-                    selected = item.entry.path == focusedPath,
+                    selected = isFocusedRow,
                     onFocused = { onFocusedChange(item) },
                     onClick = { onClick(item) },
                     onLongClick = {
@@ -214,11 +257,6 @@ private fun SplitListRow(
     val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
     val interaction = remember { MutableInteractionSource() }
     val isActive = focused || selected
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.015f else 1f,
-        animationSpec = Motion.focusSpring(),
-        label = "splitRowScale",
-    )
     val episodeLabel = BrowserViewModel.formatEpisodeLabel(
         item.season,
         item.episode,
@@ -236,10 +274,11 @@ private fun SplitListRow(
         modifier = Modifier
             .fillMaxWidth()
             .staggeredEntrance(visible = true, index = index)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
+            .glassInteract(
+                focused = focused,
+                selected = selected,
+                idleSurface = Color.Transparent,
+            )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged {
                 val gained = it.isFocused && !focused
@@ -295,17 +334,6 @@ private fun SplitListRow(
                 onLongClick = onLongClick,
             )
             .focusable(interactionSource = interaction)
-            .background(if (isActive) RowHighlight else Color.Transparent)
-            .then(
-                if (focused) {
-                    Modifier.border(
-                        width = 1.5.dp,
-                        color = Color.White.copy(alpha = 0.35f),
-                    )
-                } else {
-                    Modifier
-                },
-            )
             .padding(end = 12.dp),
     ) {
         Box(
@@ -335,6 +363,26 @@ private fun SplitListRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            val status = when {
+                item.entry.isDirectory -> null
+                item.watched -> "WATCHED"
+                item.resumePositionMs != null -> {
+                    val pct = item.resumeProgress
+                        ?.let { (it * 100f).toInt().coerceIn(1, 99) }
+                    if (pct != null) "RESUME $pct%" else "RESUME"
+                }
+                else -> null
+            }
+            if (status != null) {
+                Text(
+                    text = status,
+                    color = chrome.accent.copy(alpha = if (isActive) 0.95f else 0.75f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.5.sp,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -345,7 +393,6 @@ private fun SplitPreviewPane(
     modifier: Modifier = Modifier,
 ) {
     val chrome = LocalScreenChrome.current
-    val feedback = rememberTvFeedback()
     Box(modifier = modifier.background(Color(0xFF070708))) {
         if (focused == null) {
             Text(
@@ -355,41 +402,52 @@ private fun SplitPreviewPane(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.align(Alignment.Center),
             )
+        } else if (focused.isMixedFolder && focused.previewTiles.isNotEmpty()) {
+            MixedLibraryPreview(
+                focused = focused,
+                onPlay = onPlay,
+                modifier = Modifier.fillMaxSize(),
+            )
         } else {
             val art = focused.fanartUrl ?: focused.posterUrl
             val isFolder = focused.entry.isDirectory
-            val folderNameLabel = if (isFolder) {
-                cleanSplitTitle(focused.entry.name)
-            } else {
-                null
-            }
             val titleText = cleanSplitTitle(focused.displayTitle)
-            val episodeLabel = BrowserViewModel.formatEpisodeLabel(
-                focused.season,
-                focused.episode,
-                focused.episodeTitle,
-            ) ?: focused.line1.takeIf {
-                it.isNotBlank() &&
-                    !it.equals("Folder", ignoreCase = true) &&
-                    !it.equals("Category", ignoreCase = true) &&
-                    !it.equals("Archive", ignoreCase = true)
-            }
-            val detailMeta = buildList {
-                if (folderNameLabel != null &&
-                    !folderNameLabel.equals(titleText, ignoreCase = true)
-                ) {
-                    add(folderNameLabel)
+            val episodeLabel = if (isFolder) {
+                null
+            } else {
+                BrowserViewModel.formatEpisodeLabel(
+                    focused.season,
+                    focused.episode,
+                    focused.episodeTitle,
+                ) ?: focused.line1.takeIf {
+                    it.isNotBlank() &&
+                        !it.equals("Folder", ignoreCase = true) &&
+                        !it.equals("Category", ignoreCase = true) &&
+                        !it.equals("Archive", ignoreCase = true)
                 }
-                focused.line2.split("  ·  ", " · ")
-                    .map { it.trim() }
-                    .filter { bit ->
-                        bit.isNotBlank() &&
-                            !bit.equals("Watched", ignoreCase = true) &&
-                            !bit.equals("Folder", ignoreCase = true) &&
-                            !bit.matches(Regex("""(?i)S\d{1,2}E\d{1,3}"""))
-                    }
-                    .forEach { add(it) }
-            }.distinct().joinToString("  ·  ")
+            }
+            val detailMeta = if (isFolder) {
+                buildList {
+                    focused.metaKind?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    focused.line2.split("  ·  ", " · ")
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .forEach { add(it) }
+                    focused.genresLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }.distinct().joinToString("  ·  ")
+            } else {
+                buildList {
+                    focused.line2.split("  ·  ", " · ")
+                        .map { it.trim() }
+                        .filter { bit ->
+                            bit.isNotBlank() &&
+                                !bit.equals("Watched", ignoreCase = true) &&
+                                !bit.equals("Folder", ignoreCase = true) &&
+                                !bit.matches(Regex("""(?i)S\d{1,2}E\d{1,3}"""))
+                        }
+                        .forEach { add(it) }
+                }.distinct().joinToString("  ·  ")
+            }
             val resumeMs = focused.resumePositionMs
                 ?.takeIf { !isFolder && !focused.watched }
             val artAlpha = if (!isFolder && focused.watched) 0.72f else 1f
@@ -491,7 +549,7 @@ private fun SplitPreviewPane(
                         color = Color.White.copy(alpha = 0.55f),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        maxLines = 1,
+                        maxLines = if (isFolder) 2 else 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -505,17 +563,40 @@ private fun SplitPreviewPane(
                     lineHeight = 16.sp,
                 )
                 val badges = buildList {
-                    if (!isFolder && focused.watched) add("WATCHED")
-                    if (focused.metadataCleared) add("NO META")
-                    // Runtime sits next to the resume clock when in progress; otherwise badge.
-                    if (resumeMs == null) {
-                        focused.runtimeLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    }
-                    focused.resolutionLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    if (focused.isHdr) add("HDR")
-                    focused.fpsLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    // SMB folders often report ~4096 bytes — never show size on directories.
-                    if (!isFolder) {
+                    if (isFolder) {
+                        val videos = focused.folderVideoCount
+                        val watchedN = focused.folderWatchedCount
+                        val inProgressN = focused.folderInProgressCount
+                        when {
+                            videos != null && videos > 0 -> {
+                                val noun = if (videos == 1) "episode" else "episodes"
+                                add("$videos $noun")
+                                watchedN?.takeIf { it > 0 }?.let { add("$it watched") }
+                                inProgressN?.takeIf { it > 0 }?.let { add("$it to resume") }
+                                if (watchedN != null && watchedN > 0) {
+                                    val remaining = (videos - watchedN).coerceAtLeast(0)
+                                    if (remaining > 0) add("$remaining left")
+                                }
+                            }
+                        }
+                        if (focused.watched) add("ALL WATCHED")
+                        if (focused.metadataCleared) add("NO META")
+                        focused.resolutionLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
+                        if (focused.isHdr) add("HDR")
+                    } else {
+                        if (focused.watched) add("WATCHED")
+                        else if (resumeMs != null) {
+                            val pct = focused.resumeProgress
+                                ?.let { (it * 100f).toInt().coerceIn(1, 99) }
+                            add(if (pct != null) "RESUME $pct%" else "RESUME")
+                        }
+                        if (focused.metadataCleared) add("NO META")
+                        if (resumeMs == null) {
+                            focused.runtimeLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
+                        }
+                        focused.resolutionLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
+                        if (focused.isHdr) add("HDR")
+                        focused.fpsLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
                         formatFileSizeSplit(focused.entry.size)?.let { add(it) }
                     }
                 }
@@ -525,10 +606,14 @@ private fun SplitPreviewPane(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         badges.forEach { label ->
-                            val isWatchedBadge = label == "WATCHED"
+                            val accentBadge = label == "WATCHED" ||
+                                label == "ALL WATCHED" ||
+                                label.startsWith("RESUME") ||
+                                label.endsWith(" watched") ||
+                                label.endsWith(" to resume")
                             Text(
-                                text = label,
-                                color = if (isWatchedBadge) {
+                                text = label.uppercase(),
+                                color = if (accentBadge) {
                                     chrome.accent.copy(alpha = 0.95f)
                                 } else {
                                     Color.White.copy(alpha = 0.78f)
@@ -539,12 +624,12 @@ private fun SplitPreviewPane(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(5.dp))
                                     .background(
-                                        if (isWatchedBadge) chrome.accent.copy(alpha = 0.16f)
+                                        if (accentBadge) chrome.accent.copy(alpha = 0.16f)
                                         else Color.White.copy(alpha = 0.08f),
                                     )
                                     .border(
                                         1.dp,
-                                        if (isWatchedBadge) chrome.accent.copy(alpha = 0.45f)
+                                        if (accentBadge) chrome.accent.copy(alpha = 0.45f)
                                         else Color.White.copy(alpha = 0.14f),
                                         RoundedCornerShape(5.dp),
                                     )
@@ -602,65 +687,257 @@ private fun SplitPreviewPane(
                         text = overview,
                         color = Color.White.copy(alpha = 0.68f),
                         fontSize = 14.sp,
-                        maxLines = 3,
+                        maxLines = if (isFolder) 8 else 3,
                         overflow = TextOverflow.Ellipsis,
                         lineHeight = 20.sp,
                     )
                 }
-                var playFocused by remember(focused.entry.path) { mutableStateOf(false) }
-                val playScale by animateFloatAsState(
-                    targetValue = if (playFocused) 1.06f else 1f,
-                    animationSpec = Motion.focusSpring(),
-                    label = "splitPlayScale",
+                SplitPreviewPlayButton(
+                    focused = focused,
+                    playLabel = when {
+                        isFolder -> "OPEN"
+                        resumeMs != null -> "RESUME"
+                        focused.watched -> "PLAY AGAIN"
+                        else -> "PLAY"
+                    },
+                    onPlay = onPlay,
                 )
-                val playLabel = when {
-                    isFolder -> "OPEN"
-                    resumeMs != null -> "RESUME"
-                    focused.watched -> "PLAY AGAIN"
-                    else -> "PLAY"
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .padding(top = 6.dp)
-                        .graphicsLayer {
-                            scaleX = playScale
-                            scaleY = playScale
-                        }
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(chrome.accent)
-                        .border(
-                            width = if (playFocused) 3.dp else 0.dp,
-                            color = Color.White,
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        .onFocusChanged { playFocused = it.isFocused }
-                        .focusable()
-                        .clickable(role = Role.Button, onClick = {
-                            feedback.click()
-                            onPlay(focused)
-                        })
-                        .padding(horizontal = 28.dp, vertical = 14.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = null,
-                        tint = Color.Black,
-                        modifier = Modifier.size(26.dp),
-                    )
-                    Text(
-                        text = playLabel,
-                        color = Color.Black,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.4.sp,
-                    )
-                }
             }
         }
     }
 }
+
+@Composable
+private fun MixedLibraryPreview(
+    focused: MediaCardItem,
+    onPlay: (MediaCardItem) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val chrome = LocalScreenChrome.current
+    val titleText = cleanSplitTitle(focused.displayTitle)
+    val tiles = focused.previewTiles
+    val columns = 4
+    val rows = tiles.chunked(columns)
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(start = 28.dp, end = 28.dp, top = 24.dp, bottom = 28.dp),
+    ) {
+        key(focused.entry.path) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                rows.forEach { rowTiles ->
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        rowTiles.forEach { tile ->
+                            MixedFolderPosterTile(
+                                tile = tile,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                            )
+                        }
+                        repeat(columns - rowTiles.size) {
+                            Spacer(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = titleText,
+                color = Color.White,
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = (-0.4).sp,
+            )
+            if (focused.line2.isNotBlank()) {
+                Text(
+                    text = focused.line2,
+                    color = Color.White.copy(alpha = 0.55f),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                text = focused.entry.name,
+                color = Color.White.copy(alpha = 0.38f),
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val badges = buildList {
+                focused.folderSubfolderCount?.takeIf { it > 0 }?.let {
+                    add("$it ${if (it == 1) "folder" else "folders"}")
+                }
+                focused.folderVideoCount?.takeIf { it > 0 }?.let {
+                    add("$it ${if (it == 1) "video" else "videos"}")
+                }
+                focused.folderWatchedCount?.takeIf { it > 0 }?.let {
+                    add("$it watched")
+                }
+                focused.folderInProgressCount?.takeIf { it > 0 }?.let {
+                    add("$it to resume")
+                }
+                if (focused.watched) add("ALL WATCHED")
+            }
+            if (badges.isNotEmpty()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    badges.forEach { label ->
+                        val accentBadge = label == "ALL WATCHED" ||
+                            label.endsWith(" watched") ||
+                            label.endsWith(" to resume")
+                        Text(
+                            text = label.uppercase(),
+                            color = if (accentBadge) {
+                                chrome.accent.copy(alpha = 0.95f)
+                            } else {
+                                Color.White.copy(alpha = 0.78f)
+                            },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 0.6.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(5.dp))
+                                .background(
+                                    if (accentBadge) chrome.accent.copy(alpha = 0.16f)
+                                    else Color.White.copy(alpha = 0.08f),
+                                )
+                                .border(
+                                    1.dp,
+                                    if (accentBadge) chrome.accent.copy(alpha = 0.45f)
+                                    else Color.White.copy(alpha = 0.14f),
+                                    RoundedCornerShape(5.dp),
+                                )
+                                .padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+            }
+            SplitPreviewPlayButton(
+                focused = focused,
+                playLabel = "OPEN",
+                onPlay = onPlay,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MixedFolderPosterTile(
+    tile: FolderPreviewTile,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.White.copy(alpha = 0.06f))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!tile.posterUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(tile.posterUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = tile.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Folder,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.45f),
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        }
+        Text(
+            text = tile.title,
+            color = Color.White.copy(alpha = 0.72f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            lineHeight = 13.sp,
+        )
+    }
+}
+
+@Composable
+private fun SplitPreviewPlayButton(
+    focused: MediaCardItem,
+    playLabel: String,
+    onPlay: (MediaCardItem) -> Unit,
+) {
+    val feedback = rememberTvFeedback()
+    var playFocused by remember(focused.entry.path) { mutableStateOf(false) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .glassInteract(
+                focused = playFocused,
+                selected = true,
+                selectedAlpha = 0.92f,
+            )
+            .onFocusChanged { playFocused = it.isFocused }
+            .clickable(role = Role.Button, onClick = {
+                feedback.click()
+                onPlay(focused)
+            })
+            .padding(horizontal = 28.dp, vertical = 14.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.PlayArrow,
+            contentDescription = null,
+            tint = Color.Black,
+            modifier = Modifier.size(26.dp),
+        )
+        Text(
+            text = playLabel,
+            color = Color.Black,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.4.sp,
+        )
+    }
+}
+
 private fun cleanSplitTitle(raw: String): String {
     var t = raw
         .replace('.', ' ')

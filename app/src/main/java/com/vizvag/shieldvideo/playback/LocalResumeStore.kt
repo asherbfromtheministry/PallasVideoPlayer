@@ -18,8 +18,14 @@ data class LocalResume(
     /** In-progress resume suitable for seek / resume bar (not finished, not tiny). */
     val isMeaningful: Boolean
         get() = !watched &&
-            positionMs > 5_000L &&
-            (durationMs <= 0L || positionMs < durationMs * 0.95)
+            positionMs > MIN_RESUME_POSITION_MS &&
+            (durationMs <= 0L || positionMs < durationMs * WATCHED_FRACTION)
+
+    companion object {
+        /** Position at or above this fraction of duration is treated as fully watched. */
+        const val WATCHED_FRACTION = 0.95
+        const val MIN_RESUME_POSITION_MS = 5_000L
+    }
 }
 
 class LocalResumeStore(context: Context) {
@@ -48,11 +54,11 @@ class LocalResumeStore(context: Context) {
         getIncludingWatched(path)?.watched == true
 
     fun save(path: String, positionMs: Long, durationMs: Long) {
-        if (durationMs > 0L && positionMs >= durationMs * 0.95) {
+        if (durationMs > 0L && positionMs >= durationMs * LocalResume.WATCHED_FRACTION) {
             markWatched(path, durationMs)
             return
         }
-        if (positionMs <= 5_000L) return
+        if (positionMs <= LocalResume.MIN_RESUME_POSITION_MS) return
         write(
             LocalResume(
                 path = path,

@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.TextCream
@@ -238,18 +239,10 @@ private fun ArchiveActionRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    focused -> Accent.copy(alpha = 0.18f)
-                    preferred -> Color.White.copy(alpha = 0.06f)
-                    else -> Color.White.copy(alpha = 0.03f)
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Accent else Color.White.copy(alpha = 0.08f),
-                shape = RoundedCornerShape(12.dp),
+            .glassInteract(
+                focused = focused,
+                selected = preferred,
+                idleSurface = Color.White.copy(alpha = 0.03f),
             )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged {

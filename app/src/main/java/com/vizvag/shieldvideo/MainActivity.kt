@@ -47,11 +47,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,7 +65,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.lifecycle.lifecycleScope
-import coil.compose.AsyncImage
 import com.vizvag.shieldvideo.data.index.VideoIndexController
 import com.vizvag.shieldvideo.data.iptv.IptvFavoritesStore
 import com.vizvag.shieldvideo.data.iptv.IptvParentalStore
@@ -96,7 +94,6 @@ import com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller
 import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
 import com.vizvag.shieldvideo.playback.remote.RemoteUiRouteStore
 import com.vizvag.shieldvideo.playback.remote.TransportAction
-import com.vizvag.shieldvideo.ui.background.BackgroundImageController
 import com.vizvag.shieldvideo.ui.browser.BrowseNavRequests
 import com.vizvag.shieldvideo.ui.browser.BrowserScreen
 import com.vizvag.shieldvideo.ui.browser.BrowserViewModel
@@ -104,12 +101,14 @@ import com.vizvag.shieldvideo.ui.browser.BrowserViewModelFactory
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.AppClockOverlay
 import com.vizvag.shieldvideo.ui.components.ForcedLandscape
+import com.vizvag.shieldvideo.ui.components.chromeForRoute
 import com.vizvag.shieldvideo.ui.home.HomeLandingScreen
 import com.vizvag.shieldvideo.ui.iptv.IptvScreen
 import com.vizvag.shieldvideo.ui.music.MusicScreen
 import com.vizvag.shieldvideo.ui.radio.RadioScreen
 import com.vizvag.shieldvideo.ui.remote.RemoteScreen
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.iptv.IptvViewModel
 import com.vizvag.shieldvideo.ui.iptv.IptvViewModelFactory
@@ -134,7 +133,6 @@ import android.content.Context
 import android.os.Build
 import android.view.View
 import android.view.WindowManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -179,7 +177,6 @@ class MainActivity : ComponentActivity() {
                     progressSync = app.progressSync,
                     nasWatchHistory = app.nasWatchHistory,
                     metadataOverrides = metadataOverrides,
-                    backgroundImages = app.backgroundImages,
                     videoIndex = app.videoIndex,
                     iptvRepository = app.iptvRepository,
                     iptvFavorites = app.iptvFavorites,
@@ -480,7 +477,6 @@ private fun ShieldVideoAppNav(
     progressSync: NasProgressSync,
     nasWatchHistory: NasWatchHistoryStore,
     metadataOverrides: MetadataOverrideStore,
-    backgroundImages: BackgroundImageController,
     videoIndex: VideoIndexController,
     iptvRepository: IptvRepository,
     iptvFavorites: IptvFavoritesStore,
@@ -491,7 +487,6 @@ private fun ShieldVideoAppNav(
     val backStackEntry by navController.currentBackStackEntryAsState()
     var iptvFullscreen by remember { mutableStateOf(false) }
     var youtubeFullscreen by remember { mutableStateOf(false) }
-    val backgroundModel by backgroundImages.imageModel.collectAsState()
     val fallbackGradient = Brush.verticalGradient(
         colors = listOf(
             Color(0xFF070708),
@@ -513,7 +508,10 @@ private fun ShieldVideoAppNav(
     val liteVisuals = appSettings.liteVisuals || isPhoneOrTablet
     val startRoute = "home"
 
-    CompositionLocalProvider(LocalLiteVisuals provides liteVisuals) {
+    CompositionLocalProvider(
+        LocalLiteVisuals provides liteVisuals,
+        LocalScreenChrome provides chromeForRoute(backStackEntry?.destination?.route),
+    ) {
     ForcedLandscape(enabled = isPhoneOrTablet) {
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -522,22 +520,6 @@ private fun ShieldVideoAppNav(
                 .background(fallbackGradient)
         )
         AmbientBackdrop(intensity = 0.72f)
-        if (backgroundModel != null) {
-            AsyncImage(
-                model = backgroundModel,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .alpha(0.22f)
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xF2070708))
-            )
-            AmbientBackdrop(intensity = 0.35f)
-        }
 
         val routeEnter = fadeIn(Motion.enter()) + slideInHorizontally(
             animationSpec = tween(420, easing = Motion.EmphasizedDecelerate),
@@ -951,7 +933,6 @@ private fun ShieldVideoAppNav(
                         settingsRepository,
                         nasRepository,
                         traktAuthRepository,
-                        backgroundImages,
                         vlcLauncher,
                         videoIndex,
                         ShieldVideoApp.instance.musicModule.musicIndex,

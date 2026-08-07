@@ -1,7 +1,5 @@
 package com.vizvag.shieldvideo.ui.components
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -22,7 +20,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -76,17 +73,16 @@ import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.ui.browser.MediaCardItem
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.Motion
+import com.vizvag.shieldvideo.ui.theme.PallasShapes
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import com.vizvag.shieldvideo.ui.theme.staggeredEntrance
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val DarkGlass = Color(0xE6121216)
 private val ArtPanelBg = Color(0xFF0E0E12)
-private val IconShape = RoundedCornerShape(18.dp)
-private val CardShape = RoundedCornerShape(20.dp)
-private val ArtInsetShape = RoundedCornerShape(16.dp)
+private val IconShape = RoundedCornerShape(PallasShapes.control)
+private val ArtInsetShape = RoundedCornerShape(PallasShapes.art)
 
 @Composable
 fun IconActionButton(
@@ -95,75 +91,23 @@ fun IconActionButton(
     enabled: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val chrome = LocalScreenChrome.current
     val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.12f else 1f,
-        animationSpec = Motion.focusSpring(),
-        label = "iconScale",
-    )
-    val borderWidth by animateDpAsState(
-        targetValue = when {
-            focused -> 2.dp
-            selected -> 1.5.dp
-            else -> 1.dp
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "iconBorder",
-    )
-    val borderColor by animateColorAsState(
-        targetValue = when {
-            focused -> chrome.accent
-            selected -> chrome.accent.copy(alpha = 0.55f)
-            else -> Color.White.copy(alpha = 0.10f)
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "iconBorderColor",
-    )
-    val bg by animateColorAsState(
-        targetValue = when {
-            selected -> chrome.accent.copy(alpha = 0.35f)
-            focused -> Color.White.copy(alpha = 0.14f)
-            else -> chrome.surface.copy(alpha = 0.55f)
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "iconBg",
-    )
-    val glowAlpha by animateFloatAsState(
-        targetValue = if (focused) 1f else 0f,
-        animationSpec = Motion.focusSpring(),
-        label = "iconGlow",
-    )
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier.size(72.dp)
     ) {
-        // Soft ambient glow behind the pill (blurred-ish via oversized soft disc)
-        Box(
-            modifier = Modifier
-                .size(68.dp)
-                .graphicsLayer { alpha = glowAlpha * 0.9f }
-                .background(chrome.accent.copy(alpha = 0.25f), CircleShape)
-        )
         Box(
             modifier = Modifier
                 .size(60.dp)
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                }
-                .clip(IconShape)
-                .background(bg)
-                .border(borderWidth, borderColor, IconShape)
+                .glassInteract(focused = focused, selected = selected)
                 .onFocusChanged {
                     val gained = it.isFocused && !focused
                     focused = it.isFocused
                     if (gained) feedback.focus()
                 }
                 .focusProperties { canFocus = enabled }
-                .focusable(enabled = enabled)
                 .clickable(enabled = enabled, role = Role.Button, onClick = {
                     feedback.click()
                     onClick()
@@ -337,46 +281,9 @@ fun HaStyleMediaCard(
     val feedback = rememberTvFeedback()
     val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
     val interaction = remember { MutableInteractionSource() }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.03f else 1f,
-        animationSpec = Motion.cardSpring(),
-        label = "cardScale",
-    )
-    val borderWidth by animateDpAsState(
-        targetValue = when {
-            longPressHandled -> 3.dp
-            focused -> 2.5.dp
-            else -> 1.dp
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "cardBorderW",
-    )
-    val borderColor by animateColorAsState(
-        targetValue = when {
-            longPressHandled -> chrome.accent
-            focused -> Color.White
-            else -> Color.White.copy(alpha = 0.08f)
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "cardBorderC",
-    )
-    val bg by animateColorAsState(
-        targetValue = if (focused) Color(0xF018181E) else DarkGlass,
-        animationSpec = Motion.focusSpring(),
-        label = "cardBg",
-    )
-    val glowAlpha by animateFloatAsState(
-        targetValue = if (focused) 1f else 0f,
-        animationSpec = Motion.focusSpring(),
-        label = "cardGlow",
-    )
     val contentAlpha = if (item.watched) 0.42f else 1f
     val hasResume = item.resumePositionMs != null && !item.watched
-    val artScale by animateFloatAsState(
-        targetValue = if (focused) 1.08f else 1f,
-        animationSpec = Motion.cardSpring(),
-        label = "artScale",
-    )
+    // No focus scale — enlarging cards clips past list edges.
 
     fun fireLongPress() {
         if (onLongClick == null || longPressHandled) return
@@ -394,7 +301,7 @@ fun HaStyleMediaCard(
             modifier = Modifier
                 .matchParentSize()
                 .padding(horizontal = 8.dp, vertical = 6.dp)
-                .graphicsLayer { alpha = glowAlpha * 0.85f }
+                .graphicsLayer { alpha = if (focused) 0.85f else 0f }
                 .background(
                     chrome.accent.copy(alpha = 0.22f),
                     RoundedCornerShape(24.dp),
@@ -405,17 +312,7 @@ fun HaStyleMediaCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(120.dp)
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                }
-                .clip(CardShape)
-                .background(bg)
-                .border(
-                    width = borderWidth,
-                    color = borderColor,
-                    shape = CardShape
-                )
+                .glassInteract(focused = focused, selected = longPressHandled)
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .onFocusChanged {
                     val gained = it.isFocused && !focused
@@ -559,10 +456,6 @@ fun HaStyleMediaCard(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
-                            .graphicsLayer {
-                                scaleX = artScale
-                                scaleY = artScale
-                            }
                             .alpha(contentAlpha)
                     )
                     Box(

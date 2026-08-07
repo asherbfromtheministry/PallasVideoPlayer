@@ -29,3 +29,9 @@ ui-options/
 /nova_*.png
 *.bak
 *.tmp
+
+# Local-only dumps / backups / preview captures
+/backups/
+/design-previews/
+/lounge-*.png
+/pallas_preview.png

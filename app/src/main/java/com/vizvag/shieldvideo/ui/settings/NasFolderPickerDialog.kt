@@ -45,6 +45,7 @@ import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.nas.NasRepository
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.smb.SmbEntry
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
 import com.vizvag.shieldvideo.ui.theme.TextMuted
@@ -55,7 +56,8 @@ import kotlinx.coroutines.withContext
 enum class FolderPickerMode {
     VIDEO_FOLDERS,
     MUSIC_FOLDERS,
-    BACKGROUND_FOLDER,
+    /** Single-folder pick for the home / rail default share. */
+    DEFAULT_FOLDER,
     BACKUP_FOLDER,
     IPTV_RECORDING_FOLDER,
     /** Pick a single `.opml` file on the NAS (Podcasts import). */
@@ -193,7 +195,7 @@ fun NasFolderPickerDialog(
                 text = title ?: when (mode) {
                     FolderPickerMode.VIDEO_FOLDERS -> "Select video folders"
                     FolderPickerMode.MUSIC_FOLDERS -> "Select music folders"
-                    FolderPickerMode.BACKGROUND_FOLDER -> "Select background folder"
+                    FolderPickerMode.DEFAULT_FOLDER -> "Select default video folder"
                     FolderPickerMode.BACKUP_FOLDER -> "Select settings backup folder"
                     FolderPickerMode.IPTV_RECORDING_FOLDER -> "Select IPTV recording folder"
                     FolderPickerMode.PODCAST_OPML_FILE -> "Select OPML file"
@@ -378,7 +380,7 @@ fun NasFolderPickerDialog(
                         emphasized = true,
                         onClick = {
                             val result = when (mode) {
-                                FolderPickerMode.BACKGROUND_FOLDER ->
+                                FolderPickerMode.DEFAULT_FOLDER ->
                                     selected.toList().ifEmpty {
                                         if (!atShareRoot) listOf(normalizePath(currentPath)) else emptyList()
                                     }
@@ -430,25 +432,8 @@ private fun PickerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(
-                when {
-                    focused -> CyanAccent.copy(alpha = 0.4f)
-                    selected -> CyanAccent.copy(alpha = 0.22f)
-                    else -> Color.White.copy(alpha = 0.04f)
-                }
-            )
-            .border(
-                width = if (focused || selected) 2.dp else 1.dp,
-                color = when {
-                    focused -> CyanAccent
-                    selected -> CyanAccent.copy(alpha = 0.75f)
-                    else -> Color.White.copy(alpha = 0.1f)
-                },
-                shape = RoundedCornerShape(10.dp)
-            )
+            .glassInteract(focused = focused, selected = selected)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .focusable(interactionSource = interaction)
             .clickable(
                 role = Role.Button,
                 interactionSource = interaction,
@@ -488,20 +473,10 @@ private fun PickerButton(
     Box(
         modifier = Modifier
             .heightIn(min = 44.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    focused -> CyanAccent
-                    emphasized -> CyanAccent.copy(alpha = 0.4f)
-                    else -> Color.White.copy(alpha = 0.08f)
-                }
+            .glassInteract(
+                focused = focused,
+                selected = emphasized,
             )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color(0xFFE8E2D4) else Color.White.copy(alpha = 0.16f),
-                shape = RoundedCornerShape(12.dp)
-            )
-            .focusable(interactionSource = interaction)
             .clickable(
                 role = Role.Button,
                 interactionSource = interaction,

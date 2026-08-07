@@ -57,11 +57,10 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.ui.components.HaStyleMediaCard
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
-import com.vizvag.shieldvideo.ui.theme.FocusRing
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 
 @Composable
@@ -333,13 +332,7 @@ private fun SearchGlassField(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color.White.copy(alpha = if (focused) 0.10f else 0.06f))
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) FocusRing else Color.White.copy(alpha = 0.12f),
-                shape = RoundedCornerShape(16.dp)
-            )
+            .glassInteract(focused = focused, selected = false)
             .onPreviewKeyEvent { event ->
                 val isSelect = event.key == Key.DirectionCenter ||
                     event.key == Key.Enter ||
@@ -351,7 +344,6 @@ private fun SearchGlassField(
                     false
                 }
             }
-            .focusable(true, interaction)
             .clickable(
                 role = Role.Button,
                 interactionSource = interaction,
@@ -420,7 +412,7 @@ private fun SearchQueryEditorDialog(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onConfirm(draft) }),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = FocusRing,
+                    focusedBorderColor = Accent,
                     unfocusedBorderColor = Color.White.copy(alpha = 0.20f),
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
@@ -455,22 +447,8 @@ private fun SearchActionButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val bg = when {
-        !enabled -> Color.White.copy(alpha = 0.04f)
-        focused && selected -> CyanAccent
-        focused && !selected -> Color.White.copy(alpha = 0.18f)
-        selected || emphasized -> CyanAccent.copy(alpha = 0.85f)
-        else -> Color.White.copy(alpha = 0.06f)
-    }
-    val borderColor = when {
-        !enabled -> Color.White.copy(alpha = 0.08f)
-        focused -> Color.White
-        selected || emphasized -> CyanAccent
-        else -> Color.White.copy(alpha = 0.12f)
-    }
     val textColor = when {
         !enabled -> TextMuted.copy(alpha = 0.45f)
-        focused && selected -> Color(0xFF1A1C16)
         selected || emphasized -> Color(0xFFE8E2D4)
         muted || !selected -> TextMuted.copy(alpha = 0.7f)
         else -> Color.White
@@ -478,12 +456,11 @@ private fun SearchActionButton(
     Box(
         modifier = Modifier
             .then(if (fillWidth) Modifier.fillMaxWidth() else Modifier)
-            .clip(RoundedCornerShape(12.dp))
-            .background(bg)
-            .border(
-                width = if (focused || selected || emphasized) 2.dp else 1.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(12.dp)
+            .glassInteract(
+                focused = focused && enabled,
+                selected = (selected || emphasized) && enabled,
+                idleSurface = if (!enabled) Color.White.copy(alpha = 0.04f)
+                else Color.White.copy(alpha = 0.06f),
             )
             .onPreviewKeyEvent { event ->
                 if (!enabled) return@onPreviewKeyEvent false
@@ -497,7 +474,6 @@ private fun SearchActionButton(
                     false
                 }
             }
-            .focusable(enabled, interaction)
             .clickable(
                 enabled = enabled,
                 role = Role.Button,
@@ -506,15 +482,16 @@ private fun SearchActionButton(
                 onClick = onClick
             )
             .padding(
-                horizontal = if (compact) 12.dp else 16.dp,
-                vertical = if (compact) 8.dp else 12.dp
+                horizontal = if (compact) 14.dp else 18.dp,
+                vertical = if (compact) 10.dp else 12.dp
             ),
-        contentAlignment = Alignment.CenterStart
+        contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
             color = textColor,
-            fontWeight = if (selected || emphasized) FontWeight.Bold else FontWeight.Medium,
+            fontSize = if (compact) 14.sp else 16.sp,
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )

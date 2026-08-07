@@ -30,6 +30,7 @@ import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.settings.SettingsRepository
 import com.vizvag.shieldvideo.playback.IptvRecordingScheduler
 import com.vizvag.shieldvideo.playback.IptvRecordingService
+import com.vizvag.shieldvideo.playback.LocalMediaProxyService
 import com.vizvag.shieldvideo.playback.LocalResumeStore
 import com.vizvag.shieldvideo.playback.MediaPlayerLauncher
 import com.vizvag.shieldvideo.playback.NasProgressSync
@@ -38,6 +39,7 @@ import com.vizvag.shieldvideo.playback.NasWatchHistoryStore
 import com.vizvag.shieldvideo.playback.PlayerLaunchResult
 import com.vizvag.shieldvideo.playback.ResumeMonitor
 import com.vizvag.shieldvideo.playback.remote.RemotePlayBridge
+import com.vizvag.shieldvideo.ShieldVideoApp
 import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -688,51 +690,57 @@ class IptvViewModel(
         settings: AppSettings,
         startPositionMs: Long?,
     ) {
-        val uriResult = nasRepository.playbackUri(
-            settings = settings,
-            shareName = entry.share,
-            relativePath = entry.path
-        )
-        val result = uriResult.fold(
-            onSuccess = { uri ->
-                val playerPackage = settings.playerPackage.ifBlank {
-                    MediaPlayerLauncher.VLC_PACKAGE
-                }
-                playerLauncher.play(
-                    playbackUri = uri,
-                    relativePath = entry.path,
-                    title = entry.title,
-                    playerPackage = playerPackage,
-                    startPositionMs = startPositionMs
-                ) {
-                    nasWatchHistory.record(entry.share, entry.path, entry.title)
-                    val handoff = nasRepository.handoffUri(
-                        settings,
-                        entry.share,
-                        entry.path
-                    ).toString()
-                    resumeMonitor.start(
-                        path = entry.path,
-                        playerPackage = playerPackage,
-                        playbackUri = handoff,
-                        title = entry.title,
-                        share = entry.share,
-                        host = settings.host
-                    )
-                }
-            },
-            onFailure = { error ->
-                PlayerLaunchResult.Failed(error.message ?: "Unable to build playback URL")
+        val result = runCatching {
+            val mediaUri = LocalMediaProxyService.startAndAwait(
+                context = ShieldVideoApp.instance,
+                share = entry.share,
+                path = entry.path,
+                host = settings.host,
+                title = entry.title,
+            )
+            val playerPackage = settings.playerPackage.ifBlank {
+                MediaPlayerLauncher.VLC_PACKAGE
             }
-        )
+            playerLauncher.play(
+                playbackUri = mediaUri,
+                relativePath = entry.path,
+                title = entry.title,
+                playerPackage = playerPackage,
+                startPositionMs = startPositionMs,
+            ) {
+                nasWatchHistory.record(entry.share, entry.path, entry.title)
+                val handoff = nasRepository.handoffUri(
+                    settings,
+                    entry.share,
+                    entry.path,
+                ).toString()
+                resumeMonitor.start(
+                    path = entry.path,
+                    playerPackage = playerPackage,
+                    playbackUri = handoff,
+                    title = entry.title,
+                    share = entry.share,
+                    host = settings.host,
+                )
+            }
+        }.getOrElse { error ->
+            LocalMediaProxyService.stop(ShieldVideoApp.instance)
+            PlayerLaunchResult.Failed(error.message ?: "Playback failed")
+        }
         when (result) {
             PlayerLaunchResult.Success -> {
                 _state.update { it.copy(nasWatchHistory = nasWatchHistory.entries()) }
             }
-            PlayerLaunchResult.NotInstalled -> _state.update {
-                it.copy(message = "Selected video player is not installed")
+            PlayerLaunchResult.NotInstalled -> {
+                LocalMediaProxyService.stop(ShieldVideoApp.instance)
+                _state.update {
+                    it.copy(message = "Selected video player is not installed")
+                }
             }
-            is PlayerLaunchResult.Failed -> _state.update { it.copy(message = result.message) }
+            is PlayerLaunchResult.Failed -> {
+                LocalMediaProxyService.stop(ShieldVideoApp.instance)
+                _state.update { it.copy(message = result.message) }
+            }
         }
     }
 

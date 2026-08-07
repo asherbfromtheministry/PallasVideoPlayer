@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vizvag.shieldvideo.data.nas.NasPaths
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.TextMuted
@@ -51,6 +52,7 @@ import kotlinx.coroutines.delay
 fun BrowserItemOptionsDialog(
     item: MediaCardItem,
     confirmingDelete: Boolean,
+    onShowAllVideos: () -> Unit,
     onAssignMetadata: () -> Unit,
     onClearIncludingContents: () -> Unit,
     onClearFolderOnly: () -> Unit,
@@ -149,12 +151,20 @@ fun BrowserItemOptionsDialog(
                     )
                 } else {
                     if (isDir) {
-                        if (hasTraktArt && !item.metadataCleared) {
+                        ItemOptionRow(
+                            label = "Show all videos",
+                            subtitle = "Ignore subfolders — list every video underneath",
+                            requestInitialFocus = true,
+                            focusRequester = firstFocus,
+                            onClick = {
+                                feedback.click()
+                                run(onShowAllVideos)
+                            },
+                        )
+                        if (!item.metadataCleared) {
                             ItemOptionRow(
                                 label = "Clear metadata — folder and everything inside",
-                                subtitle = "Clears nested subfolders and files too",
-                                requestInitialFocus = true,
-                                focusRequester = firstFocus,
+                                subtitle = "Stops Trakt/TMDB for this folder and all nested items",
                                 onClick = {
                                     feedback.click()
                                     run(onClearIncludingContents)
@@ -168,11 +178,28 @@ fun BrowserItemOptionsDialog(
                                     run(onClearFolderOnly)
                                 },
                             )
+                            // Mixed bins / empty packs: still allow pinning a title if wanted.
+                            if (!hasTraktArt) {
+                                ItemOptionRow(
+                                    label = "Assign TV / movie…",
+                                    subtitle = "Or keep empty from the next screen",
+                                    onClick = {
+                                        feedback.click()
+                                        run(onAssignMetadata)
+                                    },
+                                )
+                            }
                         } else {
                             ItemOptionRow(
+                                label = "Restore metadata lookup",
+                                subtitle = "Allow Trakt/TMDB for this folder again",
+                                onClick = {
+                                    feedback.click()
+                                    run(onClearOrRestoreMetadata)
+                                },
+                            )
+                            ItemOptionRow(
                                 label = "Assign TV / movie…",
-                                requestInitialFocus = true,
-                                focusRequester = firstFocus,
                                 onClick = {
                                     feedback.click()
                                     run(onAssignMetadata)
@@ -251,23 +278,7 @@ private fun ItemOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    focused && danger -> Color(0xFFFF5252).copy(alpha = 0.22f)
-                    focused -> Color.White.copy(alpha = 0.10f)
-                    else -> Color.White.copy(alpha = 0.04f)
-                }
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = when {
-                    focused && danger -> Color(0xFFFF8A80)
-                    focused -> Accent
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-                shape = RoundedCornerShape(12.dp),
-            )
+            .glassInteract(focused = focused, selected = false)
             .focusRequester(requester)
             .onFocusChanged {
                 val gained = it.isFocused && !focused

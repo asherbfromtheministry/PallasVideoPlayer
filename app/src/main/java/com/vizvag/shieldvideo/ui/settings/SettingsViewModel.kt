@@ -24,7 +24,6 @@ import com.vizvag.shieldvideo.data.settings.SettingsBackupManager
 import com.vizvag.shieldvideo.data.trakt.TraktAuthRepository
 import com.vizvag.shieldvideo.playback.InstalledVideoPlayer
 import com.vizvag.shieldvideo.playback.MediaPlayerLauncher
-import com.vizvag.shieldvideo.ui.background.BackgroundImageController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,7 +75,6 @@ class SettingsViewModel(
     private val settingsRepository: SettingsRepository,
     private val nasRepository: NasRepository,
     private val traktAuthRepository: TraktAuthRepository,
-    private val backgroundImages: BackgroundImageController,
     private val mediaPlayerLauncher: MediaPlayerLauncher,
     private val videoIndex: VideoIndexController,
     private val musicIndex: MusicIndexController,
@@ -312,13 +310,7 @@ class SettingsViewModel(
 
     fun openDefaultFolderPicker() {
         _state.update {
-            it.copy(folderPickerMode = FolderPickerMode.BACKGROUND_FOLDER, folderPickerForDefault = true)
-        }
-    }
-
-    fun openBackgroundFolderPicker() {
-        _state.update {
-            it.copy(folderPickerMode = FolderPickerMode.BACKGROUND_FOLDER, folderPickerForDefault = false)
+            it.copy(folderPickerMode = FolderPickerMode.DEFAULT_FOLDER, folderPickerForDefault = true)
         }
     }
 
@@ -399,16 +391,12 @@ class SettingsViewModel(
             .filter { it.isNotBlank() && it != "/" }
             .distinct()
         when {
-            forDefault -> {
+            forDefault || mode == FolderPickerMode.DEFAULT_FOLDER -> {
                 val path = normalized.firstOrNull() ?: return
                 update { draft ->
                     val shares = (draft.shares + path).distinctBy { it.lowercase() }
                     draft.copy(shares = shares, defaultShare = path)
                 }
-            }
-            mode == FolderPickerMode.BACKGROUND_FOLDER -> {
-                val path = normalized.firstOrNull() ?: return
-                update { it.copy(backgroundFolderPath = path) }
             }
             mode == FolderPickerMode.BACKUP_FOLDER -> {
                 val path = normalized.firstOrNull() ?: return
@@ -467,7 +455,6 @@ class SettingsViewModel(
             val result = settingsBackup.importFromNas(connectionSettings)
             result.onSuccess { imported ->
                 baseline = imported
-                backgroundImages.reloadNow(viewModelScope)
                 videoIndex.rebuildNow(viewModelScope)
                 _state.update {
                     it.copy(
@@ -516,7 +503,6 @@ class SettingsViewModel(
             }
         )
         settingsRepository.save(draft)
-        backgroundImages.reloadNow(viewModelScope)
         videoIndex.rebuildNow(viewModelScope)
         runCatching { ShieldVideoApp.instance.publishRadioStationsToHa() }
         runCatching { ShieldVideoApp.instance.publishPodcastEpisodesToHa() }
@@ -891,7 +877,6 @@ class SettingsViewModelFactory(
     private val settingsRepository: SettingsRepository,
     private val nasRepository: NasRepository,
     private val traktAuthRepository: TraktAuthRepository,
-    private val backgroundImages: BackgroundImageController,
     private val mediaPlayerLauncher: MediaPlayerLauncher,
     private val videoIndex: VideoIndexController,
     private val musicIndex: MusicIndexController,
@@ -906,7 +891,6 @@ class SettingsViewModelFactory(
             settingsRepository,
             nasRepository,
             traktAuthRepository,
-            backgroundImages,
             mediaPlayerLauncher,
             videoIndex,
             musicIndex,

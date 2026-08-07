@@ -53,11 +53,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -92,19 +90,19 @@ import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.FocusRing
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
+import com.vizvag.shieldvideo.ui.theme.PallasShapes
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import com.vizvag.shieldvideo.ui.theme.TvFeedback
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 @Composable
 fun PodcastScreen(
@@ -377,7 +375,6 @@ fun PodcastScreen(
                         .background(Color.Black)
                         .zIndex(20f)
                         .focusRequester(blackFocus)
-                        .focusable()
                         .clickable(
                             indication = null,
                             interactionSource = remember { MutableInteractionSource() },
@@ -492,33 +489,24 @@ private fun ChromeChip(
     selected: Boolean = false,
     compact: Boolean = false,
     enabled: Boolean = true,
+    leftFocus: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(if (compact) 8.dp else 10.dp)
     Row(
         modifier = Modifier
+            .glassInteract(
+                focused = focused,
+                selected = selected,
+                idleSurface = if (!enabled) CardSurface.copy(alpha = 0.5f) else CardSurface,
+            )
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) feedback.focus()
             }
-            .focusable(enabled = enabled)
-            .clip(shape)
-            .background(
-                when {
-                    !enabled -> CardSurface.copy(alpha = 0.5f)
-                    selected -> Accent.copy(alpha = 0.22f)
-                    else -> CardSurface
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = when {
-                    focused -> FocusRing
-                    selected -> Accent.copy(alpha = 0.55f)
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-                shape = shape,
-            )
+            .focusProperties {
+                canFocus = enabled
+                if (leftFocus != null) left = leftFocus
+            }
             .clickable(enabled = enabled) {
                 feedback.click()
                 onClick()
@@ -650,7 +638,6 @@ private fun EmptyPodcastsState(modifier: Modifier = Modifier) {
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun NowPlayingStage(
     show: PodcastShow?,
@@ -673,17 +660,7 @@ private fun NowPlayingStage(
     val artSize = if (compact) 96.dp else 220.dp
     val artCorner = if (compact) 12.dp else 18.dp
     Column(
-        modifier = modifier
-            .focusProperties {
-                // Right from transport must land on the episode list, not skip past it.
-                exit = { direction ->
-                    if (direction == FocusDirection.Right) {
-                        episodeListFocus ?: FocusRequester.Default
-                    } else {
-                        FocusRequester.Default
-                    }
-                }
-            },
+        modifier = modifier,
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -768,7 +745,12 @@ private fun NowPlayingStage(
                 compact = compact,
             )
             TransportButton(Icons.Filled.FastForward, "+30s", onFwd30, feedback = feedback, compact = compact)
-            TransportButton(Icons.Filled.SkipNext, "Older", onOlder, feedback = feedback, compact = compact)
+            TransportButton(
+                Icons.Filled.SkipNext, "Older", onOlder,
+                feedback = feedback, compact = compact,
+                // Only the rightmost control redirects Right → episode list.
+                rightFocus = episodeListFocus,
+            )
         }
     }
 }
@@ -782,6 +764,7 @@ private fun TransportButton(
     focusRequester: FocusRequester? = null,
     feedback: TvFeedback,
     compact: Boolean = false,
+    rightFocus: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     val size = when {
@@ -789,12 +772,6 @@ private fun TransportButton(
         compact -> 32.dp
         large -> 64.dp
         else -> 48.dp
-    }
-    val corner = when {
-        compact && large -> 12.dp
-        compact -> 10.dp
-        large -> 18.dp
-        else -> 14.dp
     }
     val iconSize = when {
         compact && large -> 22.dp
@@ -805,19 +782,15 @@ private fun TransportButton(
     Box(
         modifier = Modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .size(size)
+            .glassInteract(focused = focused, selected = false)
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) feedback.focus()
             }
-            .size(size)
-            .clip(RoundedCornerShape(corner))
-            .background(if (large) Accent.copy(alpha = 0.22f) else CardSurface)
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) FocusRing else Color.White.copy(alpha = 0.1f),
-                shape = RoundedCornerShape(corner),
-            )
-            .focusable()
+            .focusProperties {
+                if (rightFocus != null) right = rightFocus
+            }
             .clickable {
                 feedback.click()
                 onClick()
@@ -833,7 +806,6 @@ private fun TransportButton(
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun EpisodeListPane(
     episodes: List<PodcastEpisode>,
@@ -855,13 +827,6 @@ private fun EpisodeListPane(
     val paneCorner = if (compact) 12.dp else 16.dp
     Column(
         modifier = modifier
-            .focusProperties {
-                // Left from episodes must hit play/pause — not jump the rail at the same Y.
-                exit = { direction ->
-                    if (direction == FocusDirection.Left) playFocus
-                    else FocusRequester.Default
-                }
-            }
             .clip(RoundedCornerShape(paneCorner))
             .background(CardSurface)
             .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(paneCorner))
@@ -884,8 +849,9 @@ private fun EpisodeListPane(
                 icon = Icons.AutoMirrored.Filled.Sort,
                 onClick = onCycleSort,
                 feedback = feedback,
-                selected = episodeSort != PodcastEpisodeSort.NEWEST,
+                selected = false,
                 compact = compact,
+                leftFocus = playFocus,
             )
         }
         Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
@@ -939,6 +905,7 @@ private fun EpisodeListPane(
                             feedback = feedback,
                             compact = compact,
                             focusRequester = if (index == 0) listFocusRequester else null,
+                            leftFocus = playFocus,
                         )
                     }
                 }
@@ -958,31 +925,25 @@ private fun EpisodeRow(
     showTitle: String? = null,
     compact: Boolean = false,
     focusRequester: FocusRequester? = null,
+    leftFocus: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val rowCorner = if (compact) 8.dp else 10.dp
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .glassInteract(
+                focused = focused,
+                selected = playing,
+                idleSurface = Color.Transparent,
+            )
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) feedback.focus()
             }
-            .clip(RoundedCornerShape(rowCorner))
-            .background(
-                when {
-                    playing -> Accent.copy(alpha = 0.18f)
-                    focused -> Color.White.copy(alpha = 0.08f)
-                    else -> Color.Transparent
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) FocusRing else Color.Transparent,
-                shape = RoundedCornerShape(rowCorner),
-            )
-            .focusable()
+            .focusProperties {
+                if (leftFocus != null) left = leftFocus
+            }
             .clickable {
                 feedback.click()
                 onPlay()
@@ -1139,11 +1100,10 @@ private fun ShowsPickerDialog(
                             ShowTile(
                                 show = show,
                                 selected = !browsingAll && show.id == selectedId,
+                                dateEpochMs = show.latestEpisodeEpochMs,
                                 subtitle = when (showSort) {
                                     PodcastShowSort.GENRE -> null
-                                    PodcastShowSort.RECENT -> show.latestEpisodeEpochMs
-                                        .takeIf { it > 0L }
-                                        ?.let { formatDate(it) }
+                                    PodcastShowSort.RECENT -> null
                                     else -> show.primaryGenre.takeIf {
                                         it != "Uncategorised" && show.genres.isNotEmpty()
                                     }
@@ -1167,14 +1127,20 @@ private fun AllShowsTile(
     feedback: TvFeedback,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val chrome = LocalScreenChrome.current
+    val artShape = RoundedCornerShape(PallasShapes.art)
     Column(
         modifier = Modifier
             .width(140.dp)
+            .glassInteract(
+                focused = focused,
+                selected = selected,
+                idleSurface = Color.Transparent,
+            )
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) feedback.focus()
             }
-            .focusable()
             .clickable {
                 feedback.click()
                 onClick()
@@ -1184,16 +1150,17 @@ private fun AllShowsTile(
         Box(
             modifier = Modifier
                 .size(132.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(CardSurface)
-                .border(
-                    width = if (focused || selected) 2.dp else 1.dp,
-                    color = when {
-                        focused -> FocusRing
-                        selected -> Accent
-                        else -> Color.White.copy(alpha = 0.1f)
-                    },
-                    shape = RoundedCornerShape(14.dp),
+                .clip(artShape)
+                .background(chrome.surface.copy(alpha = 0.55f), artShape)
+                .border(1.dp, Color.White.copy(alpha = 0.14f), artShape)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            chrome.accent.copy(alpha = 0.18f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.35f),
+                        ),
+                    ),
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -1245,16 +1212,26 @@ private fun ShowTile(
     onClick: () -> Unit,
     feedback: TvFeedback,
     subtitle: String? = null,
+    dateEpochMs: Long = 0L,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val chrome = LocalScreenChrome.current
+    val artShape = RoundedCornerShape(PallasShapes.art)
+    val relativeDate = remember(dateEpochMs) {
+        if (dateEpochMs > 0L) formatRelativeAgo(dateEpochMs) else ""
+    }
     Column(
         modifier = Modifier
             .width(140.dp)
+            .glassInteract(
+                focused = focused,
+                selected = selected,
+                idleSurface = Color.Transparent,
+            )
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) feedback.focus()
             }
-            .focusable()
             .clickable {
                 feedback.click()
                 onClick()
@@ -1264,17 +1241,9 @@ private fun ShowTile(
         Box(
             modifier = Modifier
                 .size(132.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(CardSurface)
-                .border(
-                    width = if (focused || selected) 2.dp else 1.dp,
-                    color = when {
-                        focused -> FocusRing
-                        selected -> Accent
-                        else -> Color.White.copy(alpha = 0.1f)
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                ),
+                .clip(artShape)
+                .background(chrome.surface.copy(alpha = 0.55f), artShape)
+                .border(1.dp, Color.White.copy(alpha = 0.14f), artShape),
         ) {
             if (show.imageUrl.isNotBlank()) {
                 AsyncImage(
@@ -1283,7 +1252,26 @@ private fun ShowTile(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
+                // Frosted glass wash over cover art
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.White.copy(alpha = 0.06f))
+                        .background(chrome.accent.copy(alpha = 0.10f)),
+                )
             } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    chrome.accent.copy(alpha = 0.22f),
+                                    chrome.surface.copy(alpha = 0.7f),
+                                ),
+                            ),
+                        ),
+                )
                 Icon(
                     Icons.Filled.Podcasts,
                     contentDescription = null,
@@ -1292,6 +1280,34 @@ private fun ShowTile(
                         .align(Alignment.Center)
                         .size(48.dp),
                 )
+            }
+            if (relativeDate.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.72f),
+                                ),
+                            ),
+                        )
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        relativeDate,
+                        color = Color.White.copy(alpha = 0.92f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        fontFamily = PallasFontFamily,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -1339,7 +1355,28 @@ private fun formatDuration(sec: Long): String {
     }
 }
 
-private fun formatDate(epochMs: Long): String {
+private fun formatRelativeAgo(epochMs: Long): String {
     if (epochMs <= 0L) return ""
-    return SimpleDateFormat("d MMM yyyy", Locale.UK).format(Date(epochMs))
+    val now = System.currentTimeMillis()
+    val delta = (now - epochMs).coerceAtLeast(0L)
+    val minutes = TimeUnit.MILLISECONDS.toMinutes(delta)
+    val hours = TimeUnit.MILLISECONDS.toHours(delta)
+    val days = TimeUnit.MILLISECONDS.toDays(delta)
+    return when {
+        minutes < 1L -> "just now"
+        minutes < 60L -> if (minutes == 1L) "1 minute ago" else "$minutes minutes ago"
+        hours < 24L -> if (hours == 1L) "1 hour ago" else "$hours hours ago"
+        days < 30L -> if (days == 1L) "1 day ago" else "$days days ago"
+        days < 365L -> {
+            val months = (days / 30L).coerceAtLeast(1L)
+            if (months == 1L) "1 month ago" else "$months months ago"
+        }
+        else -> {
+            val years = (days / 365L).coerceAtLeast(1L)
+            if (years == 1L) "1 year ago" else "$years years ago"
+        }
+    }
 }
+
+/** Episode rows / other call sites that previously used calendar dates. */
+private fun formatDate(epochMs: Long): String = formatRelativeAgo(epochMs)

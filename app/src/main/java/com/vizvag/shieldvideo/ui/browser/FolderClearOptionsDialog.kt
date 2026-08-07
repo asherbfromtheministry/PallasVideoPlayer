@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.TextMuted
@@ -156,13 +157,7 @@ private fun ClearOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.04f))
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Accent else Color.White.copy(alpha = 0.08f),
-                shape = RoundedCornerShape(12.dp),
-            )
+            .glassInteract(focused = focused, selected = false, idleSurface = Color.White.copy(alpha = 0.04f))
             .focusRequester(requester)
             .onFocusChanged {
                 val gained = it.isFocused && !focused

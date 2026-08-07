@@ -3,15 +3,14 @@ import android.app.Activity
 import android.content.Context
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -70,8 +69,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
@@ -133,10 +132,11 @@ import com.vizvag.shieldvideo.ui.theme.AudioScreenTheme
 import com.vizvag.shieldvideo.ui.theme.AudioSurface
 import com.vizvag.shieldvideo.ui.theme.AudioText
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
+import com.vizvag.shieldvideo.ui.theme.RadioChrome
+import com.vizvag.shieldvideo.ui.theme.ScreenTheme
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.FocusRing
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
-import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import com.vizvag.shieldvideo.ui.theme.staggeredEntrance
@@ -153,7 +153,6 @@ private const val PREFS = com.vizvag.shieldvideo.playback.radio.RadioPlaybackCon
 private const val KEY_LAST_STATION =
     com.vizvag.shieldvideo.playback.radio.RadioPlaybackController.KEY_LAST_STATION
 private const val METADATA_POLL_MS = 30_000L
-private val GlassRowShape = RoundedCornerShape(14.dp)
 private val LeftPanePad = 14.dp
 private val StationPaneWidth = 240.dp
 private val HeroArtSize = 220.dp
@@ -169,7 +168,7 @@ fun RadioScreen(
     onOpenPodcasts: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
-    AudioScreenTheme {
+    ScreenTheme(RadioChrome) {
         RadioScreenBody(
             settingsRepository = settingsRepository,
             onBack = onBack,
@@ -503,11 +502,8 @@ private fun RadioScreenBody(
             return@LaunchedEffect
         }
         val live = com.vizvag.shieldvideo.ShieldVideoApp.instance.radioPlayback.state.value
-        // Deep link already switched the shared player — wait for dial sync, don't stomp it.
-        if (live.stationId.isNotBlank() && live.stationId != station.id) {
-            return@LaunchedEffect
-        }
-        // Already on this station from playStation() — attach UI state without restarting.
+        // Already on this station from playStation() / deep link — attach UI without restarting.
+        // When the dial moves first (user pick), live still has the old id; fall through and retune.
         if (
             streamAttempt == 0 &&
             live.stationId == station.id &&
@@ -1000,7 +996,6 @@ private fun BlackScreenOverlay(
             .zIndex(10f)
             .background(Color.Black)
             .focusRequester(focusRequester)
-            .focusable()
             .clickable(role = Role.Button, onClick = onWake),
     )
 }
@@ -1168,18 +1163,12 @@ private fun RadioMetaLink(
         overflow = TextOverflow.Ellipsis,
         maxLines = 3,
         modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(
-                when {
-                    !enabled -> Color.Transparent
-                    focused -> Color.White.copy(alpha = 0.10f)
-                    else -> Color.Transparent
-                },
-            )
-            .border(
-                width = if (focused && enabled) 2.dp else 0.dp,
-                color = if (focused && enabled) FocusRing else Color.Transparent,
-                shape = RoundedCornerShape(4.dp),
+            .glassInteract(
+                focused = focused && enabled,
+                selected = false,
+                idleSurface = Color.Transparent,
+                showIdleBorder = false,
+                scaleOnFocus = false,
             )
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent { event ->
@@ -1195,11 +1184,12 @@ private fun RadioMetaLink(
                     false
                 }
             }
-            .focusable(enabled = enabled, interactionSource = interaction)
+            .focusProperties { canFocus = enabled }
             .clickable(enabled = enabled, role = Role.Button, onClick = {
                 feedback.click()
                 onClick()
-            }),
+            })
+            .padding(horizontal = 6.dp, vertical = 2.dp),
     )
 }
 @Composable
@@ -1463,35 +1453,19 @@ private fun PlayPauseButton(
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.08f else 1f,
-        animationSpec = Motion.focusSpring(),
-        label = "playScale"
-    )
     Box(
         modifier = Modifier
-            .size(40.dp)
-            .scale(scale)
-            .clip(CircleShape)
-            .background(
-                if (focused) accent.copy(alpha = 0.28f)
-                else Color.White.copy(alpha = 0.08f)
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Accent else Color.White.copy(alpha = 0.22f),
-                shape = CircleShape
-            )
+            .size(48.dp)
+            .glassInteract(focused = focused, selected = playing)
             .focusRequester(focusRequester)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
             contentDescription = if (playing) "Pause" else "Play",
-            tint = if (focused) Accent else Color.White.copy(alpha = 0.85f),
+            tint = Color.White.copy(alpha = if (focused) 1f else 0.85f),
             modifier = Modifier.size(20.dp)
         )
     }
@@ -1506,17 +1480,7 @@ private fun RecordButton(
     onLongClick: () -> Unit = {},
 ) {
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.08f else 1f,
-        animationSpec = Motion.focusSpring(),
-        label = "recScale",
-    )
     val active = recording || saving
-    val ring = when {
-        focused -> Accent
-        active -> Color(0xFFFF5252)
-        else -> Color.White.copy(alpha = 0.22f)
-    }
     val infinite = rememberInfiniteTransition(label = "recPulse")
     val pulse by infinite.animateFloat(
         initialValue = 0.35f,
@@ -1535,7 +1499,6 @@ private fun RecordButton(
     Box(
         modifier = Modifier
             .size(40.dp)
-            .scale(scale)
             .drawBehind {
                 if (active) {
                     drawCircle(
@@ -1544,18 +1507,11 @@ private fun RecordButton(
                     )
                 }
             }
-            .clip(CircleShape)
-            .background(
-                when {
-                    active -> Color(0xFFFF5252).copy(alpha = 0.88f)
-                    focused -> accent.copy(alpha = 0.22f)
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = ring,
-                shape = CircleShape,
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = if (active) Color(0xFFFF5252).copy(alpha = 0.88f)
+                else Color.White.copy(alpha = 0.08f),
             )
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent { event ->
@@ -1649,40 +1605,21 @@ private fun StopRecordingAfterDialog(
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 )
                 RadioRecordingService.STOP_AFTER_MINUTES.forEach { minutes ->
-                    Text(
-                        text = RadioRecordingService.formatMinutesLabel(minutes),
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { run { onStopAfter(minutes) } }
-                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                    StopRecordingDialogOption(
+                        label = RadioRecordingService.formatMinutesLabel(minutes),
+                        onClick = { run { onStopAfter(minutes) } },
                     )
                 }
-                Text(
-                    text = "Stop now",
+                StopRecordingDialogOption(
+                    label = "Stop now",
                     color = Color(0xFFFF6E6E),
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 16.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { run(onStopNow) }
-                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    onClick = { run(onStopNow) },
                 )
                 if (hasTimer) {
-                    Text(
-                        text = "Cancel timed stop",
+                    StopRecordingDialogOption(
+                        label = "Cancel timed stop",
                         color = AudioTextMuted,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { run(onCancelTimer) }
-                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                        onClick = { run(onCancelTimer) },
                     )
                 }
             }
@@ -1695,6 +1632,28 @@ private fun StopRecordingAfterDialog(
         containerColor = CardSurface,
     )
 }
+
+@Composable
+private fun StopRecordingDialogOption(
+    label: String,
+    onClick: () -> Unit,
+    color: Color = Color.White,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Text(
+        text = label,
+        color = color,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 16.sp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassInteract(focused = focused, selected = false)
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp, horizontal = 8.dp),
+    )
+}
+
 private fun formatRemainingMinutes(mins: Int): String = when {
     mins >= 60 -> {
         val h = mins / 60
@@ -1756,72 +1715,16 @@ private fun StationListRow(
 ) {
     val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = when {
-            focused -> 1.02f
-            selected -> 1.01f
-            else -> 1f
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "stationRowScale",
-    )
-    val borderWidth by animateDpAsState(
-        targetValue = when {
-            focused -> 3.dp
-            selected -> 2.dp
-            else -> 1.dp
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "stationRowBorder",
-    )
-    val borderColor by animateColorAsState(
-        targetValue = when {
-            focused -> Color.White
-            selected -> station.accent
-            else -> station.accent.copy(alpha = 0.42f)
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "stationRowBorderColor",
-    )
-    val bgTop by animateColorAsState(
-        targetValue = when {
-            focused -> station.accent.copy(alpha = 0.42f)
-            selected -> station.accent.copy(alpha = 0.36f)
-            else -> station.accent.copy(alpha = 0.22f)
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "stationRowBg",
-    )
-    val bgBottom by animateColorAsState(
-        targetValue = when {
-            focused -> station.accentDeep.copy(alpha = 0.92f)
-            selected -> station.accentDeep.copy(alpha = 0.88f)
-            else -> station.accentDeep.copy(alpha = 0.72f)
-        },
-        animationSpec = Motion.focusSpring(),
-        label = "stationRowBgBottom",
-    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .staggeredEntrance(visible = true, index = index)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(GlassRowShape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(bgTop, bgBottom),
-                ),
-            )
-            .border(borderWidth, borderColor, GlassRowShape)
+            .glassInteract(focused = focused, selected = selected)
             .onFocusChanged {
                 val gained = it.isFocused && !focused
                 focused = it.isFocused
                 if (gained) feedback.focus()
             }
-            .focusable()
             .clickable {
                 feedback.click()
                 onClick()

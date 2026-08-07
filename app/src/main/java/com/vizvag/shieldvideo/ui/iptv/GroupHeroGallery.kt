@@ -2,7 +2,6 @@ package com.vizvag.shieldvideo.ui.iptv
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,7 +29,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -52,9 +50,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vizvag.shieldvideo.data.iptv.GroupChannelOrder
 import com.vizvag.shieldvideo.data.iptv.IptvDefaults
-import com.vizvag.shieldvideo.ui.theme.FocusRing
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
+import com.vizvag.shieldvideo.ui.theme.PallasShapes
 import com.vizvag.shieldvideo.ui.theme.TextCream
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
@@ -316,17 +315,17 @@ private fun GroupHeroCard(
 ) {
     val feedback = rememberTvFeedback()
     val palette = remember(groupKey, kind) { groupCardPalette(groupKey, kind) }
-    val scale by animateFloatAsState(
-        targetValue = if (highlighted) 1.08f else 0.94f,
-        animationSpec = Motion.focusSpring(),
-        label = "heroScale",
-    )
     val glow by animateFloatAsState(
         targetValue = if (highlighted) 1f else 0f,
         animationSpec = Motion.focusSpring(),
         label = "heroGlow",
     )
-    val shape = RoundedCornerShape(18.dp)
+    val scale by animateFloatAsState(
+        targetValue = if (highlighted) 1.05f else 1f,
+        animationSpec = Motion.focusSpring(),
+        label = "heroScale",
+    )
+    val shape = RoundedCornerShape(PallasShapes.control)
     val accent = palette.accent
     val top = palette.top
     val mid = palette.mid
@@ -340,6 +339,7 @@ private fun GroupHeroCard(
         modifier = Modifier
             .width(300.dp)
             .fillMaxHeight(0.86f)
+            .padding(8.dp) // gutter so focus scale stays inside gallery
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -349,7 +349,12 @@ private fun GroupHeroCard(
                     else -> 0.78f
                 }
             }
-            .clip(shape)
+            .glassInteract(
+                focused = highlighted,
+                selected = false,
+                scaleOnFocus = false,
+                idleSurface = Color.Transparent,
+            )
             .background(
                 Brush.verticalGradient(
                     colorStops = arrayOf(
@@ -358,15 +363,7 @@ private fun GroupHeroCard(
                         1f to bottom.copy(alpha = 0.96f),
                     ),
                 ),
-            )
-            .border(
-                width = if (highlighted) 2.5.dp else 1.dp,
-                color = if (highlighted) {
-                    FocusRing
-                } else {
-                    accent.copy(alpha = 0.45f)
-                },
-                shape = shape,
+                shape,
             )
             .clickable(role = Role.Button, onClick = {
                 feedback.click()

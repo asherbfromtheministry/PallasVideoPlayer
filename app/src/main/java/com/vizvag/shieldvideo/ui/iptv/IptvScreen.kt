@@ -122,10 +122,10 @@ import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
-import com.vizvag.shieldvideo.ui.theme.FocusRing
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
@@ -695,23 +695,16 @@ private fun EpgMatchProgressPanel(
                 var cancelFocused by remember { mutableStateOf(false) }
                 Text(
                     text = if (matching) "Cancel" else "Close",
-                    color = if (cancelFocused) Color.Black else Color.White,
+                    color = Color.White,
                     fontFamily = PallasFontFamily,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,
                     modifier = Modifier
                         .padding(top = 14.dp)
                         .align(Alignment.End)
+                        .glassInteract(focused = cancelFocused, selected = false)
                         .focusRequester(cancelFocus)
-                        .focusable()
                         .onFocusChanged { cancelFocused = it.isFocused }
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (cancelFocused) CyanAccent else Color.White.copy(alpha = 0.12f))
-                        .border(
-                            2.dp,
-                            if (cancelFocused) FocusRing else Color.White.copy(alpha = 0.2f),
-                            RoundedCornerShape(10.dp),
-                        )
                         .clickable(role = Role.Button) {
                             feedback.click()
                             onCancel()
@@ -2170,8 +2163,7 @@ private fun HistoryVideoRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (focused) Color(0xFFFFA726).copy(alpha = 0.20f) else Color.Transparent)
+            .glassInteract(focused = focused, selected = false)
             .onFocusChanged { focused = it.isFocused }
             .clickable(onClick = onPlay)
             .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -2226,16 +2218,15 @@ private fun PlaylistChips(
     ) {
         playlists.forEach { p ->
             val selected = p.id == activeId
+            var focused by remember(p.id) { mutableStateOf(false) }
             Text(
                 text = p.name,
                 color = Color.White,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (selected) CyanAccent.copy(alpha = 0.35f) else CardSurface)
-                    .border(1.dp, if (selected) CyanAccent else Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                    .glassInteract(focused = focused, selected = selected)
+                    .onFocusChanged { focused = it.isFocused }
                     .clickable { onSelect(p.id) }
-                    .focusable()
                     .padding(horizontal = 14.dp, vertical = 8.dp)
             )
         }
@@ -2270,16 +2261,8 @@ private fun GroupSidebar(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        when {
-                            focused -> CyanAccent.copy(alpha = 0.4f)
-                            isSelected -> CyanAccent.copy(alpha = 0.25f)
-                            else -> CardSurface
-                        }
-                    )
+                    .glassInteract(focused = focused, selected = isSelected)
                     .onFocusChanged { focused = it.isFocused }
-                    .focusable()
                     .clickable(role = Role.Button) { onSelect(group) }
                     .padding(horizontal = 12.dp, vertical = 10.dp)
             )
@@ -2344,25 +2327,12 @@ private fun ChannelRowCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val rowHeight = if (compact) 64.dp else 88.dp
-    val borderColor = when {
-        focused -> CyanAccent
-        previewing -> CyanAccent.copy(alpha = 0.75f)
-        else -> Color.Transparent
-    }
-    val bg = when {
-        focused -> CyanAccent.copy(alpha = 0.22f)
-        previewing -> CyanAccent.copy(alpha = 0.12f)
-        else -> CardSurface
-    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(rowHeight)
-            .clip(RoundedCornerShape(14.dp))
-            .background(bg)
-            .border(2.dp, borderColor, RoundedCornerShape(14.dp))
+            .glassInteract(focused = focused, selected = previewing)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onPlay)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -2542,16 +2512,8 @@ private fun AssignEpgDialog(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        when {
-                                            focused -> CyanAccent.copy(alpha = 0.28f)
-                                            selected -> CyanAccent.copy(alpha = 0.16f)
-                                            else -> Color.Transparent
-                                        }
-                                    )
+                                    .glassInteract(focused = focused, selected = selected)
                                     .onFocusChanged { focused = it.isFocused }
-                                    .focusable()
                                     .clickable { onPick(entry.id) }
                                     .padding(horizontal = 10.dp, vertical = 10.dp)
                             ) {
@@ -2717,24 +2679,7 @@ private fun RecordingProgrammeRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                when {
-                    focused && recording -> Color(0xFFFF5252).copy(alpha = 0.22f)
-                    focused -> CyanAccent.copy(alpha = 0.18f)
-                    recording -> Color(0xFFFF5252).copy(alpha = 0.10f)
-                    else -> Color.White.copy(alpha = 0.04f)
-                }
-            )
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = when {
-                    focused && recording -> Color(0xFFFF8A80)
-                    focused -> CyanAccent
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-                shape = RoundedCornerShape(8.dp)
-            )
+            .glassInteract(focused = focused, selected = recording)
             .focusRequester(requester)
             .onFocusChanged { focused = it.isFocused }
             .semantics {
@@ -2752,7 +2697,6 @@ private fun RecordingProgrammeRow(
                     false
                 }
             }
-            .focusable()
             .clickable {
                 if (recording) onStop() else onRecord()
             }
@@ -2886,16 +2830,12 @@ private fun RecordingActionIcon(
     IconButton(
         onClick = { if (recording) onStop() else onRecord() },
         modifier = Modifier
-            .size(44.dp)
+            .size(48.dp)
             .onFocusChanged { focused = it.isFocused }
-            .background(
-                when {
-                    focused && recording -> Color(0xFFFF5252).copy(alpha = 0.35f)
-                    focused -> CyanAccent.copy(alpha = 0.28f)
-                    recording -> Color(0xFFFF5252).copy(alpha = 0.18f)
-                    else -> Color.White.copy(alpha = 0.06f)
-                },
-                RoundedCornerShape(10.dp)
+            .glassInteract(
+                focused = focused,
+                selected = recording,
+                idleSurface = Color.White.copy(alpha = 0.06f),
             )
             .semantics {
                 contentDescription = if (recording) "Stop recording" else "Record programme"
@@ -3117,8 +3057,7 @@ private fun SearchChannelRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (focused) CyanAccent.copy(alpha = 0.22f) else Color.Transparent)
+            .glassInteract(focused = focused, selected = false, idleSurface = Color.Transparent)
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent { event ->
                 val isSelect = event.key == Key.DirectionCenter ||
