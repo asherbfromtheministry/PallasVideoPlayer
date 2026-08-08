@@ -33,5 +33,8 @@ ui-options/
 # Local-only dumps / backups / preview captures
 /backups/
 /design-previews/
+/calendar_export/
+/assets/
 /lounge-*.png
-/pallas_preview.png
+/pallas_*.png
+/pallas_ui*.xml
