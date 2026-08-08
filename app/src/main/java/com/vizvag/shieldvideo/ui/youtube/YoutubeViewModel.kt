@@ -8,6 +8,7 @@ import com.vizvag.shieldvideo.data.youtube.YoutubeApiException
 import com.vizvag.shieldvideo.data.youtube.YoutubeFeedSort
 import com.vizvag.shieldvideo.data.youtube.YoutubeRepository
 import com.vizvag.shieldvideo.data.youtube.YoutubeStreamInfo
+import com.vizvag.shieldvideo.data.youtube.YoutubeTvAuthRepository
 import com.vizvag.shieldvideo.data.youtube.YoutubeVideoItem
 import com.vizvag.shieldvideo.data.youtube.YoutubeWatchHistoryStore
 import kotlinx.coroutines.Job
@@ -69,6 +70,7 @@ class YoutubeViewModel(
 
     private var searchJob: Job? = null
     private var feedJob: Job? = null
+    private val youtubeTvAuth = YoutubeTvAuthRepository()
 
     fun setFeedSort(sort: YoutubeFeedSort) {
         _state.update { it.copy(feedSort = sort) }
@@ -78,45 +80,98 @@ class YoutubeViewModel(
         feedJob?.cancel()
         feedJob = viewModelScope.launch {
             val settings = settingsRepository.load()
+            val displayName = settings.youtubeAccountName
+                .ifBlank { settings.youtubePipedUsername }
+                .ifBlank { if (settings.isYoutubeTvLinked) "YouTube" else "" }
             _state.update {
                 it.copy(
                     loggedIn = settings.isYoutubeLoggedIn,
-                    username = settings.youtubePipedUsername,
+                    username = displayName,
                     history = historyStore.items(),
                     loadingBrowse = true,
                     error = null,
                 )
             }
-            val token = settings.youtubePipedAuthToken
-            if (token.isNotBlank()) {
-                val subCount = runCatching { repository.subscriptions(token).size }.getOrDefault(0)
-                _state.update { it.copy(subscriptionCount = subCount) }
-                runCatching { repository.feed(token) }
-                    .onSuccess { list ->
-                        _state.update {
-                            it.copy(feed = list, loadingBrowse = false, error = null)
+            when {
+                settings.isYoutubeTvLinked -> {
+                    runCatching { loadYoutubeAccountFeed(settings) }
+                        .onSuccess { list ->
+                            _state.update {
+                                it.copy(
+                                    feed = list,
+                                    subscriptionCount = list.size,
+                                    loadingBrowse = false,
+                                    error = null,
+                                )
+                            }
                         }
-                    }
-                    .onFailure { e ->
-                        _state.update {
-                            it.copy(
-                                feed = emptyList(),
-                                loadingBrowse = false,
-                                error = e.message
-                                    ?: "Could not load subscriptions. Re-login in Settings → YouTube.",
-                            )
+                        .onFailure { e ->
+                            _state.update {
+                                it.copy(
+                                    feed = emptyList(),
+                                    loadingBrowse = false,
+                                    error = e.message
+                                        ?: "Could not load YouTube feed. Re-link in Settings → YouTube.",
+                                )
+                            }
                         }
+                }
+                settings.youtubePipedAuthToken.isNotBlank() -> {
+                    val token = settings.youtubePipedAuthToken
+                    val subCount = runCatching { repository.subscriptions(token).size }.getOrDefault(0)
+                    _state.update { it.copy(subscriptionCount = subCount) }
+                    runCatching { repository.feed(token) }
+                        .onSuccess { list ->
+                            _state.update {
+                                it.copy(feed = list, loadingBrowse = false, error = null)
+                            }
+                        }
+                        .onFailure { e ->
+                            _state.update {
+                                it.copy(
+                                    feed = emptyList(),
+                                    loadingBrowse = false,
+                                    error = e.message
+                                        ?: "Could not load subscriptions. Re-login in Settings → YouTube.",
+                                )
+                            }
+                        }
+                }
+                else -> {
+                    _state.update {
+                        it.copy(
+                            feed = emptyList(),
+                            subscriptionCount = 0,
+                            loadingBrowse = false,
+                        )
                     }
-            } else {
-                _state.update {
-                    it.copy(
-                        feed = emptyList(),
-                        subscriptionCount = 0,
-                        loadingBrowse = false,
-                    )
                 }
             }
         }
+    }
+
+    private suspend fun loadYoutubeAccountFeed(
+        settings: com.vizvag.shieldvideo.data.settings.AppSettings,
+    ): List<YoutubeVideoItem> {
+        val now = System.currentTimeMillis()
+        val access = if (
+            settings.youtubeAccessToken.isNotBlank() &&
+            settings.youtubeAccessTokenExpiresAtMs > now + 30_000L
+        ) {
+            settings.youtubeAccessToken
+        } else {
+            val tokens = youtubeTvAuth.refreshAccessToken(settings.youtubeRefreshToken)
+                .getOrThrow()
+            val updated = settings.copy(
+                youtubeAccessToken = tokens.accessToken,
+                youtubeRefreshToken = tokens.refreshToken,
+                youtubeAccessTokenExpiresAtMs =
+                    now + tokens.expiresInSeconds * 1000L - 60_000L,
+            )
+            settingsRepository.save(updated)
+            tokens.accessToken
+        }
+        return repository.youtubeAccountFeed(access)
     }
 
     fun setSearchQuery(query: String) {
@@ -240,7 +295,10 @@ class YoutubeViewModel(
 
     private fun YoutubeUiState.withAuth(repo: SettingsRepository): YoutubeUiState {
         val s = repo.load()
-        return copy(loggedIn = s.isYoutubeLoggedIn, username = s.youtubePipedUsername)
+        val name = s.youtubeAccountName
+            .ifBlank { s.youtubePipedUsername }
+            .ifBlank { if (s.isYoutubeTvLinked) "YouTube" else "" }
+        return copy(loggedIn = s.isYoutubeLoggedIn, username = name)
     }
 }
 

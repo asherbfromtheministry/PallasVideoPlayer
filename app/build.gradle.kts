@@ -24,13 +24,16 @@ android {
         applicationId = "com.vizvag.shieldvideo"
         minSdk = 28
         targetSdk = 34
-        versionCode = 226
-        versionName = "2.5.10"
+        versionCode = 227
+        versionName = "2.5.11"
 
         // Personalized defaults from personal.defaults.properties when present.
         // The "clean" build type blanks every one so a distributable APK ships
         // with no API keys, IPs, accounts, or subscriptions baked in.
         buildConfigField("boolean", "CLEAN_BUILD", "false")
+        // Local/debug builds expose YouTube; public "clean" GitHub APKs hide it
+        // (code stays in the tree — only UI/nav/remote entry points are gated).
+        buildConfigField("boolean", "FEATURE_YOUTUBE", "true")
         buildConfigField("String", "DEFAULT_TRAKT_CLIENT_ID", "\"${personal("DEFAULT_TRAKT_CLIENT_ID")}\"")
         buildConfigField("String", "DEFAULT_TMDB_API_KEY", "\"${personal("DEFAULT_TMDB_API_KEY")}\"")
         buildConfigField("String", "DEFAULT_TMDB_READ_TOKEN", "\"${personal("DEFAULT_TMDB_READ_TOKEN")}\"")
@@ -62,6 +65,7 @@ android {
             initWith(getByName("debug"))
             matchingFallbacks += listOf("debug")
             buildConfigField("boolean", "CLEAN_BUILD", "true")
+            buildConfigField("boolean", "FEATURE_YOUTUBE", "false")
             buildConfigField("String", "DEFAULT_TRAKT_CLIENT_ID", "\"\"")
             buildConfigField("String", "DEFAULT_TMDB_API_KEY", "\"\"")
             buildConfigField("String", "DEFAULT_TMDB_READ_TOKEN", "\"\"")

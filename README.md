@@ -62,7 +62,7 @@ Multiple **M3U** playlists, each with its own **XMLTV** EPG. Opens on last chann
 - **Channel tools:** Favorite, rename, move, Assign EPG, Record, Open in VLC.
 - **Search:** Channels + programme titles; quality badges; recent searches.
 - **Stream HUD:** Measured res/fps/HDR; audio layout (Stereo, 5.1, Atmos…); detailed stream info sheet.
-- **Recording:** EPG programme, presets, or custom duration; Local or NAS storage; schedules survive reboot; remux MP4 or keep `.ts`.
+- **Recording:** EPG programme, presets, or custom duration; Local or NAS storage; schedules survive reboot; always packages to MP4 (remux, then re-encode if needed).
 - **Multiview:** 1 / 2 / 4 panes. Parental PIN + locked groups. HDR SurfaceView; FFmpeg Dolby fallback.
 
 ### Radio
@@ -86,7 +86,7 @@ Immersive player for RSS podcast subscriptions imported from Podcast Addict (or 
 
 ### YouTube (optional on home/rail)
 
-Ad-free via **Innertube** ([Piped](https://github.com/TeamPiped/Piped) fallback) into ExoPlayer. Search or paste URLs; Piped subscription feed (sort, Takeout CSV import); continue watching (last 20); related while playing.
+Ad-free via **Innertube** ([Piped](https://github.com/TeamPiped/Piped) search fallback) into ExoPlayer. Search or paste URLs; **YouTube TV account** subscription feed (device code link, like SmartTube); continue watching (last 20); related while playing.
 
 ### General
 
@@ -152,7 +152,7 @@ APK path:
 
 A **clean** build is a shareable version with **zero personalization baked in** — no API keys (Trakt/TMDB), no IP addresses, no NAS host/user, no Home Assistant webhook, no accounts, and no IPTV playlist. A new user must enter all of their own data in the app's **Settings** on first run. **BBC radio stations are included** — they live in `RadioDefaults.kt` (not BuildConfig) and are seeded on first install like any other build.
 
-- Personalized defaults load from gitignored `personal.defaults.properties` into `buildConfigField` values in `app/build.gradle.kts`. Without that file, debug builds are blank like clean. The `clean` build type always forces `""` and `BuildConfig.CLEAN_BUILD = true`.
+- Personalized defaults load from gitignored `personal.defaults.properties` into `buildConfigField` values in `app/build.gradle.kts`. Without that file, debug builds are blank like clean. The `clean` build type always forces `""`, `BuildConfig.CLEAN_BUILD = true`, and `BuildConfig.FEATURE_YOUTUBE = false` (YouTube viewer hidden in public APKs; code stays in the tree).
 - Source never hard-codes personal values — `SettingsRepository`, `IptvDefaults`, and `NasPaths` read `BuildConfig`.
 - When adding a new personalized default, add it to `personal.defaults.properties.example`, load it in `defaultConfig`, blank it in the `clean` build type, and read it via `BuildConfig`.
 
@@ -232,9 +232,9 @@ After first install: open **PallasVideoPlayer** → **gear** → enter NAS crede
 
 - **Rail:** YouTube sits next to Live TV on the left nav rail when enabled under **Settings → Display**; optional on the home landing too
 - **Playback:** Resolves streams via **YouTube Innertube** from the TV (falls back to **[Piped](https://github.com/TeamPiped/Piped)**), then plays **direct media** in ExoPlayer — no official YouTube player, so mid-roll ads are not loaded
-- **Browse:** Search (query or paste a `youtube.com` / `youtu.be` URL), subscription feed (when logged into a Piped account) with **Newest / Popular / A–Z** sort and upload date on cards, refreshes on every open plus the Refresh button, local continue-watching history (last 20), recommendations while playing
-- **Settings → YouTube:** Piped API base URL (default `https://api.piped.private.coffee`) plus **Piped username/password** (Log in / Register / Log out) for the subscription feed. Import Takeout `subscriptions.csv` via **Import from Downloads**. Included in settings backup
-- **Maintenance:** Public Piped instances and YouTube’s backend change often — feed/search use Piped; playback prefers on-device Innertube when Piped is bot-blocked. Not for Play Store distribution
+- **Browse:** Search (query or paste a `youtube.com` / `youtu.be` URL), subscription feed when linked with a **YouTube TV** account (Settings → YouTube → Link YouTube), with **Newest / Popular / A–Z** sort, refreshes on every open plus the Refresh button, local continue-watching history (last 20), recommendations while playing
+- **Settings → YouTube:** **Link YouTube** shows a TV activation code (open `youtube.com/activate` / Google device page on your phone). Piped API URL remains for search. Optional legacy Piped login + Takeout CSV import still available. Included in settings backup
+- **Maintenance:** YouTube’s backend and TV OAuth client scripts change often — feed uses authenticated InnerTube; search uses Piped; playback prefers on-device Innertube. Not for Play Store distribution
 
 ## Live TV (IPTV)
 

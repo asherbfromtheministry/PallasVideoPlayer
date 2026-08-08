@@ -84,6 +84,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.vizvag.shieldvideo.FeatureFlags
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.nas.NasRepository
 import com.vizvag.shieldvideo.data.index.VideoIndexController
@@ -165,6 +166,11 @@ fun SettingsScreen(
     var showLeaveConfirm by remember { mutableStateOf(false) }
     var showImportConfirm by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableStateOf(SettingsTab.NAS) }
+    LaunchedEffect(Unit) {
+        if (!FeatureFlags.youtube && selectedTab == SettingsTab.YouTube) {
+            selectedTab = SettingsTab.NAS
+        }
+    }
     val tabFocusRequester = remember { FocusRequester() }
     val contentFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
@@ -608,13 +614,16 @@ private fun SettingsSectionRail(
                 }
             }
     ) {
-        SettingsTab.entries.forEach { tab ->
+        val tabs = SettingsTab.entries.filter { tab ->
+            tab != SettingsTab.YouTube || FeatureFlags.youtube
+        }
+        tabs.forEach { tab ->
             SettingsRailItem(
                 label = tab.label,
                 selected = tab == selected,
                 onClick = { onSelect(tab) },
                 onMoveFocusToHeader = onMoveFocusToHeader,
-                isFirst = tab == SettingsTab.entries.first(),
+                isFirst = tab == tabs.first(),
                 modifier = if (tab == selected) {
                     Modifier.focusRequester(tabFocusRequester)
                 } else {
@@ -1111,12 +1120,14 @@ private fun DisplaySettingsTab(
         onToggle = { viewModel.update { it.copy(homeShowLibrary = !it.homeShowLibrary) } },
     )
     Spacer(modifier = Modifier.height(8.dp))
-    HomeTileToggle(
-        label = "YouTube",
-        shown = draft.homeShowYouTube,
-        onToggle = { viewModel.update { it.copy(homeShowYouTube = !it.homeShowYouTube) } },
-    )
-    Spacer(modifier = Modifier.height(8.dp))
+    if (FeatureFlags.youtube) {
+        HomeTileToggle(
+            label = "YouTube",
+            shown = draft.homeShowYouTube,
+            onToggle = { viewModel.update { it.copy(homeShowYouTube = !it.homeShowYouTube) } },
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+    }
     HomeTileToggle(
         label = "Live TV",
         shown = draft.homeShowLiveTv,
@@ -1445,13 +1456,18 @@ private fun YouTubeSettingsTab(
     onImportFromDownloads: () -> Unit,
 ) {
     SectionHint(
-        "Piped login (not Google), then Import Takeout subscriptions.csv. " +
-            "Default API: ${com.vizvag.shieldvideo.data.youtube.YoutubeDefaults.DEFAULT_PIPED_API_URL}"
+        "Link your real YouTube account with a TV code (same idea as SmartTube). " +
+            "Search still uses Piped as a public API."
     )
-    TvSettingsField(
-        label = "Piped API base URL",
-        value = draft.youtubePipedApiUrl,
-        colors = fieldColors,
+    Text(
+        text = if (draft.isYoutubeTvLinked) {
+            "YouTube account · linked"
+        } else {
+            "YouTube account · not linked"
+        },
+        color = LocalScreenChrome.current.accent,
+        fontWeight = FontWeight.Bold,
+        fontSize = 11.sp,
         modifier = Modifier
             .focusRequester(contentFocusRequester)
             .tvBringIntoView()
@@ -1463,29 +1479,76 @@ private fun YouTubeSettingsTab(
                     false
                 }
             },
+    )
+    Spacer(Modifier.height(8.dp))
+    if (state.youtubeUserCode != null) {
+        Text(
+            text = "Code: ${state.youtubeUserCode}",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 22.sp,
+        )
+        Text(
+            text = "Open ${state.youtubeVerifyUrl ?: "https://www.youtube.com/activate"} on your phone",
+            color = TextMuted,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(8.dp))
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (draft.isYoutubeTvLinked) {
+            TvFocusButton(
+                onClick = viewModel::unlinkYoutubeTv,
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text("Unlink YouTube", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+        } else {
+            TvFocusButton(
+                onClick = { if (!state.youtubeLinking) viewModel.linkYoutubeTv() },
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text(
+                    text = if (state.youtubeLinking) "Waiting…" else "Link YouTube",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(18.dp))
+    Text("Search API (Piped)", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+    Spacer(Modifier.height(6.dp))
+    TvSettingsField(
+        label = "Piped API base URL",
+        value = draft.youtubePipedApiUrl,
+        colors = fieldColors,
+        modifier = Modifier.tvBringIntoView(),
         onChange = { value -> viewModel.update { it.copy(youtubePipedApiUrl = value) } },
     )
     Spacer(Modifier.height(10.dp))
     Text(
-        text = if (draft.isYoutubeLoggedIn) {
-            "Piped account · signed in"
+        text = if (draft.isYoutubePipedLoggedIn) {
+            "Optional Piped account · signed in (legacy feed)"
         } else {
-            "Piped account · signed out"
+            "Optional Piped account · for legacy feed / Takeout import only"
         },
-        color = LocalScreenChrome.current.accent,
-        fontWeight = FontWeight.Bold,
+        color = TextMuted,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 11.sp,
     )
     Spacer(Modifier.height(8.dp))
     TvSettingsField(
-        label = "Username",
+        label = "Piped username",
         value = draft.youtubePipedUsername,
         colors = fieldColors,
         modifier = Modifier.tvBringIntoView(),
         onChange = { value -> viewModel.update { it.copy(youtubePipedUsername = value) } },
     )
     TvSettingsField(
-        label = "Password",
+        label = "Piped password",
         value = state.youtubePassword,
         colors = fieldColors,
         isPassword = true,
@@ -1495,13 +1558,13 @@ private fun YouTubeSettingsTab(
         onChange = { value -> viewModel.setYoutubePassword(value) },
     )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (draft.isYoutubeLoggedIn) {
+        if (draft.isYoutubePipedLoggedIn) {
             TvFocusButton(
                 onClick = viewModel::logoutPiped,
                 compact = true,
                 modifier = Modifier.tvBringIntoView(),
             ) {
-                Text("Log out", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text("Log out Piped", color = Color.White, fontWeight = FontWeight.SemiBold)
             }
             TvFocusButton(
                 onClick = onImportFromDownloads,
@@ -1509,7 +1572,7 @@ private fun YouTubeSettingsTab(
                 modifier = Modifier.tvBringIntoView(),
             ) {
                 Text(
-                    text = if (state.youtubeAuthBusy) "…" else "Import from Downloads",
+                    text = if (state.youtubeAuthBusy) "…" else "Import Takeout CSV",
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -1532,7 +1595,7 @@ private fun YouTubeSettingsTab(
                 modifier = Modifier.tvBringIntoView(),
             ) {
                 Text(
-                    text = if (state.youtubeAuthBusy) "…" else "Log in",
+                    text = if (state.youtubeAuthBusy && !state.youtubeLinking) "…" else "Piped log in",
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -1542,17 +1605,9 @@ private fun YouTubeSettingsTab(
                 compact = true,
                 modifier = Modifier.tvBringIntoView(),
             ) {
-                Text("Register", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text("Piped register", color = Color.White, fontWeight = FontWeight.SemiBold)
             }
         }
-    }
-    if (draft.isYoutubeLoggedIn) {
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = "Import from Downloads = /Download/subscriptions.csv (Google Takeout).",
-            color = TextMuted,
-            fontSize = 11.sp,
-        )
     }
 }
 

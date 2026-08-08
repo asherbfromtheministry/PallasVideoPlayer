@@ -110,16 +110,15 @@ class MediaPlayerLauncher(private val context: Context) {
     }
 
     /**
-     * Keep the external player on top and clear a sticky media-button receiver left by
-     * another player (e.g. X Player) so Shield remote play/pause reaches the active session.
+     * Clear a sticky media-button receiver left by another player (e.g. X Player)
+     * so Shield remote play/pause reaches the active session.
+     *
+     * Do **not** [Activity.moveTaskToBack] here: that buries Pallas under the TV
+     * launcher, so leaving VLC returns to Shield home instead of the DVR/browser.
      */
     private fun afterPlayerLaunched(playerPackage: String) {
         Log.i(TAG, "Launched external player pkg=$playerPackage")
         clearStickyMediaButtonReceiver()
-        val activity = context as? Activity ?: return
-        if (!activity.isFinishing) {
-            activity.moveTaskToBack(true)
-        }
     }
 
     private fun clearStickyMediaButtonReceiver() {
@@ -273,7 +272,11 @@ class MediaPlayerLauncher(private val context: Context) {
                 putExtra("position", resumeMs.toInt().coerceAtLeast(0))
             }
         }
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // NEW_TASK only when started from a non-Activity context (e.g. remote FGS).
+        // From MainActivity, keep VLC in our task so Back returns to Pallas.
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         if (playbackUri.scheme.equals("content", ignoreCase = true)) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             // ClipData is required on newer Android so the grant sticks across the handoff.

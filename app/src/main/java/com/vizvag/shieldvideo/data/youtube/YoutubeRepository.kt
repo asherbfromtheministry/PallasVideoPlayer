@@ -14,9 +14,9 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
 /**
- * YouTube browse via [Piped](https://github.com/TeamPiped/Piped); playback via YouTube Innertube
- * (device IP) with Piped as fallback. Streams are direct media URLs (no YouTube player ads).
- * Personal feed uses a Piped account token (not a Google login).
+ * YouTube browse/search via [Piped](https://github.com/TeamPiped/Piped); playback via
+ * YouTube Innertube (device IP) with Piped as fallback. Subscription feed prefers a
+ * linked YouTube TV account (SmartTube-style device code); Piped login remains optional.
  */
 class YoutubeRepository(
     private val resolveBaseUrl: () -> String = { YoutubeDefaults.DEFAULT_PIPED_API_URL },
@@ -37,7 +37,57 @@ class YoutubeRepository(
     suspend fun register(username: String, password: String): AuthResult =
         authPost("/register", username, password)
 
-    /** Subscription feed for a logged-in Piped account. */
+    /**
+     * Real YouTube subscription feed via authenticated TV InnerTube (`FEsubscriptions`).
+     */
+    suspend fun youtubeAccountFeed(accessToken: String): List<YoutubeVideoItem> =
+        withContext(Dispatchers.IO) {
+            val token = accessToken.trim()
+            require(token.isNotBlank()) { "Not linked to YouTube" }
+            val payload = JSONObject()
+                .put(
+                    "context",
+                    JSONObject().put(
+                        "client",
+                        JSONObject()
+                            .put("clientName", "TVHTML5")
+                            .put("clientVersion", TV_CLIENT_VERSION)
+                            .put("hl", "en")
+                            .put("gl", "US")
+                            .put("platform", "TV")
+                            .put("userAgent", TV_BROWSE_UA),
+                    ),
+                )
+                .put("browseId", "FEsubscriptions")
+                .toString()
+            val request = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/browse?prettyPrint=false")
+                .header("User-Agent", TV_BROWSE_UA)
+                .header("Authorization", "Bearer $token")
+                .header("X-YouTube-Client-Name", "7")
+                .header("X-YouTube-Client-Version", TV_CLIENT_VERSION)
+                .header("Content-Type", "application/json")
+                .post(payload.toRequestBody(jsonMedia))
+                .build()
+            val body = client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw YoutubeApiException(
+                        "Subscription feed failed (${response.code}): ${text.take(200)}"
+                    )
+                }
+                text
+            }
+            val items = parseInnertubeBrowseVideos(body)
+            if (items.isEmpty()) {
+                throw YoutubeApiException(
+                    "YouTube returned an empty subscription feed. Open YouTube once on your phone, then Refresh."
+                )
+            }
+            items
+        }
+
+    /** Subscription feed for a logged-in Piped account (legacy / optional). */
     suspend fun feed(authToken: String): List<YoutubeVideoItem> =
         withContext(Dispatchers.IO) {
             val token = authToken.trim()
@@ -585,6 +635,130 @@ class YoutubeRepository(
         return parseStreamItems(JSONArray(trimmed))
     }
 
+    /** Walk TV/WEB InnerTube browse JSON for video tiles. */
+    private fun parseInnertubeBrowseVideos(body: String): List<YoutubeVideoItem> {
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+        val found = LinkedHashMap<String, YoutubeVideoItem>()
+        fun walk(node: Any?) {
+            when (node) {
+                is JSONObject -> {
+                    val videoId = node.optString("videoId").trim()
+                        .ifBlank {
+                            node.optJSONObject("navigationEndpoint")
+                                ?.optJSONObject("watchEndpoint")
+                                ?.optString("videoId").orEmpty().trim()
+                        }
+                        .ifBlank {
+                            node.optJSONObject("onTap")
+                                ?.optJSONObject("innertubeCommand")
+                                ?.optJSONObject("watchEndpoint")
+                                ?.optString("videoId").orEmpty().trim()
+                        }
+                    if (videoId.matches(Regex("^[\\w-]{11}$")) && !found.containsKey(videoId)) {
+                        val title = extractText(node.opt("title"))
+                            .ifBlank { extractText(node.opt("headline")) }
+                            .ifBlank { extractText(node.opt("primaryText")) }
+                            .ifBlank { extractText(node.optJSONObject("metadata")?.opt("title")) }
+                        if (title.isNotBlank()) {
+                            val uploader = extractText(node.opt("shortBylineText"))
+                                .ifBlank { extractText(node.opt("longBylineText")) }
+                                .ifBlank { extractText(node.opt("ownerText")) }
+                                .ifBlank { extractText(node.opt("subtitle")) }
+                            val thumb = firstThumbnailUrl(node)
+                            val durationSec = parseDurationSeconds(
+                                extractText(node.opt("lengthText"))
+                                    .ifBlank { extractText(node.opt("thumbnailOverlays")) }
+                            )
+                            val published = extractText(node.opt("publishedTimeText"))
+                                .ifBlank { extractText(node.opt("subtitle")) }
+                            found[videoId] = YoutubeVideoItem(
+                                id = videoId,
+                                title = title,
+                                uploader = uploader,
+                                thumbnailUrl = thumb.ifBlank {
+                                    "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+                                },
+                                durationSec = durationSec,
+                                views = 0L,
+                                uploadedDate = published,
+                                uploadedEpochMs = 0L,
+                            )
+                        }
+                    }
+                    val keys = node.keys()
+                    while (keys.hasNext()) {
+                        walk(node.opt(keys.next()))
+                    }
+                }
+                is JSONArray -> {
+                    for (i in 0 until node.length()) walk(node.opt(i))
+                }
+            }
+        }
+        walk(root)
+        return found.values.toList()
+    }
+
+    private fun extractText(value: Any?): String {
+        return when (value) {
+            null -> ""
+            is String -> value.trim()
+            is JSONObject -> {
+                value.optString("simpleText").trim().ifBlank {
+                    val runs = value.optJSONArray("runs")
+                    if (runs != null) {
+                        buildString {
+                            for (i in 0 until runs.length()) {
+                                append(runs.optJSONObject(i)?.optString("text").orEmpty())
+                            }
+                        }.trim()
+                    } else {
+                        ""
+                    }
+                }
+            }
+            is JSONArray -> {
+                buildString {
+                    for (i in 0 until value.length()) {
+                        val part = extractText(value.opt(i))
+                        if (part.isNotBlank()) {
+                            if (isNotEmpty()) append(' ')
+                            append(part)
+                        }
+                    }
+                }.trim()
+            }
+            else -> ""
+        }
+    }
+
+    private fun firstThumbnailUrl(node: JSONObject): String {
+        val candidates = listOf(
+            node.optJSONObject("thumbnail"),
+            node.optJSONObject("thumbnails"),
+            node.optJSONObject("thumbnailRenderer")?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail"),
+        )
+        for (thumb in candidates) {
+            val arr = thumb?.optJSONArray("thumbnails") ?: continue
+            for (i in arr.length() - 1 downTo 0) {
+                val url = arr.optJSONObject(i)?.optString("url").orEmpty()
+                if (url.isNotBlank()) return url
+            }
+        }
+        return ""
+    }
+
+    private fun parseDurationSeconds(raw: String): Long {
+        val text = raw.trim()
+        if (text.isBlank()) return 0L
+        val m = Regex("""(?:(\d+):)?(\d{1,2}):(\d{2})""").find(text) ?: return 0L
+        val hours = m.groupValues[1].toLongOrNull() ?: 0L
+        val minutes = m.groupValues[2].toLongOrNull() ?: 0L
+        val seconds = m.groupValues[3].toLongOrNull() ?: 0L
+        return hours * 3600 + minutes * 60 + seconds
+    }
+
     private fun parseSubscriptions(body: String): List<YoutubeSubscription> {
         val trimmed = body.trim()
         if (trimmed.startsWith("{")) {
@@ -687,6 +861,9 @@ class YoutubeRepository(
         /** Public YouTube Android client key used by open clients (not a secret user credential). */
         private const val INNERTUBE_API_KEY = "AIzaSyA8eiZmM1FaDVzRvBK1dDe3-6lQ_g0"
         private const val INNERTUBE_CLIENT_VERSION = "20.10.38"
+        private const val TV_CLIENT_VERSION = "7.20250219.19.00"
+        private const val TV_BROWSE_UA =
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
 
         /** Format Piped `uploaded` epoch (ms or sec) for UI. */
         fun formatUploadedEpoch(raw: Long): String {

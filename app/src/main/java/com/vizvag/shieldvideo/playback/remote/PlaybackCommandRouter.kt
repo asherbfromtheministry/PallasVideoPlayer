@@ -602,6 +602,9 @@ class PlaybackCommandRouter(
     }
 
     private suspend fun playYouTube(videoId: String) {
+        check(com.vizvag.shieldvideo.FeatureFlags.youtube) {
+            "YouTube is disabled in this build"
+        }
         prepareInAppPlayer(RemotePlaybackMode.YouTube, "youtube")
         val info = app.youtubeRepository.streams(videoId)
         app.youtubePlayback.playStream(info)

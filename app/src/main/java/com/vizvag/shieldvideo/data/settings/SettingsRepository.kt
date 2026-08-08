@@ -90,12 +90,22 @@ data class AppSettings(
     val musicUseHttps: Boolean = false,
     val musicTrustSelfSigned: Boolean = true,
     val customRadioStations: List<CustomRadioStationConfig> = emptyList(),
-    /** Piped API base URL for in-app YouTube (search + ad-free direct streams). */
+    /** Piped API base URL for search / stream fallback. */
     val youtubePipedApiUrl: String = YoutubeDefaults.DEFAULT_PIPED_API_URL,
-    /** Piped account username (not a Google account). */
+    /** Piped account username (optional legacy feed). */
     val youtubePipedUsername: String = "",
-    /** Piped session token for subscription feed. */
+    /** Piped session token (optional legacy feed). */
     val youtubePipedAuthToken: String = "",
+    /** Stable device id for YouTube TV OAuth pairing. */
+    val youtubeTvDeviceId: String = "",
+    /** YouTube TV OAuth refresh token (real Google/YouTube account). */
+    val youtubeRefreshToken: String = "",
+    /** Cached access token; refreshed as needed. */
+    val youtubeAccessToken: String = "",
+    /** Epoch ms when [youtubeAccessToken] expires. */
+    val youtubeAccessTokenExpiresAtMs: Long = 0L,
+    /** Display name from last successful link (optional). */
+    val youtubeAccountName: String = "",
     /** On-screen clock corner (subtle time + long date). */
     val clockCorner: ClockCorner = ClockCorner.BottomRight,
     /**
@@ -117,7 +127,11 @@ data class AppSettings(
     val podcastOpmlNasPath: String = "",
 ) {
     val isTraktLinked: Boolean get() = traktAccessToken.isNotBlank()
-    val isYoutubeLoggedIn: Boolean get() = youtubePipedAuthToken.isNotBlank()
+    /** Linked via YouTube TV device code, or legacy Piped session. */
+    val isYoutubeLoggedIn: Boolean
+        get() = youtubeRefreshToken.isNotBlank() || youtubePipedAuthToken.isNotBlank()
+    val isYoutubeTvLinked: Boolean get() = youtubeRefreshToken.isNotBlank()
+    val isYoutubePipedLoggedIn: Boolean get() = youtubePipedAuthToken.isNotBlank()
 
     /** Primary music folder (first configured path). */
     val musicPath: String
@@ -258,6 +272,11 @@ class SettingsRepository(context: Context) {
             },
             youtubePipedUsername = prefs.getString(KEY_YOUTUBE_PIPED_USER, "") ?: "",
             youtubePipedAuthToken = prefs.getString(KEY_YOUTUBE_PIPED_TOKEN, "") ?: "",
+            youtubeTvDeviceId = prefs.getString(KEY_YOUTUBE_TV_DEVICE_ID, "") ?: "",
+            youtubeRefreshToken = prefs.getString(KEY_YOUTUBE_REFRESH_TOKEN, "") ?: "",
+            youtubeAccessToken = prefs.getString(KEY_YOUTUBE_ACCESS_TOKEN, "") ?: "",
+            youtubeAccessTokenExpiresAtMs = prefs.getLong(KEY_YOUTUBE_ACCESS_EXPIRES, 0L),
+            youtubeAccountName = prefs.getString(KEY_YOUTUBE_ACCOUNT_NAME, "") ?: "",
             clockCorner = ClockCorner.fromStorage(
                 prefs.getString(KEY_CLOCK_CORNER, ClockCorner.BottomRight.name)
             ),
@@ -348,6 +367,11 @@ class SettingsRepository(context: Context) {
             )
             .putString(KEY_YOUTUBE_PIPED_USER, settings.youtubePipedUsername.trim())
             .putString(KEY_YOUTUBE_PIPED_TOKEN, settings.youtubePipedAuthToken)
+            .putString(KEY_YOUTUBE_TV_DEVICE_ID, settings.youtubeTvDeviceId.trim())
+            .putString(KEY_YOUTUBE_REFRESH_TOKEN, settings.youtubeRefreshToken)
+            .putString(KEY_YOUTUBE_ACCESS_TOKEN, settings.youtubeAccessToken)
+            .putLong(KEY_YOUTUBE_ACCESS_EXPIRES, settings.youtubeAccessTokenExpiresAtMs)
+            .putString(KEY_YOUTUBE_ACCOUNT_NAME, settings.youtubeAccountName.trim())
             .putString(KEY_CLOCK_CORNER, settings.clockCorner.name)
             .putBoolean(KEY_LITE_VISUALS, settings.liteVisuals)
             .putBoolean(KEY_HOME_SHOW_RADIO, settings.homeShowRadio)
@@ -413,6 +437,11 @@ class SettingsRepository(context: Context) {
             )
             .put("youtubePipedUsername", settings.youtubePipedUsername)
             .put("youtubePipedAuthToken", settings.youtubePipedAuthToken)
+            .put("youtubeTvDeviceId", settings.youtubeTvDeviceId)
+            .put("youtubeRefreshToken", settings.youtubeRefreshToken)
+            .put("youtubeAccessToken", settings.youtubeAccessToken)
+            .put("youtubeAccessTokenExpiresAtMs", settings.youtubeAccessTokenExpiresAtMs)
+            .put("youtubeAccountName", settings.youtubeAccountName)
             .put("clockCorner", settings.clockCorner.name)
             .put("liteVisuals", settings.liteVisuals)
             .put("homeShowRadio", settings.homeShowRadio)
@@ -530,6 +559,23 @@ class SettingsRepository(context: Context) {
             youtubePipedAuthToken = obj.optString(
                 "youtubePipedAuthToken",
                 defaults.youtubePipedAuthToken
+            ),
+            youtubeTvDeviceId = obj.optString("youtubeTvDeviceId", defaults.youtubeTvDeviceId),
+            youtubeRefreshToken = obj.optString(
+                "youtubeRefreshToken",
+                defaults.youtubeRefreshToken
+            ),
+            youtubeAccessToken = obj.optString(
+                "youtubeAccessToken",
+                defaults.youtubeAccessToken
+            ),
+            youtubeAccessTokenExpiresAtMs = obj.optLong(
+                "youtubeAccessTokenExpiresAtMs",
+                defaults.youtubeAccessTokenExpiresAtMs
+            ),
+            youtubeAccountName = obj.optString(
+                "youtubeAccountName",
+                defaults.youtubeAccountName
             ),
             clockCorner = ClockCorner.fromStorage(
                 obj.optString("clockCorner", defaults.clockCorner.name)
@@ -679,6 +725,15 @@ class SettingsRepository(context: Context) {
             .apply()
     }
 
+    fun clearYoutubeTvTokens() {
+        prefs.edit()
+            .remove(KEY_YOUTUBE_REFRESH_TOKEN)
+            .remove(KEY_YOUTUBE_ACCESS_TOKEN)
+            .remove(KEY_YOUTUBE_ACCESS_EXPIRES)
+            .remove(KEY_YOUTUBE_ACCOUNT_NAME)
+            .apply()
+    }
+
     fun isHueSyncReady(): Boolean {
         val s = load()
         return s.hueUsername.isNotBlank() && s.hueLightIds.isNotEmpty()
@@ -752,6 +807,11 @@ class SettingsRepository(context: Context) {
         private const val KEY_YOUTUBE_PIPED_API = "youtube_piped_api_url"
         private const val KEY_YOUTUBE_PIPED_USER = "youtube_piped_username"
         private const val KEY_YOUTUBE_PIPED_TOKEN = "youtube_piped_auth_token"
+        private const val KEY_YOUTUBE_TV_DEVICE_ID = "youtube_tv_device_id"
+        private const val KEY_YOUTUBE_REFRESH_TOKEN = "youtube_refresh_token"
+        private const val KEY_YOUTUBE_ACCESS_TOKEN = "youtube_access_token"
+        private const val KEY_YOUTUBE_ACCESS_EXPIRES = "youtube_access_expires_ms"
+        private const val KEY_YOUTUBE_ACCOUNT_NAME = "youtube_account_name"
         private const val KEY_CLOCK_CORNER = "clock_corner"
         private const val KEY_LITE_VISUALS = "lite_visuals"
         private const val KEY_HOME_SHOW_RADIO = "home_show_radio"

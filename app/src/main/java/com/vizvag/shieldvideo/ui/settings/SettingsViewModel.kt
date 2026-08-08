@@ -22,6 +22,7 @@ import com.vizvag.shieldvideo.data.settings.ConnectionMode
 import com.vizvag.shieldvideo.data.settings.SettingsRepository
 import com.vizvag.shieldvideo.data.settings.SettingsBackupManager
 import com.vizvag.shieldvideo.data.trakt.TraktAuthRepository
+import com.vizvag.shieldvideo.data.youtube.YoutubeTvAuthRepository
 import com.vizvag.shieldvideo.playback.InstalledVideoPlayer
 import com.vizvag.shieldvideo.playback.MediaPlayerLauncher
 import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
@@ -64,6 +65,9 @@ data class SettingsUiState(
     val youtubePasswordVisible: Boolean = false,
     val youtubeAuthBusy: Boolean = false,
     val youtubeAuthMessage: String? = null,
+    val youtubeLinking: Boolean = false,
+    val youtubeUserCode: String? = null,
+    val youtubeVerifyUrl: String? = null,
     val podcastBusy: Boolean = false,
     val podcastMessage: String? = null,
     val podcastSubscriptionCount: Int = 0,
@@ -89,8 +93,10 @@ class SettingsViewModel(
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
     private var linkJob: Job? = null
+    private var youtubeLinkJob: Job? = null
     private var baseline: AppSettings = AppSettings()
     private val hueClient = HueBridgeClient()
+    private val youtubeTvAuth = YoutubeTvAuthRepository()
 
     init {
         val loaded = settingsRepository.load()
@@ -732,6 +738,104 @@ class SettingsViewModel(
                 traktVerifyUrl = null,
                 traktLinkMessage = "Trakt unlinked",
                 isDirty = false
+            )
+        }
+    }
+
+    fun linkYoutubeTv() {
+        youtubeLinkJob?.cancel()
+        youtubeLinkJob = viewModelScope.launch {
+            val draft = _state.value.draft
+            val deviceId = draft.youtubeTvDeviceId.ifBlank {
+                YoutubeTvAuthRepository.newDeviceId()
+            }
+            _state.update {
+                it.copy(
+                    youtubeLinking = true,
+                    youtubeAuthBusy = true,
+                    youtubeAuthMessage = "Requesting YouTube code…",
+                    youtubeUserCode = null,
+                    youtubeVerifyUrl = null,
+                )
+            }
+            val device = youtubeTvAuth.requestDeviceCode(deviceId).getOrElse { error ->
+                _state.update {
+                    it.copy(
+                        youtubeLinking = false,
+                        youtubeAuthBusy = false,
+                        youtubeAuthMessage = error.message ?: "Failed to start YouTube link",
+                    )
+                }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    youtubeUserCode = device.userCode,
+                    youtubeVerifyUrl = device.verificationUrl,
+                    youtubeAuthMessage =
+                        "On your phone open ${device.verificationUrl} and enter ${device.userCode}",
+                )
+            }
+            val tokens = youtubeTvAuth.pollForToken(
+                deviceCode = device.deviceCode,
+                intervalSeconds = device.intervalSeconds,
+                expiresInSeconds = device.expiresInSeconds,
+            ).getOrElse { error ->
+                _state.update {
+                    it.copy(
+                        youtubeLinking = false,
+                        youtubeAuthBusy = false,
+                        youtubeAuthMessage = error.message ?: "YouTube link failed",
+                        youtubeUserCode = null,
+                        youtubeVerifyUrl = null,
+                    )
+                }
+                return@launch
+            }
+            val linked = draft.copy(
+                youtubeTvDeviceId = deviceId,
+                youtubeRefreshToken = tokens.refreshToken,
+                youtubeAccessToken = tokens.accessToken,
+                youtubeAccessTokenExpiresAtMs =
+                    System.currentTimeMillis() + tokens.expiresInSeconds * 1000L - 60_000L,
+                youtubeAccountName = "YouTube",
+            )
+            settingsRepository.save(linked)
+            baseline = linked
+            _state.update {
+                it.copy(
+                    draft = linked,
+                    youtubeLinking = false,
+                    youtubeAuthBusy = false,
+                    youtubeAuthMessage = "YouTube linked — open YouTube and press Refresh",
+                    youtubeUserCode = null,
+                    youtubeVerifyUrl = null,
+                    saved = true,
+                    isDirty = false,
+                )
+            }
+        }
+    }
+
+    fun unlinkYoutubeTv() {
+        youtubeLinkJob?.cancel()
+        settingsRepository.clearYoutubeTvTokens()
+        _state.update {
+            val next = it.draft.copy(
+                youtubeRefreshToken = "",
+                youtubeAccessToken = "",
+                youtubeAccessTokenExpiresAtMs = 0L,
+                youtubeAccountName = "",
+            )
+            baseline = next
+            it.copy(
+                draft = next,
+                youtubeLinking = false,
+                youtubeAuthBusy = false,
+                youtubeUserCode = null,
+                youtubeVerifyUrl = null,
+                youtubeAuthMessage = "YouTube unlinked",
+                isDirty = false,
             )
         }
     }

@@ -286,7 +286,7 @@ fun YoutubeScreen(
                         } else {
                             item {
                                 Text(
-                                    "Log in under Settings → YouTube (Piped account) to see your subscription feed.",
+                                    "Link YouTube under Settings → YouTube (TV code) to see your subscription feed.",
                                     color = TextMuted,
                                     fontSize = 13.sp,
                                     modifier = Modifier.padding(bottom = 4.dp),

@@ -180,32 +180,30 @@ class IptvRecordingService : Service() {
             val completedFile = convertToMp4(transportStream, mp4)
             val outputName = recordingFileName(
                 store.list().firstOrNull { it.id == recording.id } ?: recording,
-                if (completedFile.extension.equals("mp4", true)) "mp4" else "ts"
+                "mp4"
             )
             val outputLocation = RecordingDestination.save(this, completedFile, outputName)
-            val savedAsTs = !completedFile.extension.equals("mp4", true)
             store.upsert(
                 (store.list().firstOrNull { it.id == recording.id } ?: recording).copy(
                     status = IptvRecordingStatus.COMPLETED,
                     localPath = outputLocation,
-                    error = if (savedAsTs) {
-                        "Saved as .ts (stream codecs could not be remuxed to MP4 without re-encoding)"
-                    } else {
-                        null
-                    }
+                    error = null
                 )
             )
-            if (completedFile != transportStream) transportStream.delete()
-            completedFile.delete()
+            transportStream.delete()
+            if (completedFile != transportStream) completedFile.delete()
         } catch (cancelled: CancellationException) {
             transportStream.delete()
             store.upsert(recording.copy(status = IptvRecordingStatus.CANCELLED, error = null))
             throw cancelled
         } catch (e: Exception) {
+            // Never leave a half-baked destination file; drop the temp .ts too so
+            // the recording folder only ever contains finished MP4s.
+            transportStream.delete()
             store.upsert(
                 recording.copy(
                     status = IptvRecordingStatus.FAILED,
-                    localPath = transportStream.absolutePath.takeIf { transportStream.exists() },
+                    localPath = null,
                     error = e.message ?: "Recording failed"
                 )
             )
@@ -215,8 +213,8 @@ class IptvRecordingService : Service() {
     /**
      * Capture is always a temp .ts (cheap while recording).
      * After stop: fast remux in an **isolated process** (MPEG4Writer can SIGABRT on
-     * truncated/immediate-stop captures). On failure, re-encode with Transformer when
-     * the file is not huge so the user still gets MP4.
+     * truncated/immediate-stop captures). On failure, re-encode with Transformer so
+     * the user always gets MP4 — never persist the raw .ts.
      */
     private suspend fun convertToMp4(transportStream: File, mp4: File): File {
         mp4.delete()
@@ -225,24 +223,20 @@ class IptvRecordingService : Service() {
         }
         mp4.delete()
 
-        // Prefer MP4 even for short/cancelled captures; skip only multi‑GB programmes.
-        if (transportStream.length() <= TRANSFORM_MAX_BYTES) {
-            val transformed = runCatching {
-                transformToMp4(transportStream, mp4)
-                check(mp4.exists() && mp4.length() > 0L) { "Empty MP4 after transform" }
-                mp4
-            }.getOrNull()
-            if (transformed != null) return transformed
-            mp4.delete()
-        } else {
-            android.util.Log.i(
-                TAG,
-                "Skipping slow re-encode for ${(transportStream.length() / (1024 * 1024))}MB capture — keeping .ts"
-            )
-        }
+        storeStatusMessage(transportStream, "Re-encoding to MP4…")
+        transformToMp4(transportStream, mp4)
+        check(mp4.exists() && mp4.length() > 0L) { "Empty MP4 after transform" }
+        return mp4
+    }
 
-        android.util.Log.w(TAG, "MP4 packaging failed — keeping transport stream")
-        return transportStream
+    private fun storeStatusMessage(transportStream: File, message: String) {
+        // Best-effort UI hint while packaging; ignore if the recording row is gone.
+        runCatching {
+            val store = IptvRecordingStore(this)
+            val id = transportStream.nameWithoutExtension
+            val current = store.list().firstOrNull { it.id == id } ?: return
+            store.upsert(current.copy(status = IptvRecordingStatus.SAVING, error = message))
+        }
     }
 
     private suspend fun transformToMp4(source: File, output: File) {
@@ -337,8 +331,6 @@ class IptvRecordingService : Service() {
         private const val TAG = "IptvRecording"
         private const val CHANNEL_ID = "iptv_recording"
         private const val NOTIF_ID = 4402
-        /** Above this size, skip slow re-encode and keep .ts if remux fails. ~400MB ≈ short HD clip. */
-        private const val TRANSFORM_MAX_BYTES = 400L * 1024L * 1024L
         const val ACTION_START = "com.vizvag.shieldvideo.iptv.RECORD_START"
         const val ACTION_STOP = "com.vizvag.shieldvideo.iptv.RECORD_STOP"
         const val ACTION_FINISH = "com.vizvag.shieldvideo.iptv.RECORD_FINISH"

@@ -65,6 +65,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.lifecycle.lifecycleScope
+import com.vizvag.shieldvideo.FeatureFlags
 import com.vizvag.shieldvideo.data.index.VideoIndexController
 import com.vizvag.shieldvideo.data.iptv.IptvFavoritesStore
 import com.vizvag.shieldvideo.data.iptv.IptvParentalStore
@@ -763,6 +764,15 @@ private fun ShieldVideoAppNav(
                 )
             }
             composable("youtube") {
+                if (!FeatureFlags.youtube) {
+                    LaunchedEffect(Unit) {
+                        navController.navigate("home") {
+                            popUpTo("youtube") { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
+                    return@composable
+                }
                 val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext as ShieldVideoApp
                 val viewModel: YoutubeViewModel = viewModel(
                     factory = YoutubeViewModelFactory(

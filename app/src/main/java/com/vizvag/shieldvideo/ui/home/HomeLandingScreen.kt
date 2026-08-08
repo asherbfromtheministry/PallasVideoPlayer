@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vizvag.shieldvideo.FeatureFlags
 import com.vizvag.shieldvideo.R
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.settings.AppSettings
@@ -138,7 +139,7 @@ fun HomeLandingScreen(
             ?.takeUnless { folder -> shares.any { it.equals(folder, ignoreCase = true) } }
     }
 
-    val showYouTube = settings.homeShowYouTube
+    val showYouTube = settings.homeShowYouTube && FeatureFlags.youtube
     val showLiveTv = settings.homeShowLiveTv
     val hotspots = remember(
         defaultShare,

@@ -79,6 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.vizvag.shieldvideo.FeatureFlags
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.ui.components.glassInteract
@@ -114,7 +115,7 @@ data class RailPlayerVisibility(
     companion object {
         fun from(settings: AppSettings) = RailPlayerVisibility(
             liveTv = settings.homeShowLiveTv,
-            youtube = settings.homeShowYouTube,
+            youtube = settings.homeShowYouTube && FeatureFlags.youtube,
             radio = settings.homeShowRadio,
             music = settings.homeShowMusic,
             podcasts = settings.homeShowPodcasts,
