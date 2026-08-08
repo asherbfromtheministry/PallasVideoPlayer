@@ -7,9 +7,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaMuxer
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -30,7 +27,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.net.URI
-import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -169,10 +165,16 @@ class RadioRecordingService : Service() {
             if (raw.length() == 0L) throw IllegalStateException("No audio captured")
             _state.value = _state.value.copy(recording = false, saving = true, message = "Saving…")
             val remuxed = File(workDir, "capture_${startedAtMs}.mp4")
-            val completed = runCatching {
-                remuxAudioToMp4(raw, remuxed)
+            val completed = if (
+                IsolatedMp4Remux.remux(
+                    this,
+                    raw,
+                    remuxed,
+                    Mp4RemuxHelper.Mode.AUDIO_ONLY
+                )
+            ) {
                 remuxed
-            }.getOrElse {
+            } else {
                 remuxed.delete()
                 raw
             }
@@ -323,43 +325,6 @@ class RadioRecordingService : Service() {
         val match = Regex("""URI="([^"]+)"""").find(extXMapLine)
             ?: Regex("""URI=([^,\s]+)""").find(extXMapLine)
         return match?.groupValues?.getOrNull(1)
-    }
-
-    private fun remuxAudioToMp4(source: File, output: File) {
-        val extractor = MediaExtractor()
-        var muxer: MediaMuxer? = null
-        try {
-            extractor.setDataSource(source.absolutePath)
-            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val trackMap = mutableMapOf<Int, Int>()
-            for (index in 0 until extractor.trackCount) {
-                val format = extractor.getTrackFormat(index)
-                val mime = format.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
-                if (mime.startsWith("audio/")) {
-                    trackMap[index] = muxer.addTrack(format)
-                    extractor.selectTrack(index)
-                }
-            }
-            check(trackMap.isNotEmpty()) { "No audio track found" }
-            muxer.start()
-            val buffer = ByteBuffer.allocateDirect(2 * 1024 * 1024)
-            val info = MediaCodec.BufferInfo()
-            while (true) {
-                buffer.clear()
-                val size = extractor.readSampleData(buffer, 0)
-                if (size < 0) break
-                val outputTrack = trackMap[extractor.sampleTrackIndex]
-                if (outputTrack != null) {
-                    info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
-                    muxer.writeSampleData(outputTrack, buffer, info)
-                }
-                extractor.advance()
-            }
-        } finally {
-            extractor.release()
-            runCatching { muxer?.stop() }
-            runCatching { muxer?.release() }
-        }
     }
 
     private fun recordingFileName(

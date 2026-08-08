@@ -8,31 +8,34 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,29 +47,33 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.vizvag.shieldvideo.music.data.SearchResults
 import com.vizvag.shieldvideo.music.data.local.AlbumWithArtist
 import com.vizvag.shieldvideo.music.data.local.ArtistEntity
 import com.vizvag.shieldvideo.music.data.local.TrackEntity
 import com.vizvag.shieldvideo.music.data.metadata.MetadataResolver
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.AudioSurface
-import com.vizvag.shieldvideo.ui.theme.AudioText
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
+import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
-import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import kotlinx.coroutines.delay
 
 /** Find-on-NAS query opened from Radio now-playing / recently played. */
@@ -77,92 +84,92 @@ sealed class RadioNasFind {
     data class Track(override val query: String) : RadioNasFind()
 }
 
-private data class NasFindRow(
-    val id: String,
-    val title: String,
-    val subtitle: String,
-    val icon: ImageVector,
-    val onPlay: () -> Unit,
-)
-
 /**
- * Overlay on the Radio stage: search the local music index while radio keeps playing.
- * Choosing a result calls [onPlay…] then the caller navigates to Music.
+ * Same three-column search UI as Music. Radio keeps playing until a result is chosen
+ * ([onPlayArtist] / [onPlayAlbum] / [onPlayTrack]); Back/Close returns to Radio.
  */
 @Composable
 fun RadioNasFindPanel(
     find: RadioNasFind,
-    artists: List<ArtistEntity>,
-    albums: List<AlbumWithArtist>,
-    tracks: List<TrackEntity>,
-    libraryReady: Boolean,
+    search: suspend (String) -> SearchResults,
     accent: Color,
     onClose: () -> Unit,
-    onPlayAlbum: (albumId: String) -> Unit,
+    onPlayArtist: (ArtistEntity) -> Unit,
+    onPlayAlbum: (AlbumWithArtist) -> Unit,
     onPlayTrack: (TrackEntity) -> Unit,
-    onPlayArtistTracks: (List<TrackEntity>) -> Unit,
     onQueryChange: (RadioNasFind) -> Unit = {},
-    modifier: Modifier = Modifier,
 ) {
+    val keyboard = LocalSoftwareKeyboardController.current
     val closeFocus = remember { FocusRequester() }
-    val queryFocus = remember { FocusRequester() }
-    val firstRowFocus = remember { FocusRequester() }
-    var activeQuery by remember(find) { mutableStateOf(find.query) }
-    var showQueryEditor by remember { mutableStateOf(false) }
-    var findKind by remember(find) {
-        mutableStateOf(
+    val queryBarFocus = remember { FocusRequester() }
+    val editFieldFocus = remember { FocusRequester() }
+    val firstResultFocus = remember { FocusRequester() }
+    var query by remember(find) { mutableStateOf(find.query) }
+    var editingQuery by remember { mutableStateOf(false) }
+    var results by remember { mutableStateOf(SearchResults()) }
+    var searching by remember { mutableStateOf(false) }
+
+    fun publishQuery(value: String) {
+        query = value
+        val trimmed = value.trim()
+        onQueryChange(
             when (find) {
-                is RadioNasFind.Artist -> NasFindKind.Artist
-                is RadioNasFind.Track -> NasFindKind.Track
+                is RadioNasFind.Artist -> RadioNasFind.Artist(trimmed)
+                is RadioNasFind.Track -> RadioNasFind.Track(trimmed)
             },
         )
     }
-    val q = activeQuery.trim()
 
-    fun applySearch(text: String, kind: NasFindKind = findKind) {
-        val trimmed = text.trim()
-        activeQuery = trimmed
-        findKind = kind
-        val next = when (kind) {
-            NasFindKind.Artist -> RadioNasFind.Artist(trimmed)
-            NasFindKind.Track -> RadioNasFind.Track(trimmed)
+    fun stopEditing() {
+        editingQuery = false
+        keyboard?.hide()
+    }
+
+    LaunchedEffect(query) {
+        val q = query.trim()
+        if (q.isEmpty()) {
+            results = SearchResults()
+            searching = false
+            return@LaunchedEffect
         }
-        onQueryChange(next)
+        searching = true
+        delay(280)
+        results = runCatching { search(q) }.getOrDefault(SearchResults())
+        searching = false
     }
 
-    val rows = remember(findKind, artists, albums, tracks, q) {
-        when (findKind) {
-            NasFindKind.Artist -> artistFindRows(
-                query = q,
-                artists = artists,
-                albums = albums,
-                tracks = tracks,
-                onPlayAlbum = onPlayAlbum,
-                onPlayArtistTracks = onPlayArtistTracks,
-            )
-            NasFindKind.Track -> trackFindRows(
-                query = q,
-                tracks = tracks,
-                onPlayTrack = onPlayTrack,
-            )
-        }
+    val hasResults = results.artists.isNotEmpty() ||
+        results.albums.isNotEmpty() ||
+        results.tracks.isNotEmpty()
+
+    LaunchedEffect(Unit) {
+        keyboard?.hide()
     }
 
-    LaunchedEffect(find) {
-        // Fresh open from artist/track click — focus the query so OK edits immediately.
-        delay(60)
-        runCatching { queryFocus.requestFocus() }
+    DisposableEffect(Unit) {
+        onDispose { keyboard?.hide() }
     }
 
-    LaunchedEffect(q, findKind, rows.size, showQueryEditor) {
-        if (showQueryEditor) return@LaunchedEffect
-        delay(60)
-        if (rows.isNotEmpty()) {
-            runCatching { firstRowFocus.requestFocus() }
+    LaunchedEffect(editingQuery) {
+        if (editingQuery) {
+            delay(48)
+            runCatching { editFieldFocus.requestFocus() }
+            keyboard?.show()
+        } else {
+            keyboard?.hide()
         }
     }
 
-    // Separate Dialog window so D-pad focus cannot escape to rail / radio controls behind.
+    LaunchedEffect(query, hasResults, editingQuery, searching) {
+        if (editingQuery || searching) return@LaunchedEffect
+        keyboard?.hide()
+        delay(48)
+        when {
+            query.isNotBlank() && hasResults -> runCatching { firstResultFocus.requestFocus() }
+            else -> runCatching { queryBarFocus.requestFocus() }
+        }
+    }
+
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(
@@ -172,609 +179,393 @@ fun RadioNasFindPanel(
         ),
     ) {
         BackHandler {
-            if (showQueryEditor) {
-                showQueryEditor = false
+            if (editingQuery) {
+                stopEditing()
             } else {
                 onClose()
             }
         }
-        Column(
-            modifier = modifier
+        Box(
+            modifier = Modifier
                 .fillMaxSize()
-                .background(AudioSurface.copy(alpha = 0.94f))
-                .border(
-                    width = 1.dp,
-                    brush = Brush.verticalGradient(
-                        listOf(
-                            accent.copy(alpha = 0.45f),
-                            Color.White.copy(alpha = 0.08f),
-                        ),
-                    ),
-                    shape = RoundedCornerShape(0.dp),
-                )
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .background(Color.Black.copy(alpha = 0.82f))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center,
         ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            NasFindIconButton(
-                onClick = onClose,
-                focusRequester = closeFocus,
-                contentDescription = "Back to radio",
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.96f)
+                    .fillMaxHeight(0.92f)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(CardSurface)
+                    .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(18.dp))
+                    .padding(horizontal = 22.dp, vertical = 18.dp),
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (editingQuery) {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { publishQuery(it) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(editFieldFocus),
+                            label = { Text("Search artists, albums, songs") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = { stopEditing() }),
+                            textStyle = TextStyle(
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontFamily = PallasFontFamily,
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = accent,
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                                focusedLabelColor = accent,
+                                unfocusedLabelColor = AudioTextMuted,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = accent,
+                            ),
+                        )
+                    } else {
+                        RadioSearchQueryBar(
+                            query = query,
+                            accent = accent,
+                            modifier = Modifier.weight(1f),
+                            focusRequester = queryBarFocus,
+                            onActivate = { editingQuery = true },
+                        )
+                    }
+                    TextButton(
+                        onClick = onClose,
+                        modifier = Modifier.focusRequester(closeFocus),
+                    ) {
+                        Text("Close", color = accent)
+                    }
+                }
                 Text(
-                    text = "FIND ON NAS",
-                    color = accent,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.5.sp,
-                    fontFamily = PallasFontFamily,
-                )
-                Text(
-                    text = "Edit query · OK on field opens keyboard",
+                    text = "Radio keeps playing until you pick a NAS result",
                     color = AudioTextMuted,
                     fontSize = 12.sp,
                     fontFamily = PallasFontFamily,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
                 )
-            }
-            NasFindIconButton(onClick = onClose, contentDescription = "Close") {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
 
-        Spacer(Modifier.height(10.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            NasFindKindChip(
-                label = "Artist",
-                selected = findKind == NasFindKind.Artist,
-                accent = accent,
-                onClick = { applySearch(activeQuery, NasFindKind.Artist) },
-            )
-            NasFindKindChip(
-                label = "Song",
-                selected = findKind == NasFindKind.Track,
-                accent = accent,
-                onClick = { applySearch(activeQuery, NasFindKind.Track) },
-            )
-        }
+                val blank = query.isBlank()
+                val empty = !blank && !searching && !hasResults
 
-        Spacer(Modifier.height(10.dp))
-        NasFindQueryField(
-            value = activeQuery,
-            accent = accent,
-            focusRequester = queryFocus,
-            onClick = { showQueryEditor = true },
-        )
-
-        Text(
-            text = "Radio keeps playing · OK on a result opens Music · Back returns here",
-            color = AudioTextMuted,
-            fontSize = 12.sp,
-            fontFamily = PallasFontFamily,
-            modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
-        )
-
-        when {
-            !libraryReady && rows.isEmpty() -> {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = accent, modifier = Modifier.size(36.dp))
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            "Loading music library…",
-                            color = AudioTextMuted,
-                            fontSize = 14.sp,
-                            fontFamily = PallasFontFamily,
-                        )
+                when {
+                    searching && !hasResults -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(color = accent, modifier = Modifier.size(36.dp))
+                        }
                     }
-                }
-            }
-            q.isEmpty() -> {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "Enter a search, then pick a result",
-                        color = AudioTextMuted,
-                        fontSize = 15.sp,
-                        fontFamily = PallasFontFamily,
-                    )
-                }
-            }
-            rows.isEmpty() -> {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = when (findKind) {
-                            NasFindKind.Artist -> "No artists or albums matching “$q”"
-                            NasFindKind.Track -> "No songs named “$q”"
-                        },
-                        color = AudioTextMuted,
-                        fontSize = 15.sp,
-                        fontFamily = PallasFontFamily,
-                    )
-                }
-            }
-            else -> {
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    contentPadding = PaddingValues(bottom = 12.dp),
-                ) {
-                    itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
-                        NasFindResultRow(
-                            title = row.title,
-                            subtitle = row.subtitle,
-                            icon = row.icon,
-                            accent = accent,
-                            focusRequester = if (index == 0) firstRowFocus else null,
-                            onClick = row.onPlay,
-                        )
-                    }
-                }
-            }
-        }
-        }
-
-        if (showQueryEditor) {
-            NasFindQueryEditorDialog(
-                initialValue = activeQuery,
-                accent = accent,
-                onDismiss = { showQueryEditor = false },
-                onConfirm = { value ->
-                    applySearch(value)
-                    showQueryEditor = false
-                },
-            )
-        }
-    }
-}
-
-private enum class NasFindKind { Artist, Track }
-
-private fun artistFindRows(
-    query: String,
-    artists: List<ArtistEntity>,
-    albums: List<AlbumWithArtist>,
-    tracks: List<TrackEntity>,
-    onPlayAlbum: (String) -> Unit,
-    onPlayArtistTracks: (List<TrackEntity>) -> Unit,
-): List<NasFindRow> {
-    if (query.isEmpty()) return emptyList()
-    val out = mutableListOf<NasFindRow>()
-    val matchingArtists = artistsWithPerformers(artists, tracks).filter {
-        it.name.equals(query, ignoreCase = true) || it.name.contains(query, ignoreCase = true)
-    }
-    for (artist in matchingArtists.take(8)) {
-        val artistTracks = tracks.filter { trackMatchesPerformer(it, artist.name) }
-        if (artistTracks.isEmpty()) continue
-        out += NasFindRow(
-            id = "artist:${artist.id}",
-            title = artist.name,
-            subtitle = "Play all · ${artistTracks.size} tracks",
-            icon = Icons.Filled.Person,
-            onPlay = { onPlayArtistTracks(artistTracks) },
-        )
-    }
-    val albumHits = albumsForPerformer(albums, tracks, query)
-    for (album in albumHits.take(40)) {
-        out += NasFindRow(
-            id = "album:${album.albumId}:${album.folderPath}",
-            title = album.title,
-            subtitle = "${album.artistName} · ${album.trackCount} tracks" +
-                (album.year?.let { " · $it" } ?: ""),
-            icon = Icons.Filled.Album,
-            onPlay = { onPlayAlbum(album.albumId) },
-        )
-    }
-    return out.distinctBy { it.id }
-}
-
-private fun trackFindRows(
-    query: String,
-    tracks: List<TrackEntity>,
-    onPlayTrack: (TrackEntity) -> Unit,
-): List<NasFindRow> {
-    if (query.isEmpty()) return emptyList()
-    return songsMatchingTitle(tracks, query).take(50).map { track ->
-        NasFindRow(
-            id = "track:${track.id}",
-            title = MetadataResolver.fixTagText(track.title).trim().ifBlank { track.title },
-            subtitle = listOfNotNull(
-                track.artistName.takeIf { it.isNotBlank() },
-                track.albumTitle.takeIf { it.isNotBlank() },
-            ).joinToString(" · "),
-            icon = Icons.Filled.AudioFile,
-            onPlay = { onPlayTrack(track) },
-        )
-    }
-}
-
-private fun songsMatchingTitle(tracks: List<TrackEntity>, query: String): List<TrackEntity> {
-    val wanted = query.trim()
-    if (wanted.isEmpty()) return emptyList()
-    val exact = mutableListOf<TrackEntity>()
-    val starts = mutableListOf<TrackEntity>()
-    val contains = mutableListOf<TrackEntity>()
-    for (t in tracks) {
-        val title = MetadataResolver.fixTagText(t.title).trim()
-        when {
-            title.equals(wanted, ignoreCase = true) -> exact += t
-            title.startsWith(wanted, ignoreCase = true) -> starts += t
-            title.contains(wanted, ignoreCase = true) -> contains += t
-        }
-    }
-    return (exact + starts + contains).distinctBy { it.id }
-}
-
-private fun artistsWithPerformers(
-    artists: List<ArtistEntity>,
-    tracks: List<TrackEntity>,
-): List<ArtistEntity> {
-    val result = LinkedHashMap<String, ArtistEntity>()
-    for (a in artists) {
-        val name = a.name.trim()
-        if (name.isEmpty() || isVariousArtistsName(name)) continue
-        result[name.lowercase()] = a
-    }
-    for ((key, group) in tracks.groupBy { it.artistName.trim().lowercase() }) {
-        if (key.isEmpty() || key in result) continue
-        val sample = group.first().artistName.trim()
-        if (sample.isEmpty() ||
-            isVariousArtistsName(sample) ||
-            MetadataResolver.isPlaceholderArtist(sample)
-        ) {
-            continue
-        }
-        val albumKeys = group.map {
-            it.nasPath.replace('\\', '/').substringBeforeLast('/') to
-                it.albumTitle.trim().lowercase()
-        }.distinct()
-        result[key] = ArtistEntity(
-            id = "performer:$key",
-            name = sample,
-            sortKey = key,
-            albumCount = albumKeys.size,
-            trackCount = group.size,
-        )
-    }
-    return result.values.sortedBy { it.sortKey }
-}
-
-private fun albumsForPerformer(
-    albums: List<AlbumWithArtist>,
-    tracks: List<TrackEntity>,
-    performer: String,
-): List<AlbumWithArtist> {
-    val wanted = performer.trim()
-    if (wanted.isEmpty()) return emptyList()
-
-    fun folderOf(path: String): String =
-        path.replace('\\', '/').substringBeforeLast('/').trimEnd('/').lowercase()
-
-    return tracks
-        .asSequence()
-        .filter { trackMatchesPerformer(it, wanted) }
-        .groupBy { folderOf(it.nasPath) to it.albumTitle.trim().lowercase() }
-        .filterKeys { (folder, title) -> folder.isNotBlank() && title.isNotBlank() }
-        .map { (key, group) ->
-            val (folder, _) = key
-            val sample = group.first()
-            val title = sample.albumTitle.trim()
-            val existing = albums
-                .filter { album ->
-                    album.title.equals(title, ignoreCase = true) &&
-                        (
-                            album.folderPath?.let { folderOf(it) } == folder ||
-                                group.any { it.albumId == album.albumId }
+                    blank -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "OK on the search bar to type",
+                                color = AudioTextMuted,
+                                fontSize = 16.sp,
+                                fontFamily = PallasFontFamily,
+                                textAlign = TextAlign.Center,
                             )
+                        }
+                    }
+                    empty -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "No matches for “$query”",
+                                color = AudioTextMuted,
+                                fontSize = 16.sp,
+                                fontFamily = PallasFontFamily,
+                            )
+                        }
+                    }
+                    else -> {
+                        val firstArtist = results.artists.isNotEmpty()
+                        val firstAlbum = !firstArtist && results.albums.isNotEmpty()
+                        val firstTrack = !firstArtist && !firstAlbum && results.tracks.isNotEmpty()
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            RadioSearchColumn(
+                                title = "Artists",
+                                count = results.artists.size,
+                                icon = Icons.Filled.Person,
+                                accent = accent,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                itemsIndexed(results.artists, key = { _, it -> it.id }) { index, artist ->
+                                    RadioSearchResultRow(
+                                        title = artist.name,
+                                        subtitle = buildString {
+                                            if (artist.albumCount > 0) {
+                                                append("${artist.albumCount} album")
+                                                if (artist.albumCount != 1) append('s')
+                                            }
+                                            if (artist.trackCount > 0) {
+                                                if (isNotEmpty()) append(" · ")
+                                                append("${artist.trackCount} track")
+                                                if (artist.trackCount != 1) append('s')
+                                            }
+                                        }.ifBlank { null },
+                                        onClick = { onPlayArtist(artist) },
+                                        focusRequester = if (firstArtist && index == 0) {
+                                            firstResultFocus
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                            }
+                            RadioSearchColumn(
+                                title = "Albums",
+                                count = results.albums.size,
+                                icon = Icons.Filled.Album,
+                                accent = accent,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                itemsIndexed(
+                                    results.albums,
+                                    key = { _, it -> it.albumId + "\u0000" + it.artistName },
+                                ) { index, album ->
+                                    RadioSearchResultRow(
+                                        title = album.title,
+                                        subtitle = buildString {
+                                            append(
+                                                results.albumArtists[album.albumId]
+                                                    ?: album.artistName,
+                                            )
+                                            album.year?.let { append(" · $it") }
+                                        },
+                                        onClick = { onPlayAlbum(album) },
+                                        focusRequester = if (firstAlbum && index == 0) {
+                                            firstResultFocus
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                            }
+                            RadioSearchColumn(
+                                title = "Songs",
+                                count = results.tracks.size,
+                                icon = Icons.Filled.MusicNote,
+                                accent = accent,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                itemsIndexed(results.tracks, key = { _, it -> it.id }) { index, track ->
+                                    RadioSearchResultRow(
+                                        title = MetadataResolver.fixTagText(track.title)
+                                            .trim()
+                                            .ifBlank { track.title },
+                                        subtitle = buildString {
+                                            append(track.artistName)
+                                            if (track.albumTitle.isNotBlank()) {
+                                                append(" · ")
+                                                append(track.albumTitle)
+                                            }
+                                        },
+                                        onClick = { onPlayTrack(track) },
+                                        focusRequester = if (firstTrack && index == 0) {
+                                            firstResultFocus
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
-                .maxByOrNull { it.trackCount }
-            AlbumWithArtist(
-                albumId = existing?.albumId ?: sample.albumId,
-                title = existing?.title ?: title,
-                artistId = existing?.artistId ?: sample.artistId,
-                artistName = wanted,
-                year = existing?.year ?: group.mapNotNull { it.year }.maxOrNull(),
-                genre = existing?.genre ?: sample.genre,
-                coverPath = existing?.coverPath,
-                trackCount = group.size,
-                folderPath = existing?.folderPath
-                    ?: sample.nasPath.replace('\\', '/').substringBeforeLast('/'),
-            )
+            }
         }
-        .distinctBy { folderOf(it.folderPath.orEmpty()) + "\u0000" + it.title.lowercase() }
-        .sortedWith(compareBy({ it.title.lowercase() }, { it.year ?: 0 }))
-}
-
-private fun trackMatchesPerformer(t: TrackEntity, wanted: String): Boolean {
-    val a = t.artistName.trim()
-    if (a.equals(wanted, ignoreCase = true)) return true
-    if (a.startsWith(wanted, ignoreCase = true)) return true
-    if (a.contains(wanted, ignoreCase = true) && !isVariousArtistsName(a)) return true
-    return false
-}
-
-private fun isVariousArtistsName(name: String): Boolean {
-    val n = name.trim().lowercase()
-    return n in setOf("various artists", "various artist", "various", "va", "v.a.", "v.a") ||
-        n.startsWith("various artist")
+    }
 }
 
 @Composable
-private fun NasFindQueryField(
-    value: String,
+private fun RadioSearchQueryBar(
+    query: String,
     accent: Color,
-    focusRequester: FocusRequester,
-    onClick: () -> Unit,
+    onActivate: () -> Unit,
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
 ) {
-    val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .glassInteract(focused = focused, selected = false)
-            .focusRequester(focusRequester)
+    val label = query.ifBlank { "Search artists, albums, songs" }
+    val textColor = if (query.isBlank()) AudioTextMuted else Color.White
+    Row(
+        modifier = modifier
+            .heightIn(min = 56.dp)
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.White.copy(alpha = 0.04f),
+            )
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .clickable(role = Role.Button) {
-                feedback.click()
-                onClick()
+            .clickable(onClick = onActivate)
+            .onPreviewKeyEvent { event ->
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                if (isSelect && event.type == KeyEventType.KeyUp) {
+                    onActivate()
+                    true
+                } else {
+                    false
+                }
             }
-            .padding(horizontal = 14.dp, vertical = 14.dp),
-        contentAlignment = Alignment.CenterStart,
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        Icon(
+            Icons.Filled.Search,
+            contentDescription = null,
+            tint = if (focused) accent else AudioTextMuted,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(modifier = Modifier.width(10.dp))
         Text(
-            text = value.ifBlank { "Type a search…" },
-            color = if (value.isBlank()) AudioTextMuted else AudioText,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.SemiBold,
+            text = label,
+            color = textColor,
+            fontSize = 16.sp,
             fontFamily = PallasFontFamily,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
-    }
-}
-
-@Composable
-private fun NasFindKindChip(
-    label: String,
-    selected: Boolean,
-    accent: Color,
-    onClick: () -> Unit,
-) {
-    val feedback = rememberTvFeedback()
-    var focused by remember { mutableStateOf(false) }
-    Box(
-        modifier = Modifier
-            .glassInteract(focused = focused, selected = selected)
-            .onFocusChanged { focused = it.isFocused }
-            .clickable(role = Role.Button) {
-                feedback.click()
-                onClick()
-            }
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-    ) {
-        Text(
-            text = label,
-            color = AudioText,
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            fontFamily = PallasFontFamily,
-        )
-    }
-}
-
-@Composable
-private fun NasFindQueryEditorDialog(
-    initialValue: String,
-    accent: Color,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
-) {
-    var draft by remember(initialValue) { mutableStateOf(initialValue) }
-    val keyboard = LocalSoftwareKeyboardController.current
-    val focusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-        keyboard?.show()
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xFF141418))
-                .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(16.dp))
-                .padding(20.dp),
-        ) {
+        if (query.isNotBlank()) {
             Text(
-                "Search NAS library",
-                color = Color.White,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.SemiBold,
+                text = "OK to edit",
+                color = AudioTextMuted.copy(alpha = if (focused) 0.9f else 0.55f),
+                fontSize = 11.sp,
                 fontFamily = PallasFontFamily,
             )
-            Spacer(Modifier.height(14.dp))
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(focusRequester),
-                singleLine = true,
-                placeholder = {
-                    Text(
-                        "Artist or song title…",
-                        color = AudioTextMuted,
-                        fontSize = 16.sp,
-                        fontFamily = PallasFontFamily,
-                    )
-                },
-                textStyle = TextStyle(
-                    color = Color.White,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Medium,
-                    fontFamily = PallasFontFamily,
-                ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onConfirm(draft) }),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accent,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = accent,
-                    focusedContainerColor = Color.White.copy(alpha = 0.06f),
-                    unfocusedContainerColor = Color.White.copy(alpha = 0.04f),
-                ),
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                NasFindDialogButton(label = "Cancel", accent = accent, onClick = onDismiss)
-                NasFindDialogButton(
-                    label = "Search",
-                    accent = accent,
-                    emphasized = true,
-                    onClick = { onConfirm(draft) },
-                )
-            }
         }
     }
 }
 
 @Composable
-private fun NasFindDialogButton(
-    label: String,
+private fun RadioSearchColumn(
+    title: String,
+    count: Int,
+    icon: ImageVector,
     accent: Color,
-    onClick: () -> Unit,
-    emphasized: Boolean = false,
+    modifier: Modifier = Modifier,
+    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
 ) {
-    val feedback = rememberTvFeedback()
-    var focused by remember { mutableStateOf(false) }
-    Box(
-        modifier = Modifier
-            .glassInteract(focused = focused, selected = emphasized)
-            .onFocusChanged { focused = it.isFocused }
-            .clickable(role = Role.Button) {
-                feedback.click()
-                onClick()
-            }
-            .padding(horizontal = 18.dp, vertical = 10.dp),
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.04f))
+            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 10.dp),
     ) {
-        Text(
-            text = label,
-            color = Color.White,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold,
-            fontFamily = PallasFontFamily,
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+        ) {
+            Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
+            Text(
+                text = title,
+                color = accent,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = count.toString(),
+                color = AudioTextMuted,
+                fontSize = 13.sp,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        if (count == 0) {
+            Text(
+                text = "No matches",
+                color = AudioTextMuted.copy(alpha = 0.7f),
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+            )
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                content = content,
+            )
+        }
     }
 }
 
 @Composable
-private fun NasFindResultRow(
+private fun RadioSearchResultRow(
     title: String,
-    subtitle: String,
-    icon: ImageVector,
-    accent: Color,
-    focusRequester: FocusRequester?,
+    subtitle: String? = null,
     onClick: () -> Unit,
+    focusRequester: FocusRequester? = null,
 ) {
-    val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
     Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .glassInteract(focused = focused, selected = false)
+            .glassInteract(
+                focused = focused,
+                selected = false,
+                idleSurface = Color.Transparent,
+            )
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .clickable(role = Role.Button) {
-                feedback.click()
-                onClick()
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                if (isSelect && event.type == KeyEventType.KeyUp) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
             }
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
-        Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                color = AudioText,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = PallasFontFamily,
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (subtitle.isNotBlank()) {
+            if (!subtitle.isNullOrBlank()) {
                 Text(
                     text = subtitle,
                     color = AudioTextMuted,
-                    fontSize = 13.sp,
-                    fontFamily = PallasFontFamily,
+                    fontSize = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
         }
     }
-}
-
-@Composable
-private fun NasFindIconButton(
-    onClick: () -> Unit,
-    contentDescription: String,
-    focusRequester: FocusRequester? = null,
-    content: @Composable () -> Unit,
-) {
-    val feedback = rememberTvFeedback()
-    var focused by remember { mutableStateOf(false) }
-    Box(
-        modifier = Modifier
-            .size(44.dp)
-            .glassInteract(focused = focused, selected = false)
-            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .onFocusChanged { focused = it.isFocused }
-            .clickable(role = Role.Button) {
-                feedback.click()
-                onClick()
-            },
-        contentAlignment = Alignment.Center,
-        content = { content() },
-    )
 }

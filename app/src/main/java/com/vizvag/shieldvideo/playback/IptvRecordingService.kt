@@ -7,10 +7,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -45,7 +41,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
-import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -219,21 +214,18 @@ class IptvRecordingService : Service() {
 
     /**
      * Capture is always a temp .ts (cheap while recording).
-     * After stop: **fast remux** into MP4 (no re-encode — usually near disk-copy speed).
-     * Full re-encode (Transformer) is only attempted for small files; long programmes
-     * keep .ts rather than blocking the device for ages.
+     * After stop: fast remux in an **isolated process** (MPEG4Writer can SIGABRT on
+     * truncated/immediate-stop captures). On failure, re-encode with Transformer when
+     * the file is not huge so the user still gets MP4.
      */
     private suspend fun convertToMp4(transportStream: File, mp4: File): File {
-        val remuxed = runCatching {
-            remuxToMp4(transportStream, mp4)
-            check(mp4.exists() && mp4.length() > 0L) { "Empty MP4 after remux" }
-            mp4
-        }.getOrNull()
-        if (remuxed != null) return remuxed
+        mp4.delete()
+        if (IsolatedMp4Remux.remux(this, transportStream, mp4, Mp4RemuxHelper.Mode.AUDIO_VIDEO)) {
+            return mp4
+        }
         mp4.delete()
 
-        // Re-encoding a multi‑GB programme can take longer than the show itself.
-        // Only try Transformer on short captures.
+        // Prefer MP4 even for short/cancelled captures; skip only multi‑GB programmes.
         if (transportStream.length() <= TRANSFORM_MAX_BYTES) {
             val transformed = runCatching {
                 transformToMp4(transportStream, mp4)
@@ -249,57 +241,9 @@ class IptvRecordingService : Service() {
             )
         }
 
-        android.util.Log.w(TAG, "MP4 remux failed — keeping transport stream")
+        android.util.Log.w(TAG, "MP4 packaging failed — keeping transport stream")
         return transportStream
     }
-
-    private fun remuxToMp4(source: File, output: File) {
-        val extractor = MediaExtractor()
-        var muxer: MediaMuxer? = null
-        try {
-            extractor.setDataSource(source.absolutePath)
-            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val trackMap = mutableMapOf<Int, Int>()
-            for (index in 0 until extractor.trackCount) {
-                val format = extractor.getTrackFormat(index)
-                val mime = format.getString(MediaFormat.KEY_MIME).orEmpty().lowercase(Locale.US)
-                if (!isMp4CompatibleMime(mime)) continue
-                trackMap[index] = muxer.addTrack(format)
-                extractor.selectTrack(index)
-            }
-            check(trackMap.isNotEmpty()) { "No MP4-compatible audio/video tracks" }
-            muxer.start()
-            val buffer = ByteBuffer.allocateDirect(4 * 1024 * 1024)
-            val info = MediaCodec.BufferInfo()
-            var firstPts = -1L
-            while (true) {
-                buffer.clear()
-                val size = extractor.readSampleData(buffer, 0)
-                if (size < 0) break
-                val outputTrack = trackMap[extractor.sampleTrackIndex]
-                if (outputTrack != null) {
-                    val pts = extractor.sampleTime
-                    if (firstPts < 0L && pts >= 0L) firstPts = pts
-                    val outPts = if (pts >= 0L && firstPts >= 0L) (pts - firstPts).coerceAtLeast(0L) else 0L
-                    info.set(0, size, outPts, extractor.sampleFlags)
-                    muxer.writeSampleData(outputTrack, buffer, info)
-                }
-                extractor.advance()
-            }
-        } finally {
-            extractor.release()
-            runCatching { muxer?.stop() }
-            runCatching { muxer?.release() }
-        }
-    }
-
-    private fun isMp4CompatibleMime(mime: String): Boolean =
-        mime == "video/avc" ||
-            mime == "video/hevc" ||
-            mime == "video/mp4v-es" ||
-            mime == "audio/mp4a-latm" ||
-            mime == "audio/mpeg" ||
-            mime == "audio/aac"
 
     private suspend fun transformToMp4(source: File, output: File) {
         withContext(Dispatchers.Main) {

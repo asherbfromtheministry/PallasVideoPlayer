@@ -123,6 +123,7 @@ import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.ui.components.IconActionButton
 import com.vizvag.shieldvideo.ui.components.glassInteract
+import com.vizvag.shieldvideo.ui.notice.ForwardFlashNotice
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
@@ -174,11 +175,23 @@ fun IptvScreen(
         }
         if (state.fullscreen) viewModel.closeFullscreen()
     }
+    // Tegra/Shield: never attach SurfaceView (fullscreen) in the same frame the TextureView
+    // preview detaches — that MediaCodec handoff kernel-panics (`module_put` / `cdev_put`).
+    var previewSurfaceAttached by remember { mutableStateOf(true) }
+    var fullscreenSurfaceAttached by remember { mutableStateOf(false) }
     LaunchedEffect(state.fullscreen) {
         onFullscreenChanged(state.fullscreen)
         if (state.fullscreen) {
-            // Drop browse-wheel focus so Up/Down zap channels, not scroll groups under the overlay.
             focusManager.clearFocus(force = true)
+            previewSurfaceAttached = false
+            fullscreenSurfaceAttached = false
+            delay(220)
+            fullscreenSurfaceAttached = true
+        } else {
+            fullscreenSurfaceAttached = false
+            previewSurfaceAttached = false
+            delay(220)
+            previewSurfaceAttached = true
         }
     }
     DisposableEffect(Unit) {
@@ -341,7 +354,7 @@ fun IptvScreen(
                     previewError = previewError,
                     streamBadges = streamBadges,
                     audioNotice = audioStatus.notice,
-                    attachPlayer = !state.fullscreen,
+                    attachPlayer = previewSurfaceAttached && !state.fullscreen,
                     browsingChannels = browsingChannels,
                     onBrowsingChannelsChange = { browsingChannels = it },
                     onReturnToGroupCards = ::returnToGroupCards,
@@ -391,6 +404,7 @@ fun IptvScreen(
                 history = state.watchHistory,
                 nasHistory = state.nasWatchHistory,
                 recordings = state.recordings,
+                attachVideo = fullscreenSurfaceAttached,
                 onClose = {
                     viewModel.closeFullscreen()
                     browsingChannels = true
@@ -523,8 +537,12 @@ fun IptvScreen(
     }
 
     state.message?.let { msg ->
-        if (!state.epgMatching && state.epgMatchLog.isEmpty()) {
-            LaunchedMessage(msg, viewModel::dismissMessage)
+        if (!state.epgMatching && state.epgMatchLog.isEmpty() && !state.pinPrompt) {
+            ForwardFlashNotice(
+                message = msg,
+                title = "Live TV",
+                onConsumed = viewModel::dismissMessage,
+            )
         }
     }
 }
@@ -720,29 +738,6 @@ private fun EpgMatchProgressPanel(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun LaunchedMessage(message: String, onDone: () -> Unit) {
-    LaunchedEffect(message) {
-        delay(2500)
-        onDone()
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        Text(
-            text = message,
-            color = Color.White,
-            modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color.Black.copy(alpha = 0.75f))
-                .padding(horizontal = 16.dp, vertical = 10.dp)
-        )
     }
 }
 
@@ -1116,6 +1111,13 @@ private fun LiveTvStage(
                     selectedChannelId = state.previewChannel?.id,
                     onConfirm = { onConfirm(it.channel) },
                     onLongPressOptions = { optionsRow = it },
+                    onProgrammeLongPress = { channel, programme ->
+                        if (isProgrammeBeingRecorded(state.recordings, channel, programme)) {
+                            onCancelRecording(channel, programme)
+                        } else {
+                            onRecordProgramme(channel, programme)
+                        }
+                    },
                     onBackToGroups = onReturnToGroupCards,
                     groupTitle = state.groupDisplayNames[state.selectedGroup]
                         ?: state.selectedGroup,
@@ -1446,6 +1448,7 @@ private fun FullscreenLiveOverlay(
     history: List<IptvChannel>,
     nasHistory: List<NasWatchHistoryEntry>,
     recordings: List<IptvRecording>,
+    attachVideo: Boolean,
     onClose: () -> Unit,
     onChannelUp: () -> Unit,
     onChannelDown: () -> Unit,
@@ -1576,13 +1579,16 @@ private fun FullscreenLiveOverlay(
             )
     ) {
         // SurfaceView is required for HDR passthrough — safe here because fullscreen covers everything.
-        IptvPlayerSurface(
-            player = player,
-            modifier = Modifier.fillMaxSize(),
-            useController = false,
-            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
-            useSurfaceView = true
-        )
+        // Only attach after the preview TextureView has fully detached (see IptvScreen handoff delay).
+        if (attachVideo) {
+            IptvPlayerSurface(
+                player = player,
+                modifier = Modifier.fillMaxSize(),
+                useController = false,
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                useSurfaceView = true
+            )
+        }
         AnimatedVisibility(
             visible = hudVisible,
             enter = fadeIn(),

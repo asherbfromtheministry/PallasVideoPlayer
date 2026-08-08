@@ -54,6 +54,7 @@ class LocalMediaProxyService : Service() {
                     val callback = pendingCallback
                     pendingCallback = null
                     if (result.isSuccess) {
+                        // HTTP URI kept for VLC; MediaPlayerLauncher swaps to content:// for MX/XPlayer.
                         callback?.onReady(result.getOrThrow())
                     } else {
                         val message = result.exceptionOrNull()?.message ?: "Proxy failed"

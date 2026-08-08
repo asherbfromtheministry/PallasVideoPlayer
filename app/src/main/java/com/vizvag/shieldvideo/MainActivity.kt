@@ -79,6 +79,7 @@ import com.vizvag.shieldvideo.data.trakt.TraktRepository
 import com.vizvag.shieldvideo.playback.DeepLinkPlayer
 import com.vizvag.shieldvideo.playback.LocalMediaProxyService
 import com.vizvag.shieldvideo.playback.LocalResumeStore
+import com.vizvag.shieldvideo.playback.MediaPlayerLauncher
 import com.vizvag.shieldvideo.playback.NasProgressSync
 import com.vizvag.shieldvideo.playback.NasWatchHistoryStore
 import com.vizvag.shieldvideo.playback.PlayerLaunchResult
@@ -100,6 +101,7 @@ import com.vizvag.shieldvideo.ui.browser.BrowserViewModel
 import com.vizvag.shieldvideo.ui.browser.BrowserViewModelFactory
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.AppClockOverlay
+import com.vizvag.shieldvideo.ui.notice.AppNoticeHost
 import com.vizvag.shieldvideo.ui.components.ForcedLandscape
 import com.vizvag.shieldvideo.ui.components.chromeForRoute
 import com.vizvag.shieldvideo.ui.home.HomeLandingScreen
@@ -383,10 +385,13 @@ class MainActivity : ComponentActivity() {
                         title = title.ifBlank { path.substringAfterLast('/') }
                     )
                     val handoff = app.nasRepository.handoffUri(playSettings, share, path)
+                    val playerPkg = DeepLinkPlayer.playerPackageFrom(intent)
+                        ?: playSettings.playerPackage.ifBlank { MediaPlayerLauncher.VLC_PACKAGE }
                     val result = vlcLauncher.play(
                         playbackUri = mediaUri,
                         relativePath = path,
                         title = title,
+                        playerPackage = playerPkg,
                         startPositionMs = positionMs
                     )
                     when (result) {
@@ -398,6 +403,7 @@ class MainActivity : ComponentActivity() {
                             )
                             app.resumeMonitor.start(
                                 path = path,
+                                playerPackage = playerPkg,
                                 playbackUri = handoff.toString(),
                                 title = title,
                                 share = share,
@@ -1127,6 +1133,9 @@ private fun ShieldVideoAppNav(
         if (!iptvFullscreen && !youtubeFullscreen) {
             AppClockOverlay(corner = clockCorner)
         }
+        AppNoticeHost(
+            bottomInset = if (iptvFullscreen || youtubeFullscreen) 20.dp else 28.dp,
+        )
     }
     }
     }

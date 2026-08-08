@@ -19,7 +19,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,10 +30,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -118,6 +121,8 @@ import com.vizvag.shieldvideo.data.radio.RadioTrackHistory
 import com.vizvag.shieldvideo.data.settings.SettingsRepository
 import com.vizvag.shieldvideo.playback.RadioRecordingService
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
+import com.vizvag.shieldvideo.ui.components.GlassControlButton
+import com.vizvag.shieldvideo.ui.components.GlassSelectedAlpha
 import com.vizvag.shieldvideo.ui.components.IconActionButton
 import com.vizvag.shieldvideo.ui.browser.AppWithNavRail
 import com.vizvag.shieldvideo.ui.browser.RailDestination
@@ -132,9 +137,12 @@ import com.vizvag.shieldvideo.ui.theme.AudioScreenTheme
 import com.vizvag.shieldvideo.ui.theme.AudioSurface
 import com.vizvag.shieldvideo.ui.theme.AudioText
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
+import com.vizvag.shieldvideo.ui.theme.PallasShapes
 import com.vizvag.shieldvideo.ui.theme.RadioChrome
 import com.vizvag.shieldvideo.ui.theme.ScreenTheme
 import com.vizvag.shieldvideo.ui.components.glassInteract
+import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
+import com.vizvag.shieldvideo.ui.notice.AppNoticeKind
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
@@ -154,8 +162,9 @@ private const val KEY_LAST_STATION =
     com.vizvag.shieldvideo.playback.radio.RadioPlaybackController.KEY_LAST_STATION
 private const val METADATA_POLL_MS = 30_000L
 private val LeftPanePad = 14.dp
-private val StationPaneWidth = 240.dp
+private val StationPaneWidth = 268.dp
 private val HeroArtSize = 220.dp
+private val TrackChipCorner = PallasShapes.control
 @Composable
 fun RadioScreen(
     settingsRepository: SettingsRepository,
@@ -365,25 +374,14 @@ private fun RadioScreenBody(
     val playFocus = remember { FocusRequester() }
     val blackFocus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
-    val musicCache = app.musicModule.libraryCache
-    val libraryArtists by musicCache.artists.collectAsState()
-    val libraryAlbums by musicCache.albums.collectAsState()
-    val libraryTracks by musicCache.tracks.collectAsState()
-    val libraryReady by musicCache.tracksReady.collectAsState()
     val sleepState by app.sleepTimer.state.collectAsState()
     val recordState by RadioRecordingService.state.collectAsState()
     val settingsRevision by app.settingsRepository.revision.collectAsState()
     var hueSyncReady by remember { mutableStateOf(app.settingsRepository.isHueSyncReady()) }
     var hueSyncEnabled by remember { mutableStateOf(app.settingsRepository.isHueSyncEnabled()) }
-    var hueStatus by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(settingsRevision) {
         hueSyncReady = app.settingsRepository.isHueSyncReady()
         hueSyncEnabled = app.settingsRepository.isHueSyncEnabled()
-    }
-    LaunchedEffect(hueStatus) {
-        val msg = hueStatus ?: return@LaunchedEffect
-        delay(2500)
-        if (hueStatus == msg) hueStatus = null
     }
 
     fun openLibraryFind(query: String, asTrack: Boolean) {
@@ -397,6 +395,12 @@ private fun RadioScreenBody(
     fun playOnMusic(tracks: List<com.vizvag.shieldvideo.music.data.local.TrackEntity>) {
         if (tracks.isEmpty()) return
         scope.launch {
+            // Hand off to Music: silence radio first so streams don't overlap.
+            screenBlack = false
+            player.pause()
+            player.stop()
+            playing = false
+            nasFind = null
             app.musicModule.playerController.playTracks(tracks)
             onOpenMusic()
         }
@@ -647,18 +651,6 @@ private fun RadioScreenBody(
                     onBack = {
                         if (nasFind != null) nasFind = null else onBack()
                     },
-                    onBlackScreen = { screenBlack = true },
-                    hueSyncReady = hueSyncReady,
-                    hueSyncEnabled = hueSyncEnabled,
-                    onToggleHueSync = {
-                        val next = app.settingsRepository.toggleHueSync()
-                        if (next == null) {
-                            hueStatus = "Set up Hue in Settings → Integrations"
-                        } else {
-                            hueSyncEnabled = next
-                            hueStatus = if (next) "Hue sync on" else "Hue sync off"
-                        }
-                    },
                     compact = true,
                 )
                 StationListPane(
@@ -745,6 +737,57 @@ private fun RadioScreenBody(
                         ),
                 )
                 SoftVignette()
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 16.dp, end = 20.dp)
+                        .zIndex(2f),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (hueSyncReady) {
+                        GlassControlButton(
+                            selected = hueSyncEnabled,
+                            size = 52.dp,
+                            onClick = {
+                                val next = app.settingsRepository.toggleHueSync()
+                                if (next == null) {
+                                    AppNoticeBus.show(
+                                        "Set up Hue in Settings → Integrations",
+                                        AppNoticeBus.inferKind("Set up"),
+                                        title = "Radio",
+                                    )
+                                } else {
+                                    hueSyncEnabled = next
+                                    AppNoticeBus.show(
+                                        if (next) "Hue sync on" else "Hue sync off",
+                                        AppNoticeKind.Success,
+                                        title = "Radio",
+                                    )
+                                }
+                            },
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Lightbulb,
+                                contentDescription = if (hueSyncEnabled) "Hue sync on" else "Hue sync off",
+                                tint = if (hueSyncEnabled) AudioAccent else Color.White,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                    }
+                    GlassControlButton(
+                        selected = false,
+                        size = 52.dp,
+                        onClick = { screenBlack = true },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Brightness2,
+                            contentDescription = "Black screen",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -885,24 +928,25 @@ private fun RadioScreenBody(
                 nasFind?.let { find ->
                     RadioNasFindPanel(
                         find = find,
-                        artists = libraryArtists,
-                        albums = libraryAlbums,
-                        tracks = libraryTracks,
-                        libraryReady = libraryReady,
+                        search = { q -> app.musicModule.libraryRepository.search(q) },
                         accent = station.accent,
                         onClose = { nasFind = null },
-                        onPlayAlbum = { albumId ->
+                        onPlayArtist = { artist ->
                             scope.launch {
-                                val list = app.musicModule.libraryRepository.getTracksByAlbum(albumId)
+                                val list = app.musicModule.libraryRepository
+                                    .getTracksForArtistBrowse(artist)
+                                playOnMusic(list)
+                            }
+                        },
+                        onPlayAlbum = { album ->
+                            scope.launch {
+                                val list = app.musicModule.libraryRepository
+                                    .getTracksByAlbum(album.albumId)
                                 playOnMusic(list)
                             }
                         },
                         onPlayTrack = { track -> playOnMusic(listOf(track)) },
-                        onPlayArtistTracks = { list -> playOnMusic(list) },
                         onQueryChange = { nasFind = it },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .zIndex(4f),
                     )
                 }
             }
@@ -923,17 +967,6 @@ private fun RadioScreenBody(
                     showStopAfterDialog = false
                 },
                 onDismiss = { showStopAfterDialog = false },
-            )
-        }
-        hueStatus?.let { msg ->
-            Text(
-                text = msg,
-                color = AudioAccent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 72.dp),
             )
         }
         if (screenBlack) {
@@ -1010,7 +1043,7 @@ private fun NowPlayingPanel(
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         when (nowPlaying) {
             is RadioNowPlaying.Music -> {
@@ -1025,6 +1058,7 @@ private fun NowPlayingPanel(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.6.sp,
                     softWrap = true,
+                    fontFamily = PallasFontFamily,
                 )
                 if (!nowPlaying.showEpisode.isNullOrBlank()) {
                     Text(
@@ -1033,28 +1067,44 @@ private fun NowPlayingPanel(
                         fontSize = 15.sp,
                         softWrap = true,
                         lineHeight = 20.sp,
+                        fontFamily = PallasFontFamily,
                     )
                 }
-                RadioMetaLink(
-                    text = nowPlaying.artist,
-                    color = AudioText,
-                    fontSize = 34.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.4).sp,
-                    lineHeight = 40.sp,
-                    enabled = nowPlaying.artist.isNotBlank(),
-                    onClick = { onArtistClick(nowPlaying.artist) },
-                )
-                RadioMetaLink(
-                    text = nowPlaying.track,
-                    color = AudioText.copy(alpha = 0.9f),
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.sp,
-                    lineHeight = 28.sp,
-                    enabled = nowPlaying.track.isNotBlank(),
-                    onClick = { onTrackClick(nowPlaying.track) },
-                )
+                if (nowPlaying.artist.isNotBlank()) {
+                    RadioMetaLink(
+                        text = nowPlaying.artist,
+                        color = AudioText,
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = (-0.4).sp,
+                        lineHeight = 40.sp,
+                        enabled = true,
+                        maxLines = Int.MAX_VALUE,
+                        onClick = { onArtistClick(nowPlaying.artist) },
+                    )
+                }
+                if (nowPlaying.track.isNotBlank()) {
+                    RadioMetaLink(
+                        text = nowPlaying.track,
+                        color = AudioText.copy(alpha = 0.9f),
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.sp,
+                        lineHeight = 28.sp,
+                        enabled = true,
+                        maxLines = Int.MAX_VALUE,
+                        onClick = { onTrackClick(nowPlaying.track) },
+                    )
+                }
+                if (nowPlaying.status.isNotBlank()) {
+                    Text(
+                        text = nowPlaying.status,
+                        color = AudioTextMuted,
+                        fontSize = 13.sp,
+                        softWrap = true,
+                        fontFamily = PallasFontFamily,
+                    )
+                }
             }
             is RadioNowPlaying.Show -> {
                 Text(
@@ -1147,9 +1197,10 @@ private fun RadioMetaLink(
     lineHeight: androidx.compose.ui.unit.TextUnit,
     enabled: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    maxLines: Int = 3,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val interaction = remember { MutableInteractionSource() }
     val feedback = rememberTvFeedback()
     Text(
         text = text,
@@ -1160,9 +1211,9 @@ private fun RadioMetaLink(
         softWrap = true,
         lineHeight = lineHeight,
         fontFamily = PallasFontFamily,
-        overflow = TextOverflow.Ellipsis,
-        maxLines = 3,
-        modifier = Modifier
+        overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis,
+        maxLines = maxLines,
+        modifier = modifier
             .glassInteract(
                 focused = focused && enabled,
                 selected = false,
@@ -1189,74 +1240,110 @@ private fun RadioMetaLink(
                 feedback.click()
                 onClick()
             })
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .padding(horizontal = 4.dp, vertical = 2.dp),
     )
 }
+
 @Composable
 private fun RecentTracksRow(
     tracks: List<RadioTrackHistory>,
     accent: Color,
     onArtistClick: (String) -> Unit = {},
     onTrackClick: (String) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
             text = "RECENTLY PLAYED",
             color = accent.copy(alpha = 0.85f),
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp
+            letterSpacing = 1.5.sp,
+            fontFamily = PallasFontFamily,
         )
-        Spacer(Modifier.height(6.dp))
-        tracks.forEach { track ->
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                if (track.artist.isNotBlank()) {
-                    RadioMetaLink(
-                        text = track.artist,
-                        color = AudioText,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = 0.sp,
-                        lineHeight = 18.sp,
-                        enabled = true,
-                        onClick = { onArtistClick(track.artist) },
-                    )
-                }
-                if (track.track.isNotBlank()) {
-                    RadioMetaLink(
-                        text = track.track,
-                        color = AudioTextMuted,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Normal,
-                        letterSpacing = 0.sp,
-                        lineHeight = 16.sp,
-                        enabled = true,
-                        onClick = { onTrackClick(track.track) },
-                    )
-                }
-                if (track.status.isNotBlank()) {
-                    Text(
-                        text = track.status,
-                        color = AudioTextMuted.copy(alpha = 0.7f),
-                        fontSize = 11.sp,
-                        softWrap = true,
-                    )
-                }
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(end = 8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            items(
+                items = tracks,
+                key = { "${it.artist}|${it.track}|${it.status}" },
+            ) { entry ->
+                RecentTrackChiplet(
+                    entry = entry,
+                    accent = accent,
+                    onArtistClick = onArtistClick,
+                    onTrackClick = onTrackClick,
+                )
             }
         }
     }
 }
+
+@Composable
+private fun RecentTrackChiplet(
+    entry: RadioTrackHistory,
+    accent: Color,
+    onArtistClick: (String) -> Unit,
+    onTrackClick: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .widthIn(min = 200.dp, max = 360.dp)
+            .clip(RoundedCornerShape(TrackChipCorner))
+            .background(Color.White.copy(alpha = 0.07f))
+            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(TrackChipCorner))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        if (entry.artist.isNotBlank()) {
+            RadioMetaLink(
+                text = entry.artist,
+                color = AudioText,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.sp,
+                lineHeight = 18.sp,
+                enabled = true,
+                maxLines = Int.MAX_VALUE,
+                onClick = { onArtistClick(entry.artist) },
+            )
+        }
+        if (entry.track.isNotBlank()) {
+            RadioMetaLink(
+                text = entry.track,
+                color = AudioTextMuted,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.sp,
+                lineHeight = 17.sp,
+                enabled = true,
+                maxLines = Int.MAX_VALUE,
+                onClick = { onTrackClick(entry.track) },
+            )
+        }
+        if (entry.status.isNotBlank()) {
+            Text(
+                text = entry.status,
+                color = accent.copy(alpha = 0.85f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.6.sp,
+                softWrap = true,
+                fontFamily = PallasFontFamily,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun rememberRadioPlayer(): ExoPlayer {
     val app = com.vizvag.shieldvideo.ShieldVideoApp.instance
     return app.radioPlayback.player
 }
+
 @Composable
 private fun RadioTopBar(
     onBack: () -> Unit,
@@ -1266,13 +1353,64 @@ private fun RadioTopBar(
     onToggleHueSync: (() -> Unit)? = null,
     compact: Boolean = false,
 ) {
+    if (compact) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = LeftPanePad, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                GlassControlButton(selected = false, size = 48.dp, onClick = onBack) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Text(
+                    text = "Radio",
+                    color = AudioText,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.4).sp,
+                    fontFamily = PallasFontFamily,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Visible,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 32.dp),
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .padding(start = 56.dp)
+                    .width(56.dp)
+                    .height(2.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                AudioAccent.copy(alpha = 0.15f),
+                                AudioAccent,
+                                AudioAccent.copy(alpha = 0.15f),
+                            ),
+                        ),
+                        RoundedCornerShape(1.dp),
+                    ),
+            )
+        }
+        return
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(
-                horizontal = if (compact) LeftPanePad else 28.dp,
-                vertical = if (compact) 14.dp else 18.dp,
-            ),
+            .padding(horizontal = 28.dp, vertical = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -1281,36 +1419,20 @@ private fun RadioTopBar(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back",
                 tint = Color.White,
-                modifier = Modifier.size(if (compact) 22.dp else 26.dp),
+                modifier = Modifier.size(26.dp),
             )
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = "Radio",
                 color = AudioText,
-                fontSize = if (compact) 24.sp else 34.sp,
+                fontSize = 34.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-0.6).sp,
                 fontFamily = PallasFontFamily,
+                maxLines = 1,
+                softWrap = false,
             )
-            if (compact) {
-                Box(
-                    modifier = Modifier
-                        .padding(top = 4.dp)
-                        .width(56.dp)
-                        .height(2.dp)
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    AudioAccent.copy(alpha = 0.15f),
-                                    AudioAccent,
-                                    AudioAccent.copy(alpha = 0.15f),
-                                ),
-                            ),
-                            RoundedCornerShape(1.dp),
-                        ),
-                )
-            }
         }
         if (hueSyncReady && onToggleHueSync != null) {
             IconActionButton(
@@ -1337,6 +1459,7 @@ private fun RadioTopBar(
         }
     }
 }
+
 @Composable
 private fun StatusPill(
     station: RadioStation,
@@ -1715,11 +1838,18 @@ private fun StationListRow(
 ) {
     val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
-    Row(
+    val logoRes = station.logoRes
+    Box(
         modifier = Modifier
             .fillMaxWidth()
+            .height(72.dp)
             .staggeredEntrance(visible = true, index = index)
-            .glassInteract(focused = focused, selected = selected)
+            .glassInteract(
+                focused = focused,
+                selected = selected,
+                idleSurface = if (logoRes != null) Color.Transparent else station.accentDeep.copy(alpha = 0.55f),
+                selectedAlpha = if (logoRes != null) 0.14f else GlassSelectedAlpha,
+            )
             .onFocusChanged {
                 val gained = it.isFocused && !focused
                 focused = it.isFocused
@@ -1728,79 +1858,101 @@ private fun StationListRow(
             .clickable {
                 feedback.click()
                 onClick()
-            }
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            },
     ) {
-        val logoRes = station.logoRes
         if (logoRes != null) {
+            Image(
+                painter = painterResource(logoRes),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = if (focused || selected) 0.28f else 0.18f },
+            )
             Box(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.White),
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(
-                    painter = painterResource(logoRes),
-                    contentDescription = station.name,
-                    contentScale = ContentScale.Fit,
+                    .fillMaxSize()
+                    .background(
+                        Brush.horizontalGradient(
+                            colorStops = arrayOf(
+                                0.0f to Color.Black.copy(alpha = 0.82f),
+                                0.55f to Color.Black.copy(alpha = 0.72f),
+                                1.0f to Color.Black.copy(alpha = 0.62f),
+                            ),
+                        ),
+                    ),
+            )
+            if (selected) {
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(4.dp),
+                        .background(station.accent.copy(alpha = 0.16f)),
                 )
             }
         } else {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(station.accentDeep.copy(alpha = 0.85f))
-                    .border(1.dp, station.accent.copy(alpha = 0.45f), RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center,
+                    .fillMaxSize()
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                station.accentDeep.copy(alpha = 0.9f),
+                                station.accent.copy(alpha = 0.35f),
+                                Color.Transparent,
+                            ),
+                        ),
+                    ),
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
-                    text = station.shortName.take(3),
-                    color = station.accent,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Black,
+                    text = station.name,
+                    color = AudioText,
+                    fontSize = 15.sp,
+                    fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.SemiBold,
+                    softWrap = true,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = 18.sp,
+                    fontFamily = PallasFontFamily,
+                )
+                Text(
+                    text = station.tagline.ifBlank { station.shortName },
+                    color = AudioTextMuted,
+                    fontSize = 12.sp,
+                    softWrap = true,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = 15.sp,
+                    fontFamily = PallasFontFamily,
                 )
             }
-        }
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = station.name,
-                color = AudioText,
-                fontSize = 14.sp,
-                fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.SemiBold,
-                softWrap = true,
-                maxLines = 2,
-                lineHeight = 17.sp,
-            )
-            Text(
-                text = station.tagline.ifBlank { station.shortName },
-                color = AudioTextMuted,
-                fontSize = 12.sp,
-                softWrap = true,
-                maxLines = 2,
-                lineHeight = 15.sp,
-            )
-        }
-        if (selected) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(100.dp))
-                    .background(station.accent.copy(alpha = 0.2f))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            ) {
-                Text(
-                    text = "ON",
-                    color = station.accent,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.2.sp,
-                )
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(100.dp))
+                        .background(station.accent.copy(alpha = 0.28f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = "ON",
+                        color = station.accent,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.2.sp,
+                        fontFamily = PallasFontFamily,
+                    )
+                }
             }
         }
     }

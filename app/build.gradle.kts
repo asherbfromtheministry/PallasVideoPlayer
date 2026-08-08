@@ -24,8 +24,8 @@ android {
         applicationId = "com.vizvag.shieldvideo"
         minSdk = 28
         targetSdk = 34
-        versionCode = 225
-        versionName = "2.5.9"
+        versionCode = 226
+        versionName = "2.5.10"
 
         // Personalized defaults from personal.defaults.properties when present.
         // The "clean" build type blanks every one so a distributable APK ships

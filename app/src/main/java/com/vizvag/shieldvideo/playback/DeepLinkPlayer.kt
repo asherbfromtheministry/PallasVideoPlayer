@@ -86,6 +86,10 @@ object DeepLinkPlayer {
     fun hostFrom(intent: Intent): String? =
         intent.data?.getQueryParameter("host")?.trim()?.takeIf { it.isNotBlank() }
 
+    /** Optional player package override (e.g. video.player.videoplayer). */
+    fun playerPackageFrom(intent: Intent): String? =
+        intent.data?.getQueryParameter("player")?.trim()?.takeIf { it.isNotBlank() }
+
     fun mediaUriFrom(intent: Intent): Uri? {
         val data = intent.data ?: return null
         if (!isPlayIntent(intent)) return null

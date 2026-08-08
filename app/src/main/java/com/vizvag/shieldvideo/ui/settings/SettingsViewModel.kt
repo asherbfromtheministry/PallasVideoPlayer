@@ -24,6 +24,8 @@ import com.vizvag.shieldvideo.data.settings.SettingsBackupManager
 import com.vizvag.shieldvideo.data.trakt.TraktAuthRepository
 import com.vizvag.shieldvideo.playback.InstalledVideoPlayer
 import com.vizvag.shieldvideo.playback.MediaPlayerLauncher
+import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
+import com.vizvag.shieldvideo.ui.notice.AppNoticeKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -214,19 +216,21 @@ class SettingsViewModel(
 
     fun setParentalPin(pin: String) {
         if (pin.length < 4) {
-            _state.update { it.copy(testMessage = "PIN must be at least 4 digits") }
+            pushNotice("PIN must be at least 4 digits", kind = AppNoticeKind.Error)
             return
         }
         iptvParental.setPin(pin)
-        _state.update { it.copy(parentalPinSet = true, testMessage = "Parental PIN saved") }
+        _state.update { it.copy(parentalPinSet = true) }
+        pushNotice("Parental PIN saved", kind = AppNoticeKind.Success)
     }
 
     fun clearParentalPin() {
         iptvParental.clearPin()
         iptvParental.setLockedGroups(emptySet())
         _state.update {
-            it.copy(parentalPinSet = false, lockedGroupsText = "", testMessage = "Parental PIN cleared")
+            it.copy(parentalPinSet = false, lockedGroupsText = "")
         }
+        pushNotice("Parental PIN cleared", kind = AppNoticeKind.Success)
     }
 
     fun setLockedGroupsText(text: String) {
@@ -344,32 +348,40 @@ class SettingsViewModel(
             update { it.copy(podcastOpmlNasPath = pick.path) }
         }
         viewModelScope.launch {
-            _state.update { it.copy(podcastBusy = true, podcastMessage = "Importing OPML…") }
+            _state.update { it.copy(podcastBusy = true, podcastMessage = null) }
+            pushNotice("Importing OPML…", title = "Podcasts", kind = AppNoticeKind.Progress)
             val result = withContext(Dispatchers.IO) {
                 when (pick) {
                     is OpmlPick.Nas -> podcastRepository.importOpmlFromNasPath(pick.path)
                     is OpmlPick.Local -> podcastRepository.importOpmlFromLocalFile(pick.absolutePath)
                 }
             }
-            _state.update {
-                result.fold(
-                    onSuccess = { count ->
-                        runCatching { ShieldVideoApp.instance.publishPodcastEpisodesToHa() }
+            result.fold(
+                onSuccess = { count ->
+                    runCatching { ShieldVideoApp.instance.publishPodcastEpisodesToHa() }
+                    _state.update {
                         it.copy(
                             podcastBusy = false,
-                            podcastMessage = "Imported $count shows",
+                            podcastMessage = null,
                             podcastSubscriptionCount = podcastRepository.subscriptionCount(),
                             podcastLastImportMs = podcastRepository.lastImportAtMs(),
                         )
-                    },
-                    onFailure = { e ->
-                        it.copy(
-                            podcastBusy = false,
-                            podcastMessage = e.message ?: "OPML import failed",
-                        )
-                    },
-                )
-            }
+                    }
+                    pushNotice(
+                        "Imported $count shows",
+                        title = "Podcasts",
+                        kind = AppNoticeKind.Success,
+                    )
+                },
+                onFailure = { e ->
+                    _state.update { it.copy(podcastBusy = false, podcastMessage = null) }
+                    pushNotice(
+                        e.message ?: "OPML import failed",
+                        title = "Podcasts",
+                        kind = AppNoticeKind.Error,
+                    )
+                },
+            )
         }
     }
 
@@ -428,22 +440,29 @@ class SettingsViewModel(
         if (_state.value.backupBusy) return
         viewModelScope.launch {
             val draft = _state.value.draft
-            _state.update { it.copy(backupBusy = true, backupMessage = "Exporting…") }
+            _state.update { it.copy(backupBusy = true, backupMessage = null) }
+            pushNotice("Exporting…", title = "Backup", kind = AppNoticeKind.Progress)
             val result = settingsBackup.exportToNas(draft)
             if (result.isSuccess) {
                 baseline = draft
             }
+            val msg = result.fold(
+                onSuccess = { path -> "Settings exported to $path" },
+                onFailure = { error -> error.message ?: "Settings export failed" }
+            )
             _state.update {
                 it.copy(
                     backupBusy = false,
                     saved = result.isSuccess,
                     isDirty = if (result.isSuccess) false else it.isDirty,
-                    backupMessage = result.fold(
-                        onSuccess = { path -> "Settings exported to $path" },
-                        onFailure = { error -> error.message ?: "Settings export failed" }
-                    )
+                    backupMessage = null,
                 )
             }
+            pushNotice(
+                msg,
+                title = "Backup",
+                kind = if (result.isSuccess) AppNoticeKind.Success else AppNoticeKind.Error,
+            )
         }
     }
 
@@ -451,7 +470,8 @@ class SettingsViewModel(
         if (_state.value.backupBusy) return
         viewModelScope.launch {
             val connectionSettings = _state.value.draft
-            _state.update { it.copy(backupBusy = true, backupMessage = "Importing…") }
+            _state.update { it.copy(backupBusy = true, backupMessage = null) }
+            pushNotice("Importing…", title = "Backup", kind = AppNoticeKind.Progress)
             val result = settingsBackup.importFromNas(connectionSettings)
             result.onSuccess { imported ->
                 baseline = imported
@@ -466,17 +486,23 @@ class SettingsViewModel(
                     )
                 }
             }
+            val msg = result.fold(
+                onSuccess = {
+                    "Settings imported. Reopen Live TV to load the imported channels."
+                },
+                onFailure = { error -> error.message ?: "Settings import failed" }
+            )
             _state.update {
                 it.copy(
                     backupBusy = false,
-                    backupMessage = result.fold(
-                        onSuccess = {
-                            "Settings imported. Reopen Live TV to load the imported channels."
-                        },
-                        onFailure = { error -> error.message ?: "Settings import failed" }
-                    )
+                    backupMessage = null,
                 )
             }
+            pushNotice(
+                msg,
+                title = "Backup",
+                kind = if (result.isSuccess) AppNoticeKind.Success else AppNoticeKind.Error,
+            )
         }
     }
 
@@ -507,7 +533,8 @@ class SettingsViewModel(
         runCatching { ShieldVideoApp.instance.publishRadioStationsToHa() }
         runCatching { ShieldVideoApp.instance.publishPodcastEpisodesToHa() }
         baseline = draft
-        _state.update { it.copy(draft = draft, saved = true, isDirty = false, testMessage = "Saved") }
+        _state.update { it.copy(draft = draft, saved = true, isDirty = false, testMessage = null) }
+        pushNotice("Settings saved", kind = AppNoticeKind.Success)
     }
 
     fun discardChanges() {
@@ -525,46 +552,54 @@ class SettingsViewModel(
         viewModelScope.launch {
             val draft = _state.value.draft
             _state.update { it.copy(testing = true, testMessage = null) }
+            pushNotice("Testing NAS connection…", title = "NAS", kind = AppNoticeKind.Progress)
             val result = nasRepository.testConnection(draft)
-            _state.update {
-                it.copy(
-                    testing = false,
-                    testMessage = result.fold(
-                        onSuccess = {
-                            "Connection OK (${draft.connectionMode.label})"
-                        },
-                        onFailure = { error -> error.message ?: "Connection failed" }
+            _state.update { it.copy(testing = false, testMessage = null) }
+            result.fold(
+                onSuccess = {
+                    pushNotice(
+                        "Connection OK (${draft.connectionMode.label})",
+                        title = "NAS",
+                        kind = AppNoticeKind.Success,
                     )
-                )
-            }
+                },
+                onFailure = { error ->
+                    pushNotice(
+                        error.message ?: "Connection failed",
+                        title = "NAS",
+                        kind = AppNoticeKind.Error,
+                    )
+                }
+            )
         }
     }
 
     fun pairHueBridge() {
         viewModelScope.launch {
             val draft = _state.value.draft
-            _state.update { it.copy(hueBusy = true, hueMessage = "Pairing… press the bridge button first") }
+            _state.update { it.copy(hueBusy = true, hueMessage = null) }
+            pushNotice("Pairing… press the bridge button first", title = "Hue", kind = AppNoticeKind.Progress)
             val result = withContext(Dispatchers.IO) {
                 hueClient.pair(draft.hueBridgeIp)
             }
             result.fold(
                 onSuccess = { username ->
                     update { it.copy(hueUsername = username) }
-                    _state.update {
-                        it.copy(
-                            hueBusy = false,
-                            hueMessage = "Paired — Save settings, refresh lights, then pick which ones to sync",
-                        )
-                    }
+                    _state.update { it.copy(hueBusy = false, hueMessage = null) }
+                    pushNotice(
+                        "Paired — Save settings, refresh lights, then pick which ones to sync",
+                        title = "Hue",
+                        kind = AppNoticeKind.Success,
+                    )
                     refreshHueLights()
                 },
                 onFailure = { error ->
-                    _state.update {
-                        it.copy(
-                            hueBusy = false,
-                            hueMessage = error.message ?: "Pairing failed",
-                        )
-                    }
+                    _state.update { it.copy(hueBusy = false, hueMessage = null) }
+                    pushNotice(
+                        error.message ?: "Pairing failed",
+                        title = "Hue",
+                        kind = AppNoticeKind.Error,
+                    )
                 },
             )
         }
@@ -574,10 +609,11 @@ class SettingsViewModel(
         viewModelScope.launch {
             val draft = _state.value.draft
             if (draft.hueUsername.isBlank()) {
-                _state.update { it.copy(hueMessage = "Pair the bridge first") }
+                pushNotice("Pair the bridge first", title = "Hue", kind = AppNoticeKind.Error)
                 return@launch
             }
-            _state.update { it.copy(hueBusy = true, hueMessage = "Loading lights…") }
+            _state.update { it.copy(hueBusy = true, hueMessage = null) }
+            pushNotice("Loading lights…", title = "Hue", kind = AppNoticeKind.Progress)
             val result = withContext(Dispatchers.IO) {
                 hueClient.listLights(draft.hueBridgeIp, draft.hueUsername)
             }
@@ -587,21 +623,23 @@ class SettingsViewModel(
                         it.copy(
                             hueBusy = false,
                             hueLights = lights,
-                            hueMessage = if (lights.isEmpty()) {
-                                "No lights found on this bridge"
-                            } else {
-                                "${lights.size} light(s) — select which to sync with Music"
-                            },
+                            hueMessage = null,
                         )
                     }
+                    pushNotice(
+                        if (lights.isEmpty()) "No lights found on this bridge"
+                        else "Found ${lights.size} light(s) — select which to sync",
+                        title = "Hue",
+                        kind = if (lights.isEmpty()) AppNoticeKind.Info else AppNoticeKind.Success,
+                    )
                 },
                 onFailure = { error ->
-                    _state.update {
-                        it.copy(
-                            hueBusy = false,
-                            hueMessage = error.message ?: "Could not list lights",
-                        )
-                    }
+                    _state.update { it.copy(hueBusy = false, hueMessage = null) }
+                    pushNotice(
+                        error.message ?: "Could not list lights",
+                        title = "Hue",
+                        kind = AppNoticeKind.Error,
+                    )
                 },
             )
         }
@@ -704,6 +742,10 @@ class SettingsViewModel(
 
     fun setYoutubeAuthMessage(message: String) {
         _state.update { it.copy(youtubeAuthMessage = message) }
+    }
+
+    fun consumeYoutubeAuthMessage() {
+        _state.update { it.copy(youtubeAuthMessage = null) }
     }
 
     fun toggleYoutubePasswordVisible() {
@@ -867,9 +909,20 @@ class SettingsViewModel(
             it.copy(
                 podcastSubscriptionCount = 0,
                 podcastLastImportMs = 0L,
-                podcastMessage = "Subscriptions cleared",
+                podcastMessage = null,
             )
         }
+        pushNotice("Subscriptions cleared", title = "Podcasts", kind = AppNoticeKind.Success)
+    }
+
+    private fun pushNotice(
+        message: String?,
+        title: String = "Settings",
+        kind: AppNoticeKind? = null,
+    ) {
+        val msg = message?.trim().orEmpty()
+        if (msg.isEmpty()) return
+        AppNoticeBus.show(msg, kind ?: AppNoticeBus.inferKind(msg), title)
     }
 }
 

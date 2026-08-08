@@ -1,5 +1,6 @@
 package com.vizvag.shieldvideo.data.radio
 
+import com.vizvag.shieldvideo.music.data.metadata.AlbumArtLookup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -11,8 +12,14 @@ import java.util.concurrent.TimeUnit
  * Fetches live BBC Sounds metadata (track / programme info).
  * The HLS audio feed does not carry titles; this uses the same RMS API as bbc.co.uk/sounds.
  * Works outside the UK — use [experience=international] first, then domestic as fallback.
+ *
+ * Note: many 6 Music (and some other) segments return BBC’s generic placeholder image
+ * (`p0bqcdzf`). That is treated as missing so we can fall back to programme art or
+ * Deezer / iTunes track art.
  */
-class BbcRadioMetadataRepository {
+class BbcRadioMetadataRepository(
+    private val artLookup: AlbumArtLookup = AlbumArtLookup(),
+) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(12, TimeUnit.SECONDS)
@@ -23,11 +30,22 @@ class BbcRadioMetadataRepository {
         val show = EXPERIENCES.firstNotNullOfOrNull { fetchShow(serviceId, it) }
         val music = EXPERIENCES.firstNotNullOfOrNull { fetchMusic(serviceId, it) }
         when {
-            music != null -> music.copy(
-                showTitle = show?.title,
-                showEpisode = show?.episode,
-                imageUrl = music.imageUrl ?: show?.imageUrl
-            )
+            music != null -> {
+                var image = music.imageUrl ?: show?.imageUrl
+                if (image.isNullOrBlank() &&
+                    music.artist.isNotBlank() &&
+                    music.track.isNotBlank()
+                ) {
+                    image = runCatching {
+                        artLookup.resolveTrackArtUrl(music.artist, music.track)
+                    }.getOrNull()
+                }
+                music.copy(
+                    showTitle = show?.title,
+                    showEpisode = show?.episode,
+                    imageUrl = image,
+                )
+            }
             show != null -> show
             else -> RadioNowPlaying.Unavailable
         }
@@ -136,6 +154,10 @@ class BbcRadioMetadataRepository {
 
     private fun bbcImage(template: String?): String? {
         if (template.isNullOrBlank()) return null
+        // BBC Sounds default when a music segment has no cover — tiny generic tile.
+        if (PLACEHOLDER_IMAGE_IDS.any { id -> template.contains("/$id.") || template.contains("/$id/") }) {
+            return null
+        }
         // BBC ichef requires WxH recipes (e.g. 480x480). A bare "480" returns 403.
         if (template.contains("{recipe}")) {
             return template.replace("{recipe}", "480x480")
@@ -154,5 +176,7 @@ class BbcRadioMetadataRepository {
         private const val BASE = "https://rms.api.bbc.co.uk/v2"
         private const val USER_AGENT = "PallasVideoPlayer/1.0 (Android TV)"
         private val EXPERIENCES = listOf("international", "domestic")
+        /** Known ichef PIDs used as empty / generic segment artwork. */
+        private val PLACEHOLDER_IMAGE_IDS = listOf("p0bqcdzf")
     }
 }

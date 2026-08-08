@@ -89,6 +89,8 @@ fun IconActionButton(
     selected: Boolean,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    /** Applied on the focusable control (not the outer 72dp hit box). */
+    focusModifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
     val feedback = rememberTvFeedback()
@@ -108,6 +110,7 @@ fun IconActionButton(
                     if (gained) feedback.focus()
                 }
                 .focusProperties { canFocus = enabled }
+                .then(focusModifier)
                 .clickable(enabled = enabled, role = Role.Button, onClick = {
                     feedback.click()
                     onClick()

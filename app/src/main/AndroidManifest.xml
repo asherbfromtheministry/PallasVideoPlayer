@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -10,6 +11,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Optional: adb pm grant … WRITE_SECURE_SETTINGS so handoff can clear sticky media_button_receiver. -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
     <!-- Read Takeout subscriptions.csv from Download/ for Piped import on TV. -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -95,6 +100,13 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Seekable NAS handoff for external players (file-like controls; not http/WebDelegate). -->
+        <provider
+            android:name=".playback.SeekableNasMediaProvider"
+            android:authorities="${applicationId}.nasmedia"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <service
             android:name=".playback.remote.RemoteControlService"
             android:exported="false"
@@ -104,6 +116,12 @@
             android:name=".playback.IptvRecordingService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Isolated process: MediaMuxer/MPEG4Writer can SIGABRT on truncated .ts -->
+        <service
+            android:name=".playback.Mp4RemuxProcessService"
+            android:exported="false"
+            android:process=":mp4remux" />
 
         <service
             android:name=".playback.RadioRecordingService"

@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.ui.components.IconActionButton
 import com.vizvag.shieldvideo.ui.components.StatusPane
+import com.vizvag.shieldvideo.ui.notice.ForwardFlashNotice
 import com.vizvag.shieldvideo.ui.theme.CyanAccent
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
@@ -146,7 +147,7 @@ fun BrowserScreen(
         Column(modifier = Modifier.weight(1f).fillMaxSize()) {
             if (showAccessHint) {
                 Text(
-                    text = "Enable Notification access for PallasVideoPlayer to show Resume progress after watching in VLC → Settings",
+                    text = "Enable resume tracking (Settings → Playback) so Continue Watching updates after VLC.",
                     color = CyanAccent.copy(alpha = 0.9f),
                     fontSize = 13.sp,
                     modifier = Modifier
@@ -250,24 +251,11 @@ fun BrowserScreen(
                         msg.contains("Video Station", ignoreCase = true) ||
                         msg.contains("Indexing", ignoreCase = true)
                 }
-                if (toastMessage != null) {
-                    LaunchedEffect(toastMessage) {
-                        delay(2500)
-                        viewModel.dismissMessage()
-                    }
-                    Text(
-                        text = toastMessage,
-                        color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(horizontal = 28.dp, vertical = 24.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xF02E342A))
-                            .padding(horizontal = 18.dp, vertical = 12.dp)
-                    )
-                }
+                ForwardFlashNotice(
+                    message = toastMessage,
+                    title = "Library",
+                    onConsumed = viewModel::dismissMessage,
+                )
             }
         }
         }

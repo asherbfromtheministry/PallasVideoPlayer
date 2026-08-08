@@ -96,6 +96,7 @@ import com.vizvag.shieldvideo.data.settings.IptvRecordingStorage
 import com.vizvag.shieldvideo.playback.NotificationAccessHelper
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.glassInteract
+import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
 import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
@@ -130,6 +131,11 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsState()
     val draft = state.draft
     val context = LocalContext.current
+    LaunchedEffect(state.youtubeAuthMessage) {
+        val msg = state.youtubeAuthMessage ?: return@LaunchedEffect
+        AppNoticeBus.show(msg, AppNoticeBus.inferKind(msg), title = "YouTube")
+        viewModel.consumeYoutubeAuthMessage()
+    }
     val localRecordingFolderLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -451,11 +457,6 @@ fun SettingsScreen(
                                 onImport = { showImportConfirm = true },
                                 viewModel = viewModel
                             )
-                        }
-
-                        if (state.testMessage != null && selectedTab == SettingsTab.NAS) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(text = state.testMessage.orEmpty(), color = Accent, fontSize = 13.sp)
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -1553,19 +1554,6 @@ private fun YouTubeSettingsTab(
             fontSize = 11.sp,
         )
     }
-    val authMessage = state.youtubeAuthMessage
-    if (authMessage != null) {
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = authMessage,
-            color = if (draft.isYoutubeLoggedIn && !authMessage.contains("fail", ignoreCase = true)) {
-                Accent
-            } else {
-                Color(0xFFFF8A80)
-            },
-            fontSize = 12.sp,
-        )
-    }
 }
 
 private fun readSubscriptionsCsvFromDevice(context: android.content.Context): String? {
@@ -1645,15 +1633,6 @@ private fun PodcastSettingsTab(
         color = TextMuted,
         fontSize = 12.sp,
     )
-    if (!state.podcastMessage.isNullOrBlank()) {
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = state.podcastMessage.orEmpty(),
-            color = Accent,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
     Spacer(modifier = Modifier.height(10.dp))
     Text(
         text = "Save in the header to keep the last NAS file path in backup.",
@@ -1960,10 +1939,6 @@ private fun IntegrationsSettingsTab(
             Text("Refresh lights", color = Color.White, fontWeight = FontWeight.SemiBold)
         }
     }
-    state.hueMessage?.let { msg ->
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(text = msg, color = TextMuted, fontSize = 12.sp)
-    }
     if (state.hueLights.isNotEmpty()) {
         Spacer(modifier = Modifier.height(8.dp))
         Text("Lights", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
@@ -2155,10 +2130,6 @@ private fun BackupSettingsTab(
         fontSize = 11.sp,
         modifier = Modifier.padding(top = 8.dp)
     )
-    state.backupMessage?.let { message ->
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(message, color = LocalScreenChrome.current.accent, fontSize = 11.sp)
-    }
 }
 
 /**

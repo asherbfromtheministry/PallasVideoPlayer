@@ -51,6 +51,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,6 +103,7 @@ import com.vizvag.shieldvideo.ui.theme.TextMuted
 import com.vizvag.shieldvideo.ui.theme.TvFeedback
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 @Composable
@@ -286,7 +288,6 @@ fun PodcastScreen(
                             ui.browsingAll -> "All shows · recent"
                             else -> ui.selectedShow?.title.orEmpty()
                         },
-                        status = ui.statusMessage,
                         refreshing = refreshOverlay != null,
                         feedback = feedback,
                         onShows = { showPicker = true },
@@ -352,6 +353,7 @@ fun PodcastScreen(
                                 playingTitle = playback.episodeTitle,
                                 progress = ui.progress,
                                 showTitles = if (ui.browsingAll) ui.showTitleById else emptyMap(),
+                                showImages = ui.shows.associate { it.id to it.imageUrl },
                                 episodeSort = ui.episodeSort,
                                 onCycleSort = viewModel::cycleEpisodeSort,
                                 onPlay = viewModel::playEpisode,
@@ -413,7 +415,6 @@ fun PodcastScreen(
 @Composable
 private fun PodcastTopBar(
     showTitle: String,
-    status: String?,
     refreshing: Boolean,
     feedback: TvFeedback,
     onShows: () -> Unit,
@@ -453,15 +454,6 @@ private fun PodcastTopBar(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontFamily = PallasFontFamily,
-                )
-            }
-            if (!status.isNullOrBlank()) {
-                Text(
-                    status,
-                    color = Accent.copy(alpha = 0.85f),
-                    fontSize = if (compact) 10.sp else 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -748,7 +740,7 @@ private fun NowPlayingStage(
             TransportButton(
                 Icons.Filled.SkipNext, "Older", onOlder,
                 feedback = feedback, compact = compact,
-                // Only the rightmost control redirects Right → episode list.
+                // Rightmost transport → episode list (FocusRequester lives on the LazyColumn host).
                 rightFocus = episodeListFocus,
             )
         }
@@ -814,6 +806,7 @@ private fun EpisodeListPane(
     playingTitle: String,
     progress: Map<String, com.vizvag.shieldvideo.data.podcast.PodcastEpisodeProgress>,
     showTitles: Map<String, String>,
+    showImages: Map<String, String>,
     episodeSort: PodcastEpisodeSort,
     onCycleSort: () -> Unit,
     onPlay: (PodcastEpisode) -> Unit,
@@ -883,30 +876,52 @@ private fun EpisodeListPane(
                 )
             }
             else -> {
-                LazyColumn(
-                    state = listState,
-                    verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 6.dp),
-                    contentPadding = PaddingValues(bottom = if (compact) 4.dp else 8.dp),
-                ) {
-                    itemsIndexed(episodes, key = { _, e -> e.guid }) { index, ep ->
-                        val playing = when {
-                            playingGuid.isNotBlank() && playingGuid != "remote" ->
-                                ep.guid == playingGuid
-                            playingTitle.isNotBlank() -> ep.title == playingTitle
-                            else -> false
+                val firstEpisodeFocus = remember { FocusRequester() }
+                val listScope = rememberCoroutineScope()
+                // Host stays outside LazyColumn so scroll never detaches listFocusRequester.
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .size(1.dp)
+                            .focusRequester(listFocusRequester)
+                            .focusable()
+                            .onFocusChanged { state ->
+                                if (state.isFocused) {
+                                    listScope.launch {
+                                        runCatching { listState.scrollToItem(0) }
+                                        runCatching { firstEpisodeFocus.requestFocus() }
+                                    }
+                                }
+                            },
+                    )
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 6.dp),
+                        contentPadding = PaddingValues(bottom = if (compact) 4.dp else 8.dp),
+                    ) {
+                        itemsIndexed(episodes, key = { _, e -> e.guid }) { index, ep ->
+                            val playing = when {
+                                playingGuid.isNotBlank() && playingGuid != "remote" ->
+                                    ep.guid == playingGuid
+                                playingTitle.isNotBlank() -> ep.title == playingTitle
+                                else -> false
+                            }
+                            EpisodeRow(
+                                episode = ep,
+                                showTitle = showTitles[ep.showId],
+                                showImageUrl = showImages[ep.showId],
+                                playing = playing,
+                                progressFrac = progress[ep.guid]?.progressFraction ?: 0f,
+                                completed = progress[ep.guid]?.completed == true,
+                                onPlay = { onPlay(ep) },
+                                feedback = feedback,
+                                compact = compact,
+                                focusRequester = if (index == 0) firstEpisodeFocus else null,
+                                leftFocus = playFocus,
+                            )
                         }
-                        EpisodeRow(
-                            episode = ep,
-                            showTitle = showTitles[ep.showId],
-                            playing = playing,
-                            progressFrac = progress[ep.guid]?.progressFraction ?: 0f,
-                            completed = progress[ep.guid]?.completed == true,
-                            onPlay = { onPlay(ep) },
-                            feedback = feedback,
-                            compact = compact,
-                            focusRequester = if (index == 0) listFocusRequester else null,
-                            leftFocus = playFocus,
-                        )
                     }
                 }
             }
@@ -923,18 +938,20 @@ private fun EpisodeRow(
     onPlay: () -> Unit,
     feedback: TvFeedback,
     showTitle: String? = null,
+    showImageUrl: String? = null,
     compact: Boolean = false,
     focusRequester: FocusRequester? = null,
     leftFocus: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
-    Column(
+    val artUrl = episode.imageUrl.ifBlank { showImageUrl.orEmpty() }
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .glassInteract(
                 focused = focused,
-                selected = playing,
+                selected = false,
                 idleSurface = Color.Transparent,
             )
             .onFocusChanged {
@@ -947,68 +964,110 @@ private fun EpisodeRow(
             .clickable {
                 feedback.click()
                 onPlay()
-            }
-            .padding(
-                horizontal = if (compact) 8.dp else 12.dp,
-                vertical = if (compact) 6.dp else 10.dp,
-            ),
+            },
     ) {
-        if (!showTitle.isNullOrBlank()) {
+        if (artUrl.isNotBlank()) {
+            AsyncImage(
+                model = artUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize(),
+            )
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        Brush.horizontalGradient(
+                            colorStops = arrayOf(
+                                0f to Color.Black.copy(alpha = 0.82f),
+                                0.55f to Color.Black.copy(alpha = 0.62f),
+                                1f to Color.Black.copy(alpha = 0.38f),
+                            ),
+                        ),
+                    ),
+            )
+            when {
+                playing -> Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(Accent.copy(alpha = 0.22f)),
+                )
+                focused -> Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(Color.White.copy(alpha = 0.06f)),
+                )
+            }
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = if (compact) 8.dp else 12.dp,
+                    vertical = if (compact) 6.dp else 10.dp,
+                ),
+        ) {
+            if (!showTitle.isNullOrBlank()) {
+                Text(
+                    showTitle,
+                    color = Accent.copy(alpha = 0.95f),
+                    fontSize = if (compact) 9.sp else 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontFamily = PallasFontFamily,
+                )
+                Spacer(Modifier.height(2.dp))
+            }
             Text(
-                showTitle,
-                color = Accent.copy(alpha = 0.9f),
-                fontSize = if (compact) 9.sp else 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
+                episode.title,
+                color = when {
+                    completed -> TextMuted.copy(alpha = 0.85f)
+                    playing -> Accent
+                    else -> Color.White
+                },
+                fontSize = if (compact) 12.sp else 14.sp,
+                fontWeight = if (playing) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = if (compact) 1 else 2,
                 overflow = TextOverflow.Ellipsis,
                 fontFamily = PallasFontFamily,
             )
-            Spacer(Modifier.height(2.dp))
-        }
-        Text(
-            episode.title,
-            color = when {
-                completed -> TextMuted.copy(alpha = 0.7f)
-                playing -> Accent
-                else -> Color.White
-            },
-            fontSize = if (compact) 12.sp else 14.sp,
-            fontWeight = if (playing) FontWeight.Bold else FontWeight.SemiBold,
-            maxLines = if (compact) 1 else 2,
-            overflow = TextOverflow.Ellipsis,
-            fontFamily = PallasFontFamily,
-        )
-        Spacer(Modifier.height(if (compact) 2.dp else 4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp)) {
-            if (episode.publishEpochMs > 0L) {
-                Text(
-                    formatDate(episode.publishEpochMs),
-                    color = TextMuted,
-                    fontSize = if (compact) 9.sp else 11.sp,
+            Spacer(Modifier.height(if (compact) 2.dp else 4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp)) {
+                if (episode.publishEpochMs > 0L) {
+                    Text(
+                        formatDate(episode.publishEpochMs),
+                        color = Color.White.copy(alpha = 0.72f),
+                        fontSize = if (compact) 9.sp else 11.sp,
+                    )
+                }
+                if (episode.durationSec > 0L) {
+                    Text(
+                        formatDuration(episode.durationSec),
+                        color = Color.White.copy(alpha = 0.72f),
+                        fontSize = if (compact) 9.sp else 11.sp,
+                    )
+                }
+                if (completed) {
+                    Text(
+                        "Played",
+                        color = Color.White.copy(alpha = 0.72f),
+                        fontSize = if (compact) 9.sp else 11.sp,
+                    )
+                }
+            }
+            if (!completed && progressFrac > 0.02f) {
+                Spacer(Modifier.height(if (compact) 3.dp else 6.dp))
+                LinearProgressIndicator(
+                    progress = { progressFrac },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (compact) 2.dp else 3.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = Accent,
+                    trackColor = Color.White.copy(alpha = 0.22f),
                 )
             }
-            if (episode.durationSec > 0L) {
-                Text(
-                    formatDuration(episode.durationSec),
-                    color = TextMuted,
-                    fontSize = if (compact) 9.sp else 11.sp,
-                )
-            }
-            if (completed) {
-                Text("Played", color = TextMuted, fontSize = if (compact) 9.sp else 11.sp)
-            }
-        }
-        if (!completed && progressFrac > 0.02f) {
-            Spacer(Modifier.height(if (compact) 3.dp else 6.dp))
-            LinearProgressIndicator(
-                progress = { progressFrac },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(if (compact) 2.dp else 3.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                color = Accent,
-                trackColor = Color.White.copy(alpha = 0.12f),
-            )
         }
     }
 }

@@ -33,6 +33,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import com.vizvag.shieldvideo.ShieldVideoApp
+import com.vizvag.shieldvideo.ui.notice.AppNotice
+import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
+import com.vizvag.shieldvideo.ui.notice.AppNoticeKind
 
 class MusicViewModel(
     private val libraryRepository: LibraryRepository,
@@ -570,12 +573,19 @@ class MusicViewModel(
     }
 
     private fun flashStatus(message: String) {
-        _statusMessage.value = message
+        val msg = message.trim()
+        if (msg.isEmpty()) return
+        AppNoticeBus.show(
+            message = msg,
+            kind = AppNoticeBus.inferKind(msg).let {
+                if (it == AppNoticeKind.Progress) AppNoticeKind.Info else it
+            },
+            title = "Music",
+            durationMs = AppNotice.defaultDuration(AppNoticeKind.Info).coerceAtLeast(2_800L),
+        )
+        _statusMessage.value = null
         statusClearJob?.cancel()
-        statusClearJob = viewModelScope.launch {
-            delay(3500)
-            if (_statusMessage.value == message) _statusMessage.value = null
-        }
+        statusClearJob = null
     }
 
     private fun refreshHueSyncState() {

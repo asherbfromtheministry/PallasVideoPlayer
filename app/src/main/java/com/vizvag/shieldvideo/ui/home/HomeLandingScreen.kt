@@ -3,7 +3,6 @@ package com.vizvag.shieldvideo.ui.home
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,13 +10,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -45,6 +43,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vizvag.shieldvideo.R
@@ -72,6 +71,8 @@ import com.vizvag.shieldvideo.ui.theme.TextMuted
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import com.vizvag.shieldvideo.ui.theme.staggeredEntrance
 import kotlinx.coroutines.delay
+import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * Fraction of the media-room plate — authored against [R.drawable.media_room]:
@@ -89,6 +90,20 @@ private data class RoomHotspot(
     val h: Float,
     val chrome: ScreenChrome,
     val onOpen: () -> Unit,
+)
+
+private data class FocusNode(
+    val key: String,
+    val cx: Float,
+    val cy: Float,
+    val requester: FocusRequester,
+)
+
+private data class FocusLinks(
+    val left: FocusRequester? = null,
+    val right: FocusRequester? = null,
+    val up: FocusRequester? = null,
+    val down: FocusRequester? = null,
 )
 
 /** Aspect of [R.drawable.media_room] (1536×1024). Hotspots are authored against this frame. */
@@ -219,19 +234,49 @@ fun HomeLandingScreen(
         }
     }
 
+    val corridor = remember(otherShares, dvrFolder) {
+        buildList {
+            otherShares.forEach { share ->
+                add(Triple(NasPaths.labelFor(share), nasShareIcon(share)) { onOpenShare(share) })
+            }
+            if (dvrFolder != null) {
+                add(Triple("DVR", Icons.Filled.FiberDvr) { onOpenShare(dvrFolder) })
+            }
+        }
+    }
+
+    val hotspotRequesters = remember(hotspots) {
+        hotspots.associate { it.key to FocusRequester() }
+    }
+    val remoteFocus = remember { FocusRequester() }
+    val settingsFocus = remember { FocusRequester() }
+    val corridorRequesters = remember(corridor.size) {
+        List(corridor.size) { FocusRequester() }
+    }
+
+    val focusLinks = remember(hotspots, corridor.size, hotspotRequesters, corridorRequesters) {
+        buildLandingFocusLinks(
+            hotspots = hotspots,
+            hotspotRequesters = hotspotRequesters,
+            remoteFocus = remoteFocus,
+            settingsFocus = settingsFocus,
+            corridorRequesters = corridorRequesters,
+        )
+    }
+
     var entered by remember { mutableStateOf(false) }
-    val firstFocus = remember { FocusRequester() }
     val initialFocusKey = remember(hotspots) {
         when {
             hotspots.any { it.key == "library" } -> "library"
             else -> hotspots.firstOrNull()?.key
         }
     }
+    val initialFocus = initialFocusKey?.let { hotspotRequesters[it] }
     LaunchedEffect(hotspots, initialFocusKey) {
         entered = true
         delay(100)
-        if (initialFocusKey != null) {
-            runCatching { firstFocus.requestFocus() }
+        if (initialFocus != null) {
+            runCatching { initialFocus.requestFocus() }
         }
     }
 
@@ -322,7 +367,13 @@ fun HomeLandingScreen(
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ScreenTheme(SettingsChrome) {
-                        IconActionButton(selected = false, onClick = onOpenRemote) {
+                        IconActionButton(
+                            selected = false,
+                            onClick = onOpenRemote,
+                            focusModifier = Modifier
+                                .focusRequester(remoteFocus)
+                                .landingFocusLinks(focusLinks["remote"]),
+                        ) {
                             Icon(
                                 Icons.Filled.Phonelink,
                                 contentDescription = "Remote",
@@ -330,7 +381,13 @@ fun HomeLandingScreen(
                                 modifier = Modifier.size(if (compactChrome) 22.dp else 26.dp),
                             )
                         }
-                        IconActionButton(selected = false, onClick = onOpenSettings) {
+                        IconActionButton(
+                            selected = false,
+                            onClick = onOpenSettings,
+                            focusModifier = Modifier
+                                .focusRequester(settingsFocus)
+                                .landingFocusLinks(focusLinks["settings"]),
+                        ) {
                             Icon(
                                 Icons.Filled.Settings,
                                 contentDescription = "Settings",
@@ -343,6 +400,7 @@ fun HomeLandingScreen(
             }
 
             hotspots.forEachIndexed { index, spot ->
+                val requester = hotspotRequesters.getValue(spot.key)
                 ScreenTheme(spot.chrome) {
                     RoomHotspotFrame(
                         label = spot.label,
@@ -357,23 +415,13 @@ fun HomeLandingScreen(
                             )
                             .width(coverW * spot.w)
                             .height(coverH * spot.h)
-                            .then(
-                                if (spot.key == initialFocusKey) Modifier.focusRequester(firstFocus)
-                                else Modifier
-                            )
+                            .focusRequester(requester)
+                            .landingFocusLinks(focusLinks[spot.key])
                             .staggeredEntrance(entered, index + 1),
                     )
                 }
             }
 
-            val corridor = buildList {
-                otherShares.forEach { share ->
-                    add(Triple(NasPaths.labelFor(share), nasShareIcon(share)) { onOpenShare(share) })
-                }
-                if (dvrFolder != null) {
-                    add(Triple("DVR", Icons.Filled.FiberDvr) { onOpenShare(dvrFolder) })
-                }
-            }
             if (corridor.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -401,12 +449,92 @@ fun HomeLandingScreen(
                             title = title,
                             icon = icon,
                             onOpen = open,
-                            modifier = Modifier.staggeredEntrance(entered, index + 7),
+                            modifier = Modifier
+                                .focusRequester(corridorRequesters[index])
+                                .landingFocusLinks(focusLinks["corridor_$index"])
+                                .staggeredEntrance(entered, index + 7),
                         )
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * Explicit D-pad graph from room geometry so Right from Library goes YouTube/Live TV,
+ * not top-chrome Remote/Settings or bottom MORE NAS plaques.
+ */
+private fun buildLandingFocusLinks(
+    hotspots: List<RoomHotspot>,
+    hotspotRequesters: Map<String, FocusRequester>,
+    remoteFocus: FocusRequester,
+    settingsFocus: FocusRequester,
+    corridorRequesters: List<FocusRequester>,
+): Map<String, FocusLinks> {
+    val nodes = buildList {
+        hotspots.forEach { spot ->
+            add(
+                FocusNode(
+                    key = spot.key,
+                    cx = spot.x + spot.w / 2f,
+                    cy = spot.y + spot.h / 2f,
+                    requester = hotspotRequesters.getValue(spot.key),
+                ),
+            )
+        }
+        add(FocusNode("remote", cx = 0.90f, cy = 0.06f, requester = remoteFocus))
+        add(FocusNode("settings", cx = 0.96f, cy = 0.06f, requester = settingsFocus))
+        corridorRequesters.forEachIndexed { index, requester ->
+            // Bottom strip, left→right; keep clear of clock on the far right.
+            val cx = 0.55f + index * 0.08f
+            add(FocusNode("corridor_$index", cx = cx.coerceAtMost(0.82f), cy = 0.93f, requester = requester))
+        }
+    }
+    return nodes.associate { node ->
+        node.key to FocusLinks(
+            left = nearestInDirection(node, nodes, dirX = -1f, dirY = 0f),
+            right = nearestInDirection(node, nodes, dirX = 1f, dirY = 0f),
+            up = nearestInDirection(node, nodes, dirX = 0f, dirY = -1f),
+            down = nearestInDirection(node, nodes, dirX = 0f, dirY = 1f),
+        )
+    }
+}
+
+private fun nearestInDirection(
+    from: FocusNode,
+    nodes: List<FocusNode>,
+    dirX: Float,
+    dirY: Float,
+): FocusRequester? {
+    val axisWeight = 2.4f
+    var best: FocusNode? = null
+    var bestScore = Float.MAX_VALUE
+    for (candidate in nodes) {
+        if (candidate.key == from.key) continue
+        val dx = candidate.cx - from.cx
+        val dy = candidate.cy - from.cy
+        // Must lie in the requested half-plane with a small dead-zone.
+        val along = dx * dirX + dy * dirY
+        if (along < 0.04f) continue
+        val across = abs(dx * dirY - dy * dirX)
+        // Prefer aligned neighbors (Library→YouTube/Live TV over Library→Remote).
+        val score = along + across * axisWeight + hypot(dx.toDouble(), dy.toDouble()).toFloat() * 0.15f
+        if (score < bestScore) {
+            bestScore = score
+            best = candidate
+        }
+    }
+    return best?.requester
+}
+
+private fun Modifier.landingFocusLinks(links: FocusLinks?): Modifier {
+    if (links == null) return this
+    return focusProperties {
+        links.left?.let { left = it }
+        links.right?.let { right = it }
+        links.up?.let { up = it }
+        links.down?.let { down = it }
     }
 }
 

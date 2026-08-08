@@ -18,6 +18,8 @@ import com.vizvag.shieldvideo.playback.remote.RemoteStatus
 import com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller
 import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
 import com.vizvag.shieldvideo.playback.remote.TransportAction
+import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
+import com.vizvag.shieldvideo.ui.notice.AppNoticeKind
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -277,15 +279,20 @@ class PodcastViewModel(
                 refreshing = false,
                 loadingCatalog = false,
                 loadingEpisodes = false,
-                statusMessage = status,
+                statusMessage = null,
             )
         }
-        if (status != null) {
-            delay(2_500)
-            _ui.update { state ->
-                if (state.statusMessage == status) state.copy(statusMessage = null) else state
-            }
-        }
+        flash(status)
+    }
+
+    private fun flash(message: String?, kind: AppNoticeKind? = null) {
+        val msg = message?.trim().orEmpty()
+        if (msg.isEmpty()) return
+        AppNoticeBus.show(
+            message = msg,
+            kind = kind ?: AppNoticeBus.inferKind(msg),
+            title = "Podcasts",
+        )
     }
 
     private suspend fun runLocalCatalogLoad(forceNetwork: Boolean, showOverlay: Boolean) {
@@ -555,11 +562,7 @@ class PodcastViewModel(
                     playback.playEpisode(show, episode, startPositionMs = start)
                 }
             }.onFailure {
-                _ui.update { state ->
-                    state.copy(statusMessage = it.message ?: "Remote play failed")
-                }
-                delay(2500)
-                _ui.update { it.copy(statusMessage = null) }
+                flash(it.message ?: "Remote play failed", AppNoticeKind.Error)
             }
         }
     }

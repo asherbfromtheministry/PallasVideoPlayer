@@ -134,9 +134,40 @@ class LocalMediaProxy(
                 }
                 val port = socket.localPort
                 val host = lanHost()
+                val httpUri = Uri.parse("http://$host:$port/${Uri.encode(fileName)}")
+                lastHttpUri = httpUri
                 Log.i(TAG, "Proxy listening on $host:$port smb=$preferSmb size=$size")
-                Uri.parse("http://$host:$port/${Uri.encode(fileName)}")
+                httpUri
             }
+        }
+    }
+
+    @Volatile
+    private var lastHttpUri: Uri? = null
+
+    fun activeHttpUri(): Uri? = synchronized(lock) { lastHttpUri?.takeIf { active != null } }
+
+    fun hasActive(): Boolean = synchronized(lock) { active != null && running.get() }
+
+    fun activeSize(): Long = synchronized(lock) { active?.size ?: -1L }
+
+    fun activeMime(): String = synchronized(lock) { active?.mime ?: "video/*" }
+
+    fun activeFileName(): String = synchronized(lock) { active?.fileName.orEmpty() }
+
+    /**
+     * Random-access read for [SeekableNasMediaProvider] / [android.os.storage.StorageManager]
+     * proxy file descriptors — required for pause/seek in MX / X Player.
+     */
+    fun readAt(offset: Long, dest: ByteArray, length: Int): Int {
+        val file = synchronized(lock) { active } ?: throw IOException("Proxy idle")
+        if (offset < 0L || offset >= file.size) return 0
+        val toRead = minOf(length.toLong(), file.size - offset).toInt().coerceAtLeast(0)
+        if (toRead == 0) return 0
+        return if (file.preferSmb) {
+            readSmbAt(file, offset, dest, toRead)
+        } else {
+            readHttpAt(file.httpUrl!!, offset, dest, toRead)
         }
     }
 
@@ -150,6 +181,7 @@ class LocalMediaProxy(
         serverSocket = null
         acceptThread = null
         active = null
+        lastHttpUri = null
     }
 
     private fun acceptLoop(socket: ServerSocket) {
@@ -224,6 +256,61 @@ class LocalMediaProxy(
             }
         } finally {
             runCatching { socket.close() }
+        }
+    }
+
+    private fun readSmbAt(file: ActiveFile, offset: Long, dest: ByteArray, length: Int): Int {
+        val client = SMBClient(smbConfig)
+        client.connect(file.settings.host, 445).use { connection ->
+            val auth = AuthenticationContext(
+                file.settings.username,
+                file.settings.password.toCharArray(),
+                null
+            )
+            connection.authenticate(auth).use { session ->
+                (session.connectShare(file.share) as DiskShare).use { share ->
+                    share.openFile(
+                        file.path,
+                        EnumSet.of(AccessMask.FILE_READ_DATA, AccessMask.FILE_READ_ATTRIBUTES),
+                        null,
+                        SMB2ShareAccess.ALL,
+                        SMB2CreateDisposition.FILE_OPEN,
+                        null
+                    ).use { remote ->
+                        var got = 0
+                        while (got < length) {
+                            val n = remote.read(dest, offset + got, got, length - got)
+                            if (n <= 0) break
+                            got += n
+                        }
+                        return got
+                    }
+                }
+            }
+        }
+    }
+
+    private fun readHttpAt(url: String, offset: Long, dest: ByteArray, length: Int): Int {
+        val end = offset + length - 1L
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("Range", "bytes=$offset-$end")
+            .build()
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful && response.code != 206) {
+                throw IOException("Upstream HTTP ${response.code}")
+            }
+            val body = response.body ?: throw IOException("Empty upstream body")
+            body.byteStream().use { input ->
+                var got = 0
+                while (got < length) {
+                    val n = input.read(dest, got, length - got)
+                    if (n < 0) break
+                    got += n
+                }
+                return got
+            }
         }
     }
 

@@ -179,6 +179,8 @@ fun ChannelWheelPicker(
     selectedChannelId: String?,
     onConfirm: (IptvChannelRow) -> Unit,
     onLongPressOptions: (IptvChannelRow) -> Unit,
+    /** Hold OK on a focused EPG programme — schedule or cancel that programme. */
+    onProgrammeLongPress: ((IptvChannel, IptvProgramme) -> Unit)? = null,
     onBackToGroups: () -> Unit,
     groupTitle: String,
     programmesFor: (IptvChannel) -> List<IptvProgramme>,
@@ -208,6 +210,15 @@ fun ChannelWheelPicker(
     var liveNowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     // Freeze the timeline origin when paging into future slots so Right/Left doesn't jump.
     var windowBaseMs by remember { mutableLongStateOf(liveNowMs) }
+    // Focused EPG cell (programme startMs) on the centered channel; null = channel-row mode.
+    var focusedProgrammeStartMs by remember { mutableStateOf<Long?>(null) }
+    // Preferred time when Up/Down changes channel while a programme is focused.
+    var focusAnchorMs by remember { mutableLongStateOf(0L) }
+    var centeredIndex by remember {
+        mutableIntStateOf(rows.indexOfFirst { it.channel.id == selectedChannelId }.takeIf { it >= 0 } ?: 0)
+    }
+    var pendingWindowNav by remember { mutableStateOf<EpgWindowNav?>(null) }
+
     LaunchedEffect(showEpg) {
         if (!showEpg) return@LaunchedEffect
         while (true) {
@@ -223,17 +234,66 @@ fun ChannelWheelPicker(
         if (epgSlotOffset == 0) windowBaseMs = now
     }
     val nowMs = liveNowMs
-    // Window always starts on :00 / :15 / :30 / :45 — never e.g. 23:09.
-    val windowStartMs = floorToQuarterHour(windowBaseMs) + epgSlotOffset * EpgSlotMs
-    val windowMs = metrics.epgWindowMs
+    // Live origin: start ~1h before now (quarter-snapped) so NOW is not glued to the
+    // left edge near :45/:58 and the current hour's programme still has width for a title.
+    // Window length is at least the guide size, and always long enough that ≥1h remains
+    // after NOW (extends past the default 2h/3h when the snap would otherwise cut short).
+    val liveOriginMs = floorToQuarterHour(windowBaseMs - TimeUnit.HOURS.toMillis(1))
+    val windowStartMs = liveOriginMs + epgSlotOffset * EpgSlotMs
+    val minEndMs = windowBaseMs + TimeUnit.HOURS.toMillis(1)
+    val rawWindowMs = maxOf(metrics.epgWindowMs, minEndMs - liveOriginMs)
+    // Keep tick marks on 30m boundaries.
+    val windowMs = ((rawWindowMs + EpgSlotMs - 1) / EpgSlotMs) * EpgSlotMs
     val slotLabel = if (epgSlotOffset <= 0) "NOW" else "+${epgSlotOffset * 30}m"
     val stripStartInset = metrics.logoSize + 8.dp + metrics.nameColumnWidth + 8.dp
 
+    fun windowProgrammes(channel: IptvChannel): List<IptvProgramme> =
+        XmltvParser.inWindow(programmesFor(channel), windowStartMs, windowMs)
+
+    fun pickProgrammeAt(progs: List<IptvProgramme>, anchorMs: Long): IptvProgramme? {
+        if (progs.isEmpty()) return null
+        return progs.firstOrNull { it.startMs <= anchorMs && it.stopMs > anchorMs }
+            ?: progs.firstOrNull { it.startMs >= anchorMs }
+            ?: progs.lastOrNull()
+    }
+
     LaunchedEffect(rows.firstOrNull()?.channel?.id, rows.size, groupTitle, showEpg, guideSize) {
         epgSlotOffset = 0
+        focusedProgrammeStartMs = null
+        pendingWindowNav = null
         val now = System.currentTimeMillis()
         liveNowMs = now
         windowBaseMs = now
+    }
+
+    // After paging the timeline, land on the next/prev programme relative to the anchor.
+    LaunchedEffect(windowStartMs, windowMs, centeredIndex, epgVersion, pendingWindowNav) {
+        val nav = pendingWindowNav ?: return@LaunchedEffect
+        val row = rowsState.value.getOrNull(centeredIndex) ?: run {
+            pendingWindowNav = null
+            return@LaunchedEffect
+        }
+        val progs = windowProgrammes(row.channel)
+        val picked = when (nav) {
+            is EpgWindowNav.Forward ->
+                progs.firstOrNull { it.startMs > nav.anchorStartMs } ?: progs.firstOrNull()
+            is EpgWindowNav.Back ->
+                progs.lastOrNull { it.stopMs <= nav.anchorStartMs || it.startMs < nav.anchorStartMs }
+                    ?: progs.lastOrNull()
+        }
+        focusedProgrammeStartMs = picked?.startMs
+        if (picked != null) focusAnchorMs = picked.startMs
+        pendingWindowNav = null
+    }
+
+    // Keep a programme cell when zapping channels Up/Down.
+    LaunchedEffect(centeredIndex) {
+        val start = focusedProgrammeStartMs ?: return@LaunchedEffect
+        val row = rowsState.value.getOrNull(centeredIndex) ?: return@LaunchedEffect
+        val progs = windowProgrammes(row.channel)
+        val picked = pickProgrammeAt(progs, focusAnchorMs.takeIf { it > 0L } ?: start)
+        focusedProgrammeStartMs = picked?.startMs
+        if (picked != null) focusAnchorMs = picked.startMs
     }
 
     val moving = movingChannelId != null
@@ -243,7 +303,9 @@ fun ChannelWheelPicker(
         initialIndex = rows.indexOfFirst { it.channel.id == selectedChannelId }.takeIf { it >= 0 } ?: 0,
         footerHint = when {
             moving -> "UP/DOWN step · LEFT top · RIGHT bottom · OK / BACK drop"
-            showEpg -> "SCROLL · OK play · RIGHT later · LEFT earlier / groups"
+            showEpg && focusedProgrammeStartMs != null ->
+                "LEFT/RIGHT programmes · HOLD OK record · BACK channel · OK play"
+            showEpg -> "SCROLL · OK play · RIGHT into EPG · HOLD OK options"
             else -> "SCROLL · OK play · LEFT groups · HOLD OK options"
         },
         moveMode = if (movingChannelId != null && onMoveStep != null && onMoveDone != null) {
@@ -283,21 +345,97 @@ fun ChannelWheelPicker(
         onConfirmIndex = { index ->
             rowsState.value.getOrNull(index)?.let(onConfirm)
         },
-        onLongPressIndex = { index ->
-            rowsState.value.getOrNull(index)?.let(onLongPressOptions)
+        onLongPressIndex = longPress@{ index ->
+            val row = rowsState.value.getOrNull(index) ?: return@longPress
+            val focusedStart = focusedProgrammeStartMs
+            if (showEpg && focusedStart != null && onProgrammeLongPress != null) {
+                val programme = windowProgrammes(row.channel).firstOrNull { it.startMs == focusedStart }
+                if (programme != null) {
+                    onProgrammeLongPress(row.channel, programme)
+                    return@longPress
+                }
+            }
+            onLongPressOptions(row)
         },
         onBack = onBackToGroups,
-        onEpgForward = if (showEpg) {
-            {
-                if (epgSlotOffset < MaxEpgSlots) epgSlotOffset += 1
+        onCenteredIndex = { centeredIndex = it },
+        onEpgRight = if (showEpg) {
+            epgRight@{
+                val row = rowsState.value.getOrNull(centeredIndex) ?: return@epgRight false
+                val progs = windowProgrammes(row.channel)
+                if (progs.isEmpty()) {
+                    if (epgSlotOffset < MaxEpgSlots) {
+                        epgSlotOffset += 1
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    val idx = focusedProgrammeStartMs?.let { start ->
+                        progs.indexOfFirst { it.startMs == start }
+                    }?.takeIf { it >= 0 }
+                    when {
+                        idx == null -> {
+                            val target = progs.indexOfFirst { it.isAiringAt(nowMs) }
+                                .takeIf { it >= 0 } ?: 0
+                            focusedProgrammeStartMs = progs[target].startMs
+                            focusAnchorMs = progs[target].startMs
+                            true
+                        }
+                        idx < progs.lastIndex -> {
+                            focusedProgrammeStartMs = progs[idx + 1].startMs
+                            focusAnchorMs = progs[idx + 1].startMs
+                            true
+                        }
+                        epgSlotOffset < MaxEpgSlots -> {
+                            pendingWindowNav = EpgWindowNav.Forward(progs[idx].startMs)
+                            epgSlotOffset += 1
+                            true
+                        }
+                        else -> false
+                    }
+                }
             }
         } else {
             null
         },
-        onEpgBack = if (showEpg) {
+        onEpgLeft = if (showEpg) {
+            epgLeft@{
+                val row = rowsState.value.getOrNull(centeredIndex)
+                val progs = row?.let { windowProgrammes(it.channel) }.orEmpty()
+                val idx = focusedProgrammeStartMs?.let { start ->
+                    progs.indexOfFirst { it.startMs == start }
+                }?.takeIf { it >= 0 }
+                when {
+                    idx != null && idx > 0 -> {
+                        focusedProgrammeStartMs = progs[idx - 1].startMs
+                        focusAnchorMs = progs[idx - 1].startMs
+                        true
+                    }
+                    idx == 0 && epgSlotOffset > 0 -> {
+                        pendingWindowNav = EpgWindowNav.Back(progs[0].startMs)
+                        epgSlotOffset -= 1
+                        true
+                    }
+                    focusedProgrammeStartMs != null -> {
+                        // Leave cell mode so another Left can return to groups.
+                        focusedProgrammeStartMs = null
+                        true
+                    }
+                    epgSlotOffset > 0 -> {
+                        epgSlotOffset -= 1
+                        true
+                    }
+                    else -> false
+                }
+            }
+        } else {
+            null
+        },
+        onEpgExit = if (showEpg) {
             {
-                if (epgSlotOffset > 0) {
-                    epgSlotOffset -= 1
+                if (focusedProgrammeStartMs != null) {
+                    focusedProgrammeStartMs = null
                     true
                 } else {
                     false
@@ -324,6 +462,7 @@ fun ChannelWheelPicker(
                         recordingProgrammeStarts = programmes
                             .filter { isProgrammeRecording(row.channel, it) }
                             .mapTo(mutableSetOf()) { it.startMs },
+                        focusedProgrammeStartMs = if (highlighted) focusedProgrammeStartMs else null,
                         windowStartMs = windowStartMs,
                         windowMs = windowMs,
                         nowMs = nowMs,
@@ -347,6 +486,11 @@ fun ChannelWheelPicker(
     )
 }
 
+private sealed class EpgWindowNav {
+    data class Forward(val anchorStartMs: Long) : EpgWindowNav()
+    data class Back(val anchorStartMs: Long) : EpgWindowNav()
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 /** Reorder mode: Up/Down step, Left/Right jump to ends, OK / Back drop. */
 data class WheelMoveMode(
@@ -368,8 +512,10 @@ private fun CylinderWheel(
     onBack: (() -> Unit)?,
     moveMode: WheelMoveMode? = null,
     onCenteredIndex: ((Int) -> Unit)? = null,
-    onEpgForward: (() -> Unit)? = null,
-    onEpgBack: (() -> Boolean)? = null,
+    onEpgRight: (() -> Boolean)? = null,
+    onEpgLeft: (() -> Boolean)? = null,
+    /** Back while an EPG programme cell is focused — clear cell without leaving the guide. */
+    onEpgExit: (() -> Boolean)? = null,
     subheader: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
     requestFocus: Boolean = true,
@@ -403,8 +549,9 @@ private fun CylinderWheel(
     val onLongPressState = rememberUpdatedState(onLongPressIndex)
     val onCenteredState = rememberUpdatedState(onCenteredIndex)
     val onBackState = rememberUpdatedState(onBack)
-    val onEpgForwardState = rememberUpdatedState(onEpgForward)
-    val onEpgBackState = rememberUpdatedState(onEpgBack)
+    val onEpgRightState = rememberUpdatedState(onEpgRight)
+    val onEpgLeftState = rememberUpdatedState(onEpgLeft)
+    val onEpgExitState = rememberUpdatedState(onEpgExit)
     val itemCountState = rememberUpdatedState(itemCount)
     val moveModeState = rememberUpdatedState(moveMode)
 
@@ -559,16 +706,16 @@ private fun CylinderWheel(
                         }
                     }
                     event.key == Key.DirectionRight && event.type == KeyEventType.KeyDown -> {
-                        val forward = onEpgForwardState.value
-                        if (forward != null) {
-                            forward(); true
+                        val right = onEpgRightState.value
+                        if (right != null && right()) {
+                            true
                         } else {
                             false
                         }
                     }
                     event.key == Key.DirectionLeft && event.type == KeyEventType.KeyUp -> {
-                        val epgBack = onEpgBackState.value
-                        if (epgBack != null && epgBack()) {
+                        val left = onEpgLeftState.value
+                        if (left != null && left()) {
                             true
                         } else {
                             val back = onBackState.value
@@ -580,8 +727,8 @@ private fun CylinderWheel(
                         }
                     }
                     event.key == Key.Back && event.type == KeyEventType.KeyUp -> {
-                        val epgBack = onEpgBackState.value
-                        if (epgBack != null && epgBack()) {
+                        val exit = onEpgExitState.value
+                        if (exit != null && exit()) {
                             true
                         } else {
                             val back = onBackState.value
@@ -879,6 +1026,7 @@ private fun WheelChannelGuideItem(
     quality: List<String>,
     programmes: List<IptvProgramme>,
     recordingProgrammeStarts: Set<Long>,
+    focusedProgrammeStartMs: Long?,
     windowStartMs: Long,
     windowMs: Long,
     nowMs: Long,
@@ -968,6 +1116,7 @@ private fun WheelChannelGuideItem(
         WheelRowEpgStrip(
             programmes = programmes,
             recordingProgrammeStarts = recordingProgrammeStarts,
+            focusedProgrammeStartMs = focusedProgrammeStartMs,
             windowStartMs = windowStartMs,
             windowMs = windowMs,
             nowMs = nowMs,
@@ -1073,6 +1222,7 @@ private fun WheelChannelNameItem(
 private fun WheelRowEpgStrip(
     programmes: List<IptvProgramme>,
     recordingProgrammeStarts: Set<Long>,
+    focusedProgrammeStartMs: Long?,
     windowStartMs: Long,
     windowMs: Long,
     nowMs: Long,
@@ -1094,6 +1244,7 @@ private fun WheelRowEpgStrip(
             val widthFrac = (end - start).toFloat() / windowMs.toFloat()
             val airing = programme.isAiringAt(nowMs)
             val recording = programme.startMs in recordingProgrammeStarts
+            val focused = focusedProgrammeStartMs != null && programme.startMs == focusedProgrammeStartMs
             val blockW = totalW * widthFrac.coerceIn(0.04f, 1f)
             val showTimes = blockW >= 72.dp
             val label = if (showTimes) {
@@ -1113,9 +1264,18 @@ private fun WheelRowEpgStrip(
                     .fillMaxHeight()
                     .padding(horizontal = 1.dp, vertical = 1.dp)
                     .clip(RoundedCornerShape(4.dp))
+                    .background(
+                        when {
+                            focused -> CyanAccent.copy(alpha = 0.28f)
+                            recording -> Color(0xFFFF5252).copy(alpha = 0.12f)
+                            airing -> CyanAccent.copy(alpha = 0.10f)
+                            else -> Color.Transparent
+                        }
+                    )
                     .border(
-                        width = 0.5.dp,
+                        width = if (focused) 2.dp else 0.5.dp,
                         color = when {
+                            focused -> CyanAccent
                             recording -> Color(0xFFFF5252).copy(alpha = 0.85f)
                             airing -> CyanAccent.copy(alpha = 0.28f)
                             else -> Color.White.copy(alpha = 0.16f)
@@ -1128,12 +1288,13 @@ private fun WheelRowEpgStrip(
                 Text(
                     text = label,
                     color = when {
+                        focused -> TextCream
                         recording -> Color(0xFFFF6E6E)
                         airing -> CyanAccent.copy(alpha = 0.92f)
                         else -> Color.White.copy(alpha = 0.64f)
                     },
                     fontSize = titleSp,
-                    fontWeight = if (airing || recording) FontWeight.SemiBold else FontWeight.Normal,
+                    fontWeight = if (focused || airing || recording) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     softWrap = false

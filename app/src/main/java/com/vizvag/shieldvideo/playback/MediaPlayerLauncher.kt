@@ -1,6 +1,8 @@
 package com.vizvag.shieldvideo.playback
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -9,6 +11,8 @@ import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
+import android.util.Log
 
 data class InstalledVideoPlayer(
     val packageName: String,
@@ -76,17 +80,23 @@ class MediaPlayerLauncher(private val context: Context) {
         if (!isPackageInstalled(pkg)) return PlayerLaunchResult.NotInstalled
 
         val mime = mimeFor(relativePath, playbackUri)
+        // X Player is picky: generic video/* resolves to PlayerActivity filters more reliably
+        // than video/x-matroska for network handoffs.
+        val launchMime =
+            if (!pkg.equals(VLC_PACKAGE, true) && mime.startsWith("video/")) "video/*" else mime
         val resumeMs = startPositionMs?.takeIf { it > 5_000L }
-        val uriForPlayer = uriForPlayer(playbackUri, pkg)
+        val uriForPlayer = resolveHandoffUri(playbackUri, pkg)
 
         return try {
-            context.startActivity(buildIntent(uriForPlayer, mime, pkg, title, resumeMs))
+            context.startActivity(buildIntent(uriForPlayer, launchMime, pkg, title, resumeMs))
+            afterPlayerLaunched(pkg)
             onLaunched?.invoke()
             PlayerLaunchResult.Success
         } catch (first: ActivityNotFoundException) {
             // Concrete component may be missing on some builds — retry package-only.
             return try {
-                context.startActivity(buildPackageIntent(uriForPlayer, mime, pkg, title, resumeMs))
+                context.startActivity(buildPackageIntent(uriForPlayer, launchMime, pkg, title, resumeMs))
+                afterPlayerLaunched(pkg)
                 onLaunched?.invoke()
                 PlayerLaunchResult.Success
             } catch (_: ActivityNotFoundException) {
@@ -97,6 +107,54 @@ class MediaPlayerLauncher(private val context: Context) {
         } catch (error: Exception) {
             PlayerLaunchResult.Failed(error.message ?: "Unable to open media in player")
         }
+    }
+
+    /**
+     * Keep the external player on top and clear a sticky media-button receiver left by
+     * another player (e.g. X Player) so Shield remote play/pause reaches the active session.
+     */
+    private fun afterPlayerLaunched(playerPackage: String) {
+        Log.i(TAG, "Launched external player pkg=$playerPackage")
+        clearStickyMediaButtonReceiver()
+        val activity = context as? Activity ?: return
+        if (!activity.isFinishing) {
+            activity.moveTaskToBack(true)
+        }
+    }
+
+    private fun clearStickyMediaButtonReceiver() {
+        try {
+            Settings.Secure.putString(context.contentResolver, "media_button_receiver", null)
+        } catch (_: SecurityException) {
+            // Optional: adb pm grant … WRITE_SECURE_SETTINGS
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * VLC: Range HTTP on the LAN IP (TV VLC expands foreign content:// to null).
+     * MX / X Player: loopback HTTP + concrete PlayerActivity (http WebDelegate disables TV
+     * controls; ProxyFileDescriptor content:// is opened but never read by X Player).
+     */
+    private fun resolveHandoffUri(playbackUri: Uri, packageName: String): Uri {
+        val scheme = playbackUri.scheme?.lowercase().orEmpty()
+        val proxy = (context.applicationContext as? com.vizvag.shieldvideo.ShieldVideoApp)
+            ?.localMediaProxy
+
+        if (packageName.equals(VLC_PACKAGE, true)) {
+            if (scheme == "content") {
+                return proxy?.activeHttpUri() ?: playbackUri
+            }
+            return playbackUri
+        }
+
+        // Prefer live proxy HTTP (loopback) over content:// for third-party players.
+        val http = proxy?.activeHttpUri()
+        if (http != null) {
+            return uriForPlayer(http, packageName)
+        }
+        if (scheme == "content" || scheme == "file") return playbackUri
+        return uriForPlayer(playbackUri, packageName)
     }
 
     fun playStream(
@@ -160,13 +218,13 @@ class MediaPlayerLauncher(private val context: Context) {
     }
 
     /**
-     * VLC on Shield often fails with 127.0.0.1 across UIDs — keep LAN host for VLC.
-     * MX / XPlayer treat LAN http as a "web" stream (WebDelegate) and disable seek/pause;
-     * loopback + concrete player activity restores local-style controls.
+     * Prefer content:// handoffs as-is (local-style controls). For legacy http handoffs,
+     * VLC keeps the LAN host; MX / XPlayer rewrite to loopback and unwrap WebDelegate.
      */
     private fun uriForPlayer(playbackUri: Uri, packageName: String): Uri {
-        if (packageName.equals(VLC_PACKAGE, true)) return playbackUri
         val scheme = playbackUri.scheme?.lowercase() ?: return playbackUri
+        if (scheme == "content" || scheme == "file") return playbackUri
+        if (packageName.equals(VLC_PACKAGE, true)) return playbackUri
         if (scheme != "http" && scheme != "https") return playbackUri
         val host = playbackUri.host ?: return playbackUri
         if (host == "127.0.0.1" || host.equals("localhost", true)) return playbackUri
@@ -182,8 +240,9 @@ class MediaPlayerLauncher(private val context: Context) {
         title: String,
         resumeMs: Long?
     ): Intent {
-        // VLC path must stay exactly as the known-good package-targeted intent.
-        if (packageName.equals(VLC_PACKAGE, true)) {
+        val scheme = playbackUri.scheme?.lowercase().orEmpty()
+        // content/file resolve to the real player activity — package targeting is enough.
+        if (scheme == "content" || scheme == "file" || packageName.equals(VLC_PACKAGE, true)) {
             return buildPackageIntent(playbackUri, mime, packageName, title, resumeMs)
         }
 
@@ -206,15 +265,28 @@ class MediaPlayerLauncher(private val context: Context) {
         setPackage(packageName)
         putExtra("title", title)
         putExtra("itemTitle", title)
+        putExtra(Intent.EXTRA_TITLE, title)
         putExtra("from_start", resumeMs == null)
         if (resumeMs != null) {
             putExtra("position", resumeMs)
-            // MX Player reads position as int ms on some builds.
             if (packageName.startsWith("com.mxtech.videoplayer", ignoreCase = true)) {
                 putExtra("position", resumeMs.toInt().coerceAtLeast(0))
             }
         }
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (playbackUri.scheme.equals("content", ignoreCase = true)) {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            // ClipData is required on newer Android so the grant sticks across the handoff.
+            clipData = ClipData.newUri(context.contentResolver, title, playbackUri)
+            try {
+                context.grantUriPermission(
+                    packageName,
+                    playbackUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /**
@@ -284,6 +356,7 @@ class MediaPlayerLauncher(private val context: Context) {
     }
 
     companion object {
+        private const val TAG = "MediaPlayerLauncher"
         const val VLC_PACKAGE = "org.videolan.vlc"
         const val XPLAYER_PACKAGE = "video.player.videoplayer"
 

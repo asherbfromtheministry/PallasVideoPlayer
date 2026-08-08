@@ -139,6 +139,8 @@ import com.vizvag.shieldvideo.music.data.SearchResults
 import com.vizvag.shieldvideo.music.data.local.AlbumWithArtist
 import com.vizvag.shieldvideo.music.data.local.ArtistEntity
 import com.vizvag.shieldvideo.music.data.local.TrackEntity
+import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
+import com.vizvag.shieldvideo.ui.notice.AppNoticeKind
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.music.data.lyrics.LyricLine
 import com.vizvag.shieldvideo.music.data.lyrics.LrcParser
@@ -1159,25 +1161,17 @@ private fun ImmersiveMusicScreen(
         }
 
         if (indexState?.isIndexing == true) {
-            Text(
-                text = indexState?.statusMessage?.takeIf { it.isNotBlank() } ?: "Updating library...",
-                color = AudioAccent.copy(alpha = 0.9f),
-                fontSize = 12.sp,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 80.dp),
-            )
-        }
-        statusMessage?.let { msg ->
-            Text(
-                text = msg,
-                color = AudioAccent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 100.dp),
-            )
+            val indexMsg = indexState?.statusMessage?.takeIf { it.isNotBlank() } ?: "Updating library..."
+            LaunchedEffect(indexMsg) {
+                AppNoticeBus.progress(indexMsg, title = "Music")
+            }
+        } else {
+            LaunchedEffect(indexState?.isIndexing) {
+                val cur = AppNoticeBus.current.value
+                if (cur?.kind == AppNoticeKind.Progress && cur.title == "Music") {
+                    AppNoticeBus.dismiss(cur.id)
+                }
+            }
         }
 
         if (searchOpen) {

@@ -1437,13 +1437,11 @@ class BrowserViewModel(
                     }
                     val already = _state.value.items.find { it.entry.path == entry.path }
                     if (already != null && previewLooksEnriched(already)) return@withPermit
-                    val thorough = entry.path.equals(focused, ignoreCase = true)
+                    // Full Trakt/TMDB for every row (still serial via semaphore). Focused first.
                     val card = runCatching {
                         when {
-                            entry.isDirectory -> enrichFolder(entry, settings, thorough = thorough)
-                            // Off-focus files: filename shell only — Trakt/TMDB wait for focus.
-                            thorough -> enrichFile(entry, settings)
-                            else -> shellFileCard(entry)
+                            entry.isDirectory -> enrichFolder(entry, settings, thorough = true)
+                            else -> enrichFile(entry, settings)
                         }
                     }.getOrNull() ?: return@withPermit
                     if (!isBrowseTarget(shareSnapshot, pathStackSnapshot, flatViewSnapshot)) {
