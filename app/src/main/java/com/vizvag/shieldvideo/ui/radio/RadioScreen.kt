@@ -129,8 +129,7 @@ import com.vizvag.shieldvideo.ui.browser.RailDestination
 import com.vizvag.shieldvideo.ui.browser.RailPlayerVisibility
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
-import com.vizvag.shieldvideo.ui.theme.Accent
-import com.vizvag.shieldvideo.ui.theme.AudioAccent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.AudioBackground
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.AudioScreenTheme
@@ -407,7 +406,6 @@ private fun RadioScreenBody(
     }
     DisposableEffect(player) {
         app.sleepTimer.bindPlayback(
-            onVolume = { player.volume = it },
             onStop = {
                 screenBlack = false
                 player.pause()
@@ -640,7 +638,7 @@ private fun RadioScreenBody(
                         brush = Brush.horizontalGradient(
                             listOf(
                                 Color.White.copy(alpha = 0.08f),
-                                AudioAccent.copy(alpha = 0.12f),
+                                LocalScreenChrome.current.accent.copy(alpha = 0.12f),
                                 Color.Transparent,
                             ),
                         ),
@@ -770,7 +768,7 @@ private fun RadioScreenBody(
                             Icon(
                                 imageVector = Icons.Filled.Lightbulb,
                                 contentDescription = if (hueSyncEnabled) "Hue sync on" else "Hue sync off",
-                                tint = if (hueSyncEnabled) AudioAccent else Color.White,
+                                tint = if (hueSyncEnabled) LocalScreenChrome.current.accent else Color.White,
                                 modifier = Modifier.size(22.dp),
                             )
                         }
@@ -1396,9 +1394,9 @@ private fun RadioTopBar(
                     .background(
                         Brush.horizontalGradient(
                             listOf(
-                                AudioAccent.copy(alpha = 0.15f),
-                                AudioAccent,
-                                AudioAccent.copy(alpha = 0.15f),
+                                LocalScreenChrome.current.accent.copy(alpha = 0.15f),
+                                LocalScreenChrome.current.accent,
+                                LocalScreenChrome.current.accent.copy(alpha = 0.15f),
                             ),
                         ),
                         RoundedCornerShape(1.dp),
@@ -1442,7 +1440,7 @@ private fun RadioTopBar(
                 Icon(
                     imageVector = Icons.Filled.Lightbulb,
                     contentDescription = if (hueSyncEnabled) "Hue sync on" else "Hue sync off",
-                    tint = if (hueSyncEnabled) AudioAccent else Color.White,
+                    tint = if (hueSyncEnabled) LocalScreenChrome.current.accent else Color.White,
                     modifier = Modifier.size(24.dp),
                 )
             }
@@ -1687,7 +1685,7 @@ private fun RecordButton(
             },
             tint = when {
                 active -> Color.White
-                focused -> Accent
+                focused -> LocalScreenChrome.current.accent
                 else -> Color(0xFFFF8A80)
             },
             modifier = Modifier.size(18.dp),
@@ -1749,7 +1747,7 @@ private fun StopRecordingAfterDialog(
         },
         confirmButton = {
             TextButton(onClick = { run(onDismiss) }) {
-                Text("Close", color = AudioAccent)
+                Text("Close", color = LocalScreenChrome.current.accent)
             }
         },
         containerColor = CardSurface,

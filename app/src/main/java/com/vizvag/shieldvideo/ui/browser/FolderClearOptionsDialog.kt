@@ -42,9 +42,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.AppBackground
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import kotlinx.coroutines.delay
 
@@ -209,7 +211,7 @@ private fun ClearOptionRow(
             Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = "OK",
-                color = Accent,
+                color = LocalScreenChrome.current.accent,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
             )

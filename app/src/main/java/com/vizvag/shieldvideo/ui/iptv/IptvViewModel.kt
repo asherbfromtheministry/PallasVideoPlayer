@@ -6,7 +6,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.vizvag.shieldvideo.data.iptv.CatchupUrlBuilder
-import com.vizvag.shieldvideo.data.iptv.ChannelQuality
 import com.vizvag.shieldvideo.data.iptv.EpgAiMatcher
 import com.vizvag.shieldvideo.data.iptv.EpgChannelEntry
 import com.vizvag.shieldvideo.data.iptv.EpgChannelMatcher
@@ -57,7 +56,7 @@ data class IptvChannelRow(
     val favorite: Boolean,
     val nowNext: IptvNowNext,
     val locked: Boolean,
-    /** Measured stream badges from the last watch, else name-derived hints. */
+    /** Measured stream badges from a previous watch (empty until streamed once). */
     val badges: List<String> = emptyList(),
     val badgesConfirmed: Boolean = false
 )
@@ -1272,7 +1271,7 @@ class IptvViewModel(
                     favorite = ch.id in favs,
                     nowNext = XmltvParser.nowNext(programmesForResolved(ch, playlistId)),
                     locked = parental.isGroupLocked(ch.group) && !unlocked,
-                    badges = confirmedBadges.ifEmpty { ChannelQuality.labelsFor(ch.name) },
+                    badges = confirmedBadges,
                     badgesConfirmed = confirmedBadges.isNotEmpty()
                 )
             }
@@ -1585,7 +1584,7 @@ class IptvViewModel(
                 favorite = ch.id in favs,
                 nowNext = emptyNowNext,
                 locked = parental.isGroupLocked(ch.group) && !unlocked,
-                badges = confirmedBadges.ifEmpty { ChannelQuality.labelsFor(displayCh.name) },
+                badges = confirmedBadges,
                 badgesConfirmed = confirmedBadges.isNotEmpty()
             )
         }
@@ -1616,13 +1615,11 @@ class IptvViewModel(
         iptvRepository.setExtraWantedEpgIds(channelCustom.allEpgIds(playlistId))
     }
 
-    /** Measured badges from the last watch of [channel], else hints inferred from its name. */
+    /** Measured badges from the last watch of [channel], if any. */
     fun badgesFor(
         channel: IptvChannel,
         playlistId: String = _state.value.settings.activeIptvPlaylist().id
-    ): List<String> =
-        channelCustom.streamBadges(playlistId, channel.id)
-            .ifEmpty { ChannelQuality.labelsFor(channel.name) }
+    ): List<String> = channelCustom.streamBadges(playlistId, channel.id)
 
     fun badgesConfirmedFor(
         channel: IptvChannel,

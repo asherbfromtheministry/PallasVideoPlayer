@@ -60,9 +60,6 @@ data class SettingsUiState(
     val editingRadioStationId: String? = null,
     val backupBusy: Boolean = false,
     val backupMessage: String? = null,
-    /** Transient Piped password for login/register (not persisted). */
-    val youtubePassword: String = "",
-    val youtubePasswordVisible: Boolean = false,
     val youtubeAuthBusy: Boolean = false,
     val youtubeAuthMessage: String? = null,
     val youtubeLinking: Boolean = false,
@@ -86,7 +83,6 @@ class SettingsViewModel(
     private val musicIndex: MusicIndexController,
     private val iptvParental: IptvParentalStore,
     private val settingsBackup: SettingsBackupManager,
-    private val youtubeRepository: com.vizvag.shieldvideo.data.youtube.YoutubeRepository,
     private val podcastRepository: com.vizvag.shieldvideo.data.podcast.PodcastRepository,
 ) : ViewModel() {
 
@@ -840,162 +836,12 @@ class SettingsViewModel(
         }
     }
 
-    fun setYoutubePassword(value: String) {
-        _state.update { it.copy(youtubePassword = value) }
-    }
-
     fun setYoutubeAuthMessage(message: String) {
         _state.update { it.copy(youtubeAuthMessage = message) }
     }
 
     fun consumeYoutubeAuthMessage() {
         _state.update { it.copy(youtubeAuthMessage = null) }
-    }
-
-    fun toggleYoutubePasswordVisible() {
-        _state.update { it.copy(youtubePasswordVisible = !it.youtubePasswordVisible) }
-    }
-
-    fun importSubscriptionsCsv(csvText: String) {
-        linkJob?.cancel()
-        linkJob = viewModelScope.launch {
-            val draft = _state.value.draft
-            if (!draft.isYoutubeLoggedIn) {
-                _state.update {
-                    it.copy(youtubeAuthMessage = "Log in to Piped first, then import the CSV")
-                }
-                return@launch
-            }
-            val ids = com.vizvag.shieldvideo.data.youtube.YoutubeRepository
-                .parseTakeoutSubscriptionsCsv(csvText)
-            if (ids.isEmpty()) {
-                _state.update {
-                    it.copy(youtubeAuthMessage = "No channels found in that CSV")
-                }
-                return@launch
-            }
-            _state.update {
-                it.copy(
-                    youtubeAuthBusy = true,
-                    youtubeAuthMessage = "Importing ${ids.size} channels…",
-                )
-            }
-            runCatching {
-                youtubeRepository.importSubscriptions(
-                    authToken = draft.youtubePipedAuthToken,
-                    channelIds = ids,
-                    override = true,
-                )
-                val subscribed = runCatching {
-                    youtubeRepository.subscriptions(draft.youtubePipedAuthToken).size
-                }.getOrDefault(ids.size)
-                subscribed
-            }.onSuccess { count ->
-                _state.update {
-                    it.copy(
-                        youtubeAuthBusy = false,
-                        youtubeAuthMessage = if (count > 0) {
-                            "Imported — $count channels on Piped. Open YouTube and press Refresh."
-                        } else {
-                            "Import sent, but Piped still shows 0 channels. Try another Piped API URL."
-                        },
-                    )
-                }
-            }.onFailure { e ->
-                _state.update {
-                    it.copy(
-                        youtubeAuthBusy = false,
-                        youtubeAuthMessage = e.message ?: "Import failed",
-                    )
-                }
-            }
-        }
-    }
-
-    fun loginPiped() {
-        pipedAuth(register = false)
-    }
-
-    fun registerPiped() {
-        pipedAuth(register = true)
-    }
-
-    fun logoutPiped() {
-        linkJob?.cancel()
-        val next = _state.value.draft.copy(youtubePipedAuthToken = "")
-        settingsRepository.save(next)
-        baseline = next
-        _state.update {
-            it.copy(
-                draft = next,
-                youtubePassword = "",
-                youtubeAuthMessage = "Logged out of Piped",
-                isDirty = false,
-                saved = true,
-            )
-        }
-    }
-
-    private fun pipedAuth(register: Boolean) {
-        linkJob?.cancel()
-        linkJob = viewModelScope.launch {
-            val draft = _state.value.draft
-            val password = _state.value.youtubePassword
-            if (draft.youtubePipedUsername.isBlank() || password.isBlank()) {
-                _state.update {
-                    it.copy(youtubeAuthMessage = "Enter Piped username and password")
-                }
-                return@launch
-            }
-            // Persist API URL first so repository uses the draft instance.
-            settingsRepository.save(
-                draft.copy(youtubePipedAuthToken = draft.youtubePipedAuthToken)
-            )
-            _state.update {
-                it.copy(
-                    youtubeAuthBusy = true,
-                    youtubeAuthMessage = if (register) "Creating Piped account…" else "Logging in…",
-                )
-            }
-            val result = runCatching {
-                if (register) {
-                    youtubeRepository.register(draft.youtubePipedUsername, password)
-                } else {
-                    youtubeRepository.login(draft.youtubePipedUsername, password)
-                }
-            }
-            result.onSuccess { auth ->
-                val linked = draft.copy(
-                    youtubePipedUsername = auth.username,
-                    youtubePipedAuthToken = auth.token,
-                    youtubePipedApiUrl = com.vizvag.shieldvideo.data.youtube.YoutubeDefaults
-                        .normalizeApiUrl(draft.youtubePipedApiUrl),
-                )
-                settingsRepository.save(linked)
-                baseline = linked
-                _state.update {
-                    it.copy(
-                        draft = linked,
-                        youtubePassword = "",
-                        youtubeAuthBusy = false,
-                        youtubeAuthMessage = if (register) {
-                            "Account created — tap Import from Downloads (or Import CSV)"
-                        } else {
-                            "Logged in as ${auth.username} — import subscriptions.csv next"
-                        },
-                        saved = true,
-                        isDirty = false,
-                    )
-                }
-            }.onFailure { e ->
-                _state.update {
-                    it.copy(
-                        youtubeAuthBusy = false,
-                        youtubeAuthMessage = e.message ?: "Piped auth failed",
-                    )
-                }
-            }
-        }
     }
 
     fun refreshPodcastStatus() {
@@ -1039,7 +885,6 @@ class SettingsViewModelFactory(
     private val musicIndex: MusicIndexController,
     private val iptvParental: IptvParentalStore,
     private val settingsBackup: SettingsBackupManager,
-    private val youtubeRepository: com.vizvag.shieldvideo.data.youtube.YoutubeRepository,
     private val podcastRepository: com.vizvag.shieldvideo.data.podcast.PodcastRepository,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
@@ -1053,7 +898,6 @@ class SettingsViewModelFactory(
             musicIndex,
             iptvParental,
             settingsBackup,
-            youtubeRepository,
             podcastRepository,
         ) as T
     }

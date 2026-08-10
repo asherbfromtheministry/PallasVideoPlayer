@@ -92,10 +92,6 @@ data class AppSettings(
     val customRadioStations: List<CustomRadioStationConfig> = emptyList(),
     /** Piped API base URL for search / stream fallback. */
     val youtubePipedApiUrl: String = YoutubeDefaults.DEFAULT_PIPED_API_URL,
-    /** Piped account username (optional legacy feed). */
-    val youtubePipedUsername: String = "",
-    /** Piped session token (optional legacy feed). */
-    val youtubePipedAuthToken: String = "",
     /** Stable device id for YouTube TV OAuth pairing. */
     val youtubeTvDeviceId: String = "",
     /** YouTube TV OAuth refresh token (real Google/YouTube account). */
@@ -127,11 +123,9 @@ data class AppSettings(
     val podcastOpmlNasPath: String = "",
 ) {
     val isTraktLinked: Boolean get() = traktAccessToken.isNotBlank()
-    /** Linked via YouTube TV device code, or legacy Piped session. */
-    val isYoutubeLoggedIn: Boolean
-        get() = youtubeRefreshToken.isNotBlank() || youtubePipedAuthToken.isNotBlank()
+    /** Linked via YouTube TV device code. */
+    val isYoutubeLoggedIn: Boolean get() = youtubeRefreshToken.isNotBlank()
     val isYoutubeTvLinked: Boolean get() = youtubeRefreshToken.isNotBlank()
-    val isYoutubePipedLoggedIn: Boolean get() = youtubePipedAuthToken.isNotBlank()
 
     /** Primary music folder (first configured path). */
     val musicPath: String
@@ -270,8 +264,6 @@ class SettingsRepository(context: Context) {
                 }
                 normalized
             },
-            youtubePipedUsername = prefs.getString(KEY_YOUTUBE_PIPED_USER, "") ?: "",
-            youtubePipedAuthToken = prefs.getString(KEY_YOUTUBE_PIPED_TOKEN, "") ?: "",
             youtubeTvDeviceId = prefs.getString(KEY_YOUTUBE_TV_DEVICE_ID, "") ?: "",
             youtubeRefreshToken = prefs.getString(KEY_YOUTUBE_REFRESH_TOKEN, "") ?: "",
             youtubeAccessToken = prefs.getString(KEY_YOUTUBE_ACCESS_TOKEN, "") ?: "",
@@ -365,8 +357,9 @@ class SettingsRepository(context: Context) {
                 KEY_YOUTUBE_PIPED_API,
                 YoutubeDefaults.normalizeApiUrl(settings.youtubePipedApiUrl),
             )
-            .putString(KEY_YOUTUBE_PIPED_USER, settings.youtubePipedUsername.trim())
-            .putString(KEY_YOUTUBE_PIPED_TOKEN, settings.youtubePipedAuthToken)
+            // Drop legacy Piped account prefs (login/feed removed).
+            .remove(KEY_YOUTUBE_PIPED_USER)
+            .remove(KEY_YOUTUBE_PIPED_TOKEN)
             .putString(KEY_YOUTUBE_TV_DEVICE_ID, settings.youtubeTvDeviceId.trim())
             .putString(KEY_YOUTUBE_REFRESH_TOKEN, settings.youtubeRefreshToken)
             .putString(KEY_YOUTUBE_ACCESS_TOKEN, settings.youtubeAccessToken)
@@ -435,8 +428,6 @@ class SettingsRepository(context: Context) {
                 "youtubePipedApiUrl",
                 YoutubeDefaults.normalizeApiUrl(settings.youtubePipedApiUrl),
             )
-            .put("youtubePipedUsername", settings.youtubePipedUsername)
-            .put("youtubePipedAuthToken", settings.youtubePipedAuthToken)
             .put("youtubeTvDeviceId", settings.youtubeTvDeviceId)
             .put("youtubeRefreshToken", settings.youtubeRefreshToken)
             .put("youtubeAccessToken", settings.youtubeAccessToken)
@@ -551,14 +542,6 @@ class SettingsRepository(context: Context) {
             },
             youtubePipedApiUrl = YoutubeDefaults.normalizeApiUrl(
                 obj.optString("youtubePipedApiUrl", defaults.youtubePipedApiUrl)
-            ),
-            youtubePipedUsername = obj.optString(
-                "youtubePipedUsername",
-                defaults.youtubePipedUsername
-            ),
-            youtubePipedAuthToken = obj.optString(
-                "youtubePipedAuthToken",
-                defaults.youtubePipedAuthToken
             ),
             youtubeTvDeviceId = obj.optString("youtubeTvDeviceId", defaults.youtubeTvDeviceId),
             youtubeRefreshToken = obj.optString(
@@ -741,6 +724,15 @@ class SettingsRepository(context: Context) {
 
     fun isHueSyncEnabled(): Boolean = load().hueEnabled
 
+    fun loadSleepTimerLastCustomMinutes(): Int =
+        prefs.getInt(KEY_SLEEP_TIMER_LAST_CUSTOM_MINUTES, 20).coerceIn(1, 999)
+
+    fun saveSleepTimerLastCustomMinutes(minutes: Int) {
+        prefs.edit()
+            .putInt(KEY_SLEEP_TIMER_LAST_CUSTOM_MINUTES, minutes.coerceIn(1, 999))
+            .apply()
+    }
+
     /** Flip Music/Radio Hue sync and persist. Returns new enabled state, or null if not set up. */
     fun toggleHueSync(): Boolean? {
         val s = load()
@@ -775,6 +767,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_ALLOW_REMOTE_CONTROL = "allow_remote_control"
         private const val KEY_HA_WEBHOOK = "ha_webhook_url"
         private const val KEY_SLEEP_TIMER_HA_STANDBY = "sleep_timer_ha_standby"
+        private const val KEY_SLEEP_TIMER_LAST_CUSTOM_MINUTES = "sleep_timer_last_custom_minutes"
         private const val KEY_HUE_ENABLED = "hue_enabled"
         private const val KEY_HUE_BRIDGE_IP = "hue_bridge_ip"
         private const val KEY_HUE_USERNAME = "hue_username"

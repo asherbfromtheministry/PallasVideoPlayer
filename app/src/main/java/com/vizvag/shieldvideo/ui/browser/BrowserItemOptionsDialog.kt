@@ -42,7 +42,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback

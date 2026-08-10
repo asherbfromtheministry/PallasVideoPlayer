@@ -13,6 +13,7 @@ import com.vizvag.shieldvideo.data.iptv.IptvWatchHistoryStore
 import com.vizvag.shieldvideo.data.nas.NasRepository
 import com.vizvag.shieldvideo.data.settings.SettingsRepository
 import com.vizvag.shieldvideo.data.settings.SettingsBackupManager
+import com.vizvag.shieldvideo.data.youtube.YoutubeNewPipeInit
 import com.vizvag.shieldvideo.data.youtube.YoutubeRepository
 import com.vizvag.shieldvideo.data.youtube.YoutubeWatchHistoryStore
 import com.vizvag.shieldvideo.playback.HaNowPlayingPublisher
@@ -25,6 +26,7 @@ import com.vizvag.shieldvideo.playback.NowPlaying
 import com.vizvag.shieldvideo.playback.NowPlayingStore
 import com.vizvag.shieldvideo.playback.ResumeMonitor
 import com.vizvag.shieldvideo.playback.SleepTimerController
+import com.vizvag.shieldvideo.playback.BlackoutController
 import com.vizvag.shieldvideo.playback.haPodcastEpisodesWebhookUrl
 import com.vizvag.shieldvideo.playback.haRadioStationsWebhookUrl
 import com.vizvag.shieldvideo.playback.haSleepWebhookUrl
@@ -51,6 +53,8 @@ class ShieldVideoApp : Application() {
     lateinit var resumeMonitor: ResumeMonitor
         private set
     lateinit var sleepTimer: SleepTimerController
+        private set
+    lateinit var blackout: BlackoutController
         private set
     lateinit var nasWatchHistory: NasWatchHistoryStore
         private set
@@ -82,6 +86,8 @@ class ShieldVideoApp : Application() {
         private set
     lateinit var youtubeWatchHistory: YoutubeWatchHistoryStore
         private set
+    lateinit var youtubeResolutionCache: com.vizvag.shieldvideo.data.youtube.YoutubeResolutionCache
+        private set
     lateinit var musicModule: com.vizvag.shieldvideo.music.MusicModule
         private set
     lateinit var radioPlayback: RadioPlaybackController
@@ -110,6 +116,7 @@ class ShieldVideoApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        YoutubeNewPipeInit.ensureInitialized(this)
         resumeStore = LocalResumeStore(this)
         nasWatchHistory = NasWatchHistoryStore(this)
         settingsRepository = SettingsRepository(this)
@@ -128,17 +135,6 @@ class ShieldVideoApp : Application() {
             progressSync = progressSync,
         )
         haPublisher = HaNowPlayingPublisher()
-        sleepTimer = SleepTimerController(
-            onExpireFallback = { resumeMonitor.stopPlayer() },
-            onStandby = {
-                val settings = settingsRepository.load()
-                if (!settings.sleepTimerHaStandby) return@SleepTimerController
-                haPublisher.requestSleepStandby(
-                    haSleepWebhookUrl(settings.haWebhookUrl),
-                    settings.deviceId
-                )
-            }
-        )
         settingsBackupManager = SettingsBackupManager(this, settingsRepository, nasRepository)
         localMediaProxy = LocalMediaProxy()
         iptvRepository = IptvRepository(this)
@@ -150,9 +146,17 @@ class ShieldVideoApp : Application() {
         iptvWatchHistory = IptvWatchHistoryStore(this)
         iptvSearchHistory = IptvSearchHistoryStore(this)
         youtubeWatchHistory = YoutubeWatchHistoryStore(this)
-        youtubeRepository = YoutubeRepository {
-            settingsRepository.load().youtubePipedApiUrl
-        }
+        youtubeResolutionCache = com.vizvag.shieldvideo.data.youtube.YoutubeResolutionCache(this)
+        youtubeRepository = YoutubeRepository(
+            resolveBaseUrl = { settingsRepository.load().youtubePipedApiUrl },
+            cacheDir = { cacheDir },
+            resolveAccessToken = {
+                val s = settingsRepository.load()
+                s.youtubeAccessToken.takeIf {
+                    it.isNotBlank() && s.youtubeAccessTokenExpiresAtMs > System.currentTimeMillis() + 15_000L
+                }
+            },
+        )
         musicModule = com.vizvag.shieldvideo.music.MusicModule(this, settingsRepository, appScope)
         musicModule.musicIndex.start(appScope)
         radioPlayback = RadioPlaybackController(this)
@@ -168,6 +172,43 @@ class ShieldVideoApp : Application() {
         )
         iptvPlayback = IptvPlaybackController(this)
         youtubePlayback = YoutubePlaybackController(this)
+        blackout = BlackoutController()
+        // After all players exist so expiry can silence every source (not only the bound screen).
+        sleepTimer = SleepTimerController(
+            blackout = blackout,
+            onApplyVolume = { applySleepVolume(it) },
+            onRestoreVolume = { restoreSleepVolume() },
+            onExpireFallback = {
+                runCatching { resumeMonitor.stopPlayer() }
+                runCatching { musicModule.playerController.stop() }
+                runCatching { radioPlayback.stop() }
+                runCatching { podcastPlayback.stop() }
+                runCatching { youtubePlayback.stop() }
+                runCatching { iptvPlayback.stop() }
+                runCatching {
+                    if (com.vizvag.shieldvideo.playback.RadioRecordingService.state.value.recording) {
+                        com.vizvag.shieldvideo.playback.RadioRecordingService.finish(this)
+                    }
+                }
+            },
+            onStandby = { onResult ->
+                val settings = settingsRepository.load()
+                val url = haSleepWebhookUrl(settings.haWebhookUrl)
+                val device = settings.deviceId.trim()
+                if (!settings.sleepTimerHaStandby || url.isBlank() || device.isBlank()) {
+                    onResult(false)
+                    return@SleepTimerController
+                }
+                appScope.launch(Dispatchers.IO) {
+                    val ok = haPublisher.requestSleepStandby(
+                        url,
+                        device,
+                        blackout = blackout.isActive(),
+                    )
+                    launch(Dispatchers.Main.immediate) { onResult(ok) }
+                }
+            },
+        )
         playbackRouter = PlaybackCommandRouter(this)
         remoteClient = RemoteControlClient()
         remoteDiscovery = RemoteDeviceDiscovery(this)
@@ -186,6 +227,7 @@ class ShieldVideoApp : Application() {
         }
         // Phones/tablets are remotes — skip heavy NAS video index + IPTV/EPG hydrate at cold start.
         if (isTv) {
+            YoutubeNewPipeInit.warmPoToken(this)
             videoIndex.start(appScope)
             appScope.launch(Dispatchers.IO) {
                 val playlist = settingsRepository.load().activeIptvPlaylist()
@@ -309,6 +351,28 @@ class ShieldVideoApp : Application() {
         val url = settings.haWebhookUrl.trim()
         if (url.isBlank()) return
         haPublisher.clear(url, settings.deviceId)
+    }
+
+    /** Sleep timer volume fade — applied to whichever in-app player is active. */
+    private fun applySleepVolume(volume: Float) {
+        fun androidx.media3.common.Player.applyIfActive() {
+            if (mediaItemCount > 0 && (isPlaying || playWhenReady)) {
+                this.volume = volume
+            }
+        }
+        runCatching { musicModule.playerController.player.applyIfActive() }
+        runCatching { radioPlayback.player.applyIfActive() }
+        runCatching { podcastPlayback.player.applyIfActive() }
+        runCatching { youtubePlayback.player.applyIfActive() }
+        runCatching { iptvPlayback.player.applyIfActive() }
+    }
+
+    private fun restoreSleepVolume() {
+        runCatching { musicModule.playerController.player.volume = 1f }
+        runCatching { radioPlayback.player.volume = 1f }
+        runCatching { podcastPlayback.player.volume = 1f }
+        runCatching { youtubePlayback.player.volume = 1f }
+        runCatching { iptvPlayback.player.volume = 1f }
     }
 
     companion object {

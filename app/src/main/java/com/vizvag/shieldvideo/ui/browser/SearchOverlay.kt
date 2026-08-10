@@ -58,9 +58,11 @@ import androidx.compose.ui.window.DialogProperties
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.ui.components.HaStyleMediaCard
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.AppBackground
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.CardSurface
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 
 @Composable
@@ -245,7 +247,7 @@ fun SearchOverlay(
                             modifier = Modifier.align(Alignment.Center),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            CircularProgressIndicator(color = Accent)
+                            CircularProgressIndicator(color = LocalScreenChrome.current.accent)
                             Spacer(modifier = Modifier.height(12.dp))
                             Text("Searching selected folders…", color = TextMuted)
                         }
@@ -412,11 +414,11 @@ private fun SearchQueryEditorDialog(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onConfirm(draft) }),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Accent,
+                    focusedBorderColor = LocalScreenChrome.current.accent,
                     unfocusedBorderColor = Color.White.copy(alpha = 0.20f),
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = Accent,
+                    cursorColor = LocalScreenChrome.current.accent,
                     focusedContainerColor = Color.White.copy(alpha = 0.06f),
                     unfocusedContainerColor = Color.White.copy(alpha = 0.04f)
                 )

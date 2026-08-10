@@ -47,8 +47,9 @@ import com.vizvag.shieldvideo.data.nas.NasRepository
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.smb.SmbEntry
 import com.vizvag.shieldvideo.ui.components.glassInteract
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -329,7 +330,7 @@ fun OpmlFilePickerDialog(
                 .fillMaxHeight(0.9f)
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color(0xFF2E342A))
-                .border(1.dp, CyanAccent.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
                 .padding(20.dp),
         ) {
             Text(
@@ -349,7 +350,7 @@ fun OpmlFilePickerDialog(
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "OK on a folder to open · OK on a .opml file to import",
-                color = CyanAccent.copy(alpha = 0.9f),
+                color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                 fontSize = 13.sp,
             )
             Spacer(modifier = Modifier.height(12.dp))

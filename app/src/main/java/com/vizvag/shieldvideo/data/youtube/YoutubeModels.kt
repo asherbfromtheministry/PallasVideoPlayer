@@ -1,6 +1,6 @@
 package com.vizvag.shieldvideo.data.youtube
 
-/** Browse/search/history row for YouTube via Piped. */
+/** Browse/search/history row for YouTube. */
 data class YoutubeVideoItem(
     val id: String,
     val title: String,
@@ -11,6 +11,10 @@ data class YoutubeVideoItem(
     val uploadedDate: String = "",
     /** Epoch ms for sorting; 0 when unknown. */
     val uploadedEpochMs: Long = 0,
+    /** Channel id (`UC…`) when known — used for long-press channel browse. */
+    val channelId: String = "",
+    /** Max available stream height label (`1080p`, `4K`, …) when known. */
+    val resolutionLabel: String? = null,
 )
 
 enum class YoutubeFeedSort(val label: String) {
@@ -31,6 +35,22 @@ data class YoutubeStreamInfo(
     val playback: YoutubePlayback,
     /** Alternate sources tried if [playback] fails in ExoPlayer. */
     val playbackFallbacks: List<YoutubePlayback> = emptyList(),
+    val channelId: String = "",
+    /** Tallest video format advertised for this video (0 if unknown). */
+    val maxHeight: Int = 0,
+    val views: Long = 0,
+    val uploadedDate: String = "",
+    /** Discrete selectable video heights (SeparateTracks), highest first. */
+    val qualities: List<YoutubeQualityOption> = emptyList(),
+    /** User-Agent that must be used when fetching [playback] URLs (matches Innertube client). */
+    val playbackUserAgent: String = YoutubeDefaults.PLAYBACK_USER_AGENT,
+)
+
+/** One selectable YouTube video height for manual quality forcing. */
+data class YoutubeQualityOption(
+    val height: Int,
+    val label: String,
+    val playback: YoutubePlayback.SeparateTracks,
 )
 
 sealed class YoutubePlayback {
@@ -46,6 +66,10 @@ sealed class YoutubePlayback {
 }
 
 object YoutubeDefaults {
+    /** ExoPlayer / googlevideo.com default when streams come from Piped or ANDROID Innertube. */
+    const val PLAYBACK_USER_AGENT =
+        "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
+
     /**
      * Working public Piped API (as of mid-2026). Official kavin instance is often down —
      * change anytime in Settings → YouTube.

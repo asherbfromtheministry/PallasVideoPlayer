@@ -24,8 +24,8 @@ android {
         applicationId = "com.vizvag.shieldvideo"
         minSdk = 28
         targetSdk = 34
-        versionCode = 227
-        versionName = "2.5.11"
+        versionCode = 236
+        versionName = "2.5.20"
 
         // Personalized defaults from personal.defaults.properties when present.
         // The "clean" build type blanks every one so a distributable APK ships
@@ -83,6 +83,7 @@ android {
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -105,6 +106,8 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.4")
+
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -117,6 +120,8 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.4")
 
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.webkit:webkit:1.12.1")
+    implementation("com.github.teamnewpipe:NewPipeExtractor:0.26.4")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.hierynomus:smbj:0.13.0")
     implementation("org.slf4j:slf4j-android:1.7.36")

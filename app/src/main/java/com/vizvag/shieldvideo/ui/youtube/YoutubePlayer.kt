@@ -14,29 +14,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.dash.DashMediaSource
-import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.exoplayer.source.MergingMediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import com.vizvag.shieldvideo.data.youtube.YoutubePlayback
 import com.vizvag.shieldvideo.data.youtube.YoutubeStreamInfo
-
-private const val YT_USER_AGENT =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 @Composable
 fun rememberYoutubeExoPlayer(): ExoPlayer {
@@ -66,39 +54,26 @@ fun BindYoutubeStream(
     info: YoutubeStreamInfo?,
     onError: (String?) -> Unit = {},
 ) {
-    val httpFactory = remember {
-        DefaultHttpDataSource.Factory()
-            .setUserAgent(YT_USER_AGENT)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(30_000)
-            .setDefaultRequestProperties(
-                mapOf(
-                    "Referer" to "https://www.youtube.com/",
-                    "Origin" to "https://www.youtube.com",
-                    "Accept" to "*/*",
-                    "Accept-Language" to "en-US,en;q=0.9",
-                )
-            )
-    }
-
+    // Freeze initial candidates per video id — quality swaps go through YoutubePlaybackController
+    // and must not re-trigger this binder (that caused Source errors / session kills).
     var attempt by remember(info?.id) { mutableIntStateOf(0) }
-    val sources = remember(info?.id, info?.playback, info?.playbackFallbacks) {
+    val sources = remember(info?.id) {
         if (info == null) emptyList()
         else listOf(info.playback) + info.playbackFallbacks
     }
+    val controller = com.vizvag.shieldvideo.ShieldVideoApp.instance.youtubePlayback
 
     DisposableEffect(player, info?.id) {
+        controller.onQualitySwitchFailed = { msg ->
+            onError(msg)
+        }
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
+                // Quality rollback is owned by YoutubePlaybackController.
+                if (controller.isSwitchingQuality()) return
                 val next = attempt + 1
-                if (next < sources.size) {
+                if (next < sources.size && controller.playFallback(next)) {
                     attempt = next
-                    player.stop()
-                    player.clearMediaItems()
-                    player.setMediaSource(mediaSourceFor(httpFactory, sources[next]), true)
-                    player.prepare()
-                    player.playWhenReady = true
                     onError(null)
                 } else {
                     onError(
@@ -114,54 +89,24 @@ fun BindYoutubeStream(
             }
         }
         player.addListener(listener)
-        onDispose { player.removeListener(listener) }
+        onDispose {
+            player.removeListener(listener)
+            if (controller.onQualitySwitchFailed != null) {
+                controller.onQualitySwitchFailed = null
+            }
+        }
     }
 
-    LaunchedEffect(player, info?.id, sources) {
+    LaunchedEffect(info?.id) {
         attempt = 0
-        player.playWhenReady = false
-        player.stop()
-        player.clearMediaItems()
         if (info == null || sources.isEmpty()) {
+            controller.stop()
             onError(null)
             return@LaunchedEffect
         }
         onError(null)
-        player.setMediaSource(mediaSourceFor(httpFactory, sources.first()), true)
-        player.prepare()
-        player.playWhenReady = true
-    }
-}
-
-@OptIn(UnstableApi::class)
-private fun mediaSourceFor(
-    httpFactory: DefaultHttpDataSource.Factory,
-    playback: YoutubePlayback,
-) = when (playback) {
-    is YoutubePlayback.Progressive -> {
-        val item = MediaItem.Builder()
-            .setUri(playback.url)
-            .apply { playback.mimeType?.let { setMimeType(it) } }
-            .build()
-        ProgressiveMediaSource.Factory(httpFactory).createMediaSource(item)
-    }
-    is YoutubePlayback.Dash -> {
-        DashMediaSource.Factory(httpFactory)
-            .createMediaSource(MediaItem.fromUri(playback.url))
-    }
-    is YoutubePlayback.Hls -> {
-        HlsMediaSource.Factory(httpFactory)
-            .createMediaSource(MediaItem.fromUri(playback.url))
-    }
-    is YoutubePlayback.SeparateTracks -> {
-        val videoBuilder = MediaItem.Builder().setUri(playback.videoUrl)
-        playback.videoMime?.let { videoBuilder.setMimeType(it) }
-        val audioBuilder = MediaItem.Builder().setUri(playback.audioUrl)
-        playback.audioMime?.let { audioBuilder.setMimeType(it) }
-        MergingMediaSource(
-            ProgressiveMediaSource.Factory(httpFactory).createMediaSource(videoBuilder.build()),
-            ProgressiveMediaSource.Factory(httpFactory).createMediaSource(audioBuilder.build()),
-        )
+        controller.forceHighestVideoQuality()
+        controller.playStream(info)
     }
 }
 

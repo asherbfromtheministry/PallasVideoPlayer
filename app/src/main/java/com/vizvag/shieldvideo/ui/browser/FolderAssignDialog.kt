@@ -56,9 +56,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vizvag.shieldvideo.data.trakt.TraktMatch
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.AppBackground
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import kotlinx.coroutines.delay
 
@@ -146,7 +148,7 @@ fun FolderAssignDialog(
                             .fillMaxWidth(),
                         contentAlignment = Alignment.Center,
                     ) {
-                        CircularProgressIndicator(color = Accent)
+                        CircularProgressIndicator(color = LocalScreenChrome.current.accent)
                     }
                     LaunchedEffect(Unit) {
                         delay(80)
@@ -294,7 +296,7 @@ private fun AssignSearchSummaryRow(
         if (focused && enabled) {
             Text(
                 text = "OK to edit",
-                color = Accent.copy(alpha = 0.9f),
+                color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(top = 2.dp),
@@ -362,11 +364,11 @@ private fun AssignQueryEditorDialog(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onConfirm(draft) }),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Accent,
+                    focusedBorderColor = LocalScreenChrome.current.accent,
                     unfocusedBorderColor = Color.White.copy(alpha = 0.20f),
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = Accent,
+                    cursorColor = LocalScreenChrome.current.accent,
                     focusedContainerColor = Color.White.copy(alpha = 0.06f),
                     unfocusedContainerColor = Color.White.copy(alpha = 0.04f),
                 ),
@@ -488,7 +490,7 @@ private fun AssignCandidateRow(
             Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = "OK",
-                color = Accent,
+                color = LocalScreenChrome.current.accent,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
             )
@@ -544,7 +546,7 @@ private fun AssignChip(
             text = label,
             color = when {
                 !enabled -> Color.White.copy(alpha = 0.35f)
-                focused -> Accent
+                focused -> LocalScreenChrome.current.accent
                 else -> Color.White
             },
             fontSize = 15.sp,

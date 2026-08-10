@@ -29,6 +29,11 @@ class PlaybackCommandRouter(
 
     fun status(): RemoteStatus = statusBody().copy(uiRoute = RemoteUiRouteStore.current())
 
+    /** ExoPlayer reads must run on the main thread — HTTP handlers call this. */
+    suspend fun statusJson(): String = withContext(Dispatchers.Main) {
+        status().toJson().toString()
+    }
+
     private fun statusBody(): RemoteStatus {
         val settings = app.settingsRepository.load()
         val deviceId = settings.deviceId.trim().lowercase().ifBlank {
@@ -607,7 +612,9 @@ class PlaybackCommandRouter(
         }
         prepareInAppPlayer(RemotePlaybackMode.YouTube, "youtube")
         val info = app.youtubeRepository.streams(videoId)
-        app.youtubePlayback.playStream(info)
+        withContext(Dispatchers.Main) {
+            app.youtubePlayback.playStream(info)
+        }
     }
 
     private suspend fun playPodcast(request: RemotePlayRequest.Podcast) {

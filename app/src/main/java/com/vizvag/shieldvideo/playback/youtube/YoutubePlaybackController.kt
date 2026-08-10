@@ -2,6 +2,7 @@ package com.vizvag.shieldvideo.playback.youtube
 
 import android.content.Context
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -11,7 +12,10 @@ import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import com.vizvag.shieldvideo.data.youtube.YoutubeDefaults
 import com.vizvag.shieldvideo.data.youtube.YoutubePlayback
+import com.vizvag.shieldvideo.data.youtube.YoutubeQualityOption
 import com.vizvag.shieldvideo.data.youtube.YoutubeStreamInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,11 +38,10 @@ data class YoutubePlaybackState(
 class YoutubePlaybackController(context: Context) {
     private val appContext = context.applicationContext
 
+    private var activeUserAgent: String = YoutubeDefaults.PLAYBACK_USER_AGENT
+
     private val httpFactory = DefaultHttpDataSource.Factory()
-        .setUserAgent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
+        .setUserAgent(activeUserAgent)
         .setAllowCrossProtocolRedirects(true)
         .setConnectTimeoutMs(15_000)
         .setReadTimeoutMs(30_000)
@@ -51,26 +54,89 @@ class YoutubePlaybackController(context: Context) {
             ),
         )
 
+    private fun applyPlaybackUserAgent(ua: String) {
+        val next = ua.ifBlank { YoutubeDefaults.PLAYBACK_USER_AGENT }
+        if (next == activeUserAgent) return
+        activeUserAgent = next
+        httpFactory.setUserAgent(next)
+    }
+
+    private val trackSelector = DefaultTrackSelector(appContext).apply {
+        parameters = buildUponParameters()
+            .setForceHighestSupportedBitrate(true)
+            .setMaxVideoBitrate(Int.MAX_VALUE)
+            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+            .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, true)
+            .build()
+    }
+
     val player: ExoPlayer = run {
         val renderersFactory = DefaultRenderersFactory(appContext)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
-        ExoPlayer.Builder(appContext, renderersFactory).build().apply {
-            playWhenReady = true
-            addListener(object : Player.Listener {
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    _state.update { it.copy(isPlaying = isPlaying) }
-                }
-            })
-        }
+        ExoPlayer.Builder(appContext, renderersFactory)
+            .setTrackSelector(trackSelector)
+            .build()
+            .apply {
+                playWhenReady = true
+                addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        _state.update { it.copy(isPlaying = isPlaying) }
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        val restore = pendingRestore ?: return
+                        pendingRestore = null
+                        switchingQuality = false
+                        suppressBinderErrorsUntilMs = System.currentTimeMillis() + 3_000L
+                        applyPlayback(restore.playback, restore.positionMs, restore.playWhenReady)
+                        // Always soft — never forward raw "Source error" (that kills the session).
+                        onQualitySwitchFailed?.invoke("Couldn't switch quality — kept previous")
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY && switchingQuality) {
+                            switchingQuality = false
+                            pendingRestore = null
+                            currentPlayback = lastAppliedPlayback
+                        }
+                    }
+                })
+            }
     }
 
     private val _state = MutableStateFlow(YoutubePlaybackState())
     val state: StateFlow<YoutubePlaybackState> = _state.asStateFlow()
 
     private var currentInfo: YoutubeStreamInfo? = null
+    private var currentPlayback: YoutubePlayback? = null
+    private var lastAppliedPlayback: YoutubePlayback? = null
+    private var switchingQuality = false
+    private var pendingRestore: RestorePoint? = null
+    private var suppressBinderErrorsUntilMs = 0L
+    private var usingAdaptiveManifest = false
+    var onQualitySwitchFailed: ((String) -> Unit)? = null
+
+    fun isSwitchingQuality(): Boolean =
+        switchingQuality ||
+            pendingRestore != null ||
+            System.currentTimeMillis() < suppressBinderErrorsUntilMs
+
+    private data class RestorePoint(
+        val playback: YoutubePlayback,
+        val positionMs: Long,
+        val playWhenReady: Boolean,
+    )
 
     fun playStream(info: YoutubeStreamInfo) {
+        applyPlaybackUserAgent(info.playbackUserAgent)
         currentInfo = info
+        switchingQuality = false
+        pendingRestore = null
+        suppressBinderErrorsUntilMs = 0L
+        // Prefer DASH/HLS when present — quality changes can use the track selector (no URL swap).
+        val preferred = preferredPlayback(info)
+        currentPlayback = preferred
+        usingAdaptiveManifest = preferred is YoutubePlayback.Dash || preferred is YoutubePlayback.Hls
         _state.value = YoutubePlaybackState(
             videoId = info.id,
             title = info.title,
@@ -78,50 +144,157 @@ class YoutubePlaybackController(context: Context) {
             isPlaying = true,
             durationMs = info.durationSec * 1000L,
         )
-        applyPlayback(info.playback)
+        clearVideoSizeCap()
+        applyPlayback(preferred, positionMs = 0L, playWhenReady = true)
     }
+
+    private fun preferredPlayback(info: YoutubeStreamInfo): YoutubePlayback = info.playback
 
     fun playFallback(index: Int): Boolean {
         val info = currentInfo ?: return false
         val all = listOf(info.playback) + info.playbackFallbacks
         val playback = all.getOrNull(index) ?: return false
-        applyPlayback(playback)
+        usingAdaptiveManifest = playback is YoutubePlayback.Dash || playback is YoutubePlayback.Hls
+        applyPlayback(playback, player.currentPosition.coerceAtLeast(0L), player.playWhenReady)
+        currentPlayback = playback
         return true
     }
 
-    private fun applyPlayback(playback: YoutubePlayback) {
-        val source = when (playback) {
-            is YoutubePlayback.Progressive -> {
-                val item = MediaItem.Builder()
-                    .setUri(playback.url)
-                    .apply { playback.mimeType?.let { setMimeType(it) } }
-                    .build()
-                ProgressiveMediaSource.Factory(httpFactory).createMediaSource(item)
-            }
-            is YoutubePlayback.Dash -> {
-                DashMediaSource.Factory(httpFactory)
-                    .createMediaSource(MediaItem.fromUri(playback.url))
-            }
-            is YoutubePlayback.Hls -> {
-                HlsMediaSource.Factory(httpFactory)
-                    .createMediaSource(MediaItem.fromUri(playback.url))
-            }
-            is YoutubePlayback.SeparateTracks -> {
-                val videoBuilder = MediaItem.Builder().setUri(playback.videoUrl)
-                playback.videoMime?.let { videoBuilder.setMimeType(it) }
-                val audioBuilder = MediaItem.Builder().setUri(playback.audioUrl)
-                playback.audioMime?.let { audioBuilder.setMimeType(it) }
-                MergingMediaSource(
-                    ProgressiveMediaSource.Factory(httpFactory)
-                        .createMediaSource(videoBuilder.build()),
-                    ProgressiveMediaSource.Factory(httpFactory)
-                        .createMediaSource(audioBuilder.build()),
-                )
-            }
+    /**
+     * Select a listed quality height. Uses track-selector caps on DASH/HLS (SmartTube-style);
+     * falls back to SeparateTracks only when no adaptive manifest is available.
+     */
+    fun selectQuality(option: YoutubeQualityOption): Boolean {
+        val info = currentInfo ?: return false
+        val currentH = player.videoFormat?.height ?: 0
+        if (currentH > 0 && kotlin.math.abs(option.height - currentH) <= 16) {
+            return false
         }
+
+        val all = listOfNotNull(currentPlayback) + listOf(info.playback) + info.playbackFallbacks
+        val dashOrHls = all.firstOrNull {
+            (it is YoutubePlayback.Dash && it.url.startsWith("http")) || it is YoutubePlayback.Hls
+        }
+        if (dashOrHls != null) {
+            if (currentPlayback !is YoutubePlayback.Dash && currentPlayback !is YoutubePlayback.Hls) {
+                val pos = player.currentPosition.coerceAtLeast(0L)
+                val wasPlaying = player.playWhenReady
+                // Don't treat manifest bootstrap as a fatal quality failure.
+                switchingQuality = false
+                pendingRestore = null
+                suppressBinderErrorsUntilMs = System.currentTimeMillis() + 3_000L
+                usingAdaptiveManifest = true
+                applyPlayback(dashOrHls, pos, wasPlaying)
+                currentPlayback = dashOrHls
+            }
+            setMaxVideoHeight(option.height)
+            return true
+        }
+
+        // No DASH: swap SeparateTracks video, keep working audio.
+        val target = option.playback
+        val workingAudio = (currentPlayback as? YoutubePlayback.SeparateTracks)?.audioUrl
+            ?: (lastAppliedPlayback as? YoutubePlayback.SeparateTracks)?.audioUrl
+        val playback = if (!workingAudio.isNullOrBlank()) {
+            target.copy(audioUrl = workingAudio)
+        } else {
+            target
+        }
+        switchPlayback(playback, resume = true)
+        return true
+    }
+
+    /** Swap to another discrete quality while keeping position; roll back on Source error. */
+    fun switchPlayback(playback: YoutubePlayback, resume: Boolean = true) {
+        val pos = player.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = player.playWhenReady
+        val previous = currentPlayback ?: lastAppliedPlayback
+        if (previous != null && previous != playback) {
+            pendingRestore = RestorePoint(previous, pos, wasPlaying)
+            switchingQuality = true
+            suppressBinderErrorsUntilMs = System.currentTimeMillis() + 3_000L
+        }
+        usingAdaptiveManifest = playback is YoutubePlayback.Dash || playback is YoutubePlayback.Hls
+        if (!usingAdaptiveManifest) clearVideoSizeCap()
+        applyPlayback(playback, if (resume) pos else 0L, wasPlaying)
+        currentInfo = currentInfo?.copy(playback = playback)
+    }
+
+    fun setMaxVideoHeight(height: Int) {
+        if (height <= 0) {
+            clearVideoSizeCap()
+            return
+        }
+        // Cap height but still pick the best bitrate at/under that rung.
+        trackSelector.parameters = trackSelector.buildUponParameters()
+            .setForceHighestSupportedBitrate(true)
+            .setMaxVideoBitrate(Int.MAX_VALUE)
+            .setMaxVideoSize(Int.MAX_VALUE, height)
+            .setViewportSize(Int.MAX_VALUE, height, false)
+            .build()
+    }
+
+    fun clearVideoSizeCap() {
+        trackSelector.parameters = trackSelector.buildUponParameters()
+            .setForceHighestSupportedBitrate(true)
+            .setMaxVideoBitrate(Int.MAX_VALUE)
+            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+            .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, true)
+            .build()
+    }
+
+    fun forceHighestVideoQuality() = clearVideoSizeCap()
+
+    fun forceMaxQuality(): Boolean {
+        val info = currentInfo ?: return false
+        val best = info.qualities.maxByOrNull { it.height } ?: return false
+        return selectQuality(best)
+    }
+
+    private fun applyPlayback(
+        playback: YoutubePlayback,
+        positionMs: Long,
+        playWhenReady: Boolean,
+    ) {
+        // Pot is applied at stream-fetch time. Re-appending here breaks ANDROID_VR URLs
+        // that intentionally ship without pot=.
+        lastAppliedPlayback = playback
+        val source = mediaSourceFor(playback)
         player.setMediaSource(source)
         player.prepare()
-        player.play()
+        if (positionMs > 0L) player.seekTo(positionMs)
+        player.playWhenReady = playWhenReady
+    }
+
+    private fun mediaSourceFor(playback: YoutubePlayback) = when (playback) {
+        is YoutubePlayback.Progressive -> {
+            val item = MediaItem.Builder()
+                .setUri(playback.url)
+                .apply { playback.mimeType?.let { setMimeType(it) } }
+                .build()
+            ProgressiveMediaSource.Factory(httpFactory).createMediaSource(item)
+        }
+        is YoutubePlayback.Dash -> {
+            DashMediaSource.Factory(httpFactory)
+                .createMediaSource(MediaItem.fromUri(playback.url))
+        }
+        is YoutubePlayback.Hls -> {
+            HlsMediaSource.Factory(httpFactory)
+                .createMediaSource(MediaItem.fromUri(playback.url))
+        }
+        is YoutubePlayback.SeparateTracks -> {
+            val video = ProgressiveMediaSource.Factory(httpFactory)
+                .createMediaSource(MediaItem.fromUri(playback.videoUrl))
+            val audio = ProgressiveMediaSource.Factory(httpFactory)
+                .createMediaSource(MediaItem.fromUri(playback.audioUrl))
+            // Align A/V timelines — default merge is a common Source-error trigger on YT.
+            MergingMediaSource(
+                /* adjustPeriodTimeOffsets = */ true,
+                /* clipDurations = */ true,
+                video,
+                audio,
+            )
+        }
     }
 
     fun play() {
@@ -138,12 +311,18 @@ class YoutubePlaybackController(context: Context) {
     fun seekTo(positionMs: Long) = player.seekTo(positionMs.coerceAtLeast(0))
 
     fun stop() {
+        switchingQuality = false
+        pendingRestore = null
+        suppressBinderErrorsUntilMs = 0L
+        usingAdaptiveManifest = false
         runCatching {
             player.pause()
             player.stop()
             player.clearMediaItems()
         }
         currentInfo = null
+        currentPlayback = null
+        lastAppliedPlayback = null
         _state.value = YoutubePlaybackState()
     }
 

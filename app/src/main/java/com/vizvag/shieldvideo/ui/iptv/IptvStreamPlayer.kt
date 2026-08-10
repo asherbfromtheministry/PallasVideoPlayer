@@ -50,6 +50,7 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -57,10 +58,11 @@ import androidx.media3.ui.PlayerView
 import android.content.Context
 import com.vizvag.shieldvideo.R
 import com.vizvag.shieldvideo.data.iptv.IptvChannel
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
@@ -80,7 +82,8 @@ private const val IPTV_TARGET_BUFFER_BYTES = 8 * 1024 * 1024
  */
 @OptIn(UnstableApi::class)
 fun buildIptvExoPlayer(context: Context): ExoPlayer {
-    val renderersFactory = DefaultRenderersFactory(context.applicationContext)
+    val appContext = context.applicationContext
+    val renderersFactory = DefaultRenderersFactory(appContext)
         .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         .setEnableDecoderFallback(true)
     val loadControl = DefaultLoadControl.Builder()
@@ -93,8 +96,18 @@ fun buildIptvExoPlayer(context: Context): ExoPlayer {
         .setTargetBufferBytes(IPTV_TARGET_BUFFER_BYTES)
         .setPrioritizeTimeOverSizeThresholds(true)
         .build()
-    return ExoPlayer.Builder(context.applicationContext, renderersFactory)
+    // Prefer the highest advertised video rung (not bandwidth-adaptive downshifts).
+    val trackSelector = DefaultTrackSelector(appContext).apply {
+        parameters = buildUponParameters()
+            .setForceHighestSupportedBitrate(true)
+            .setMaxVideoBitrate(Int.MAX_VALUE)
+            .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+            .setViewportSize(/* width= */ Int.MAX_VALUE, /* height= */ Int.MAX_VALUE, /* orientationMayChange= */ true)
+            .build()
+    }
+    return ExoPlayer.Builder(appContext, renderersFactory)
         .setLoadControl(loadControl)
+        .setTrackSelector(trackSelector)
         .build()
         .apply {
             repeatMode = Player.REPEAT_MODE_OFF
@@ -418,6 +431,8 @@ private data class DecodedVideoInfo(
 data class LiveVideoDetails(
     val width: Int = 0,
     val height: Int = 0,
+    /** Highest video height advertised in the current media (HLS/DASH variants). */
+    val maxHeight: Int = 0,
     val fps: Int = 0,
     val isHdr: Boolean = false,
     val codec: String? = null,
@@ -426,22 +441,41 @@ data class LiveVideoDetails(
     val measuredBitrate: Int = 0,
     val confirmed: Boolean = false
 ) {
+    /** Resolution shown on quality chips — prefer the max available variant. */
+    val chipHeight: Int
+        get() = max(maxHeight, height)
+
     val badges: List<String>
         get() {
             if (!confirmed) return emptyList()
-            val quality = when {
-                height >= 2000 -> "4K"
-                height >= 1040 -> "1080p"
-                height >= 700 -> "720p"
-                height > 0 -> "${height}p"
-                else -> null
-            }
+            val quality = resolutionBadgeLabel(chipHeight)
             return buildList {
                 quality?.let(::add)
                 if (fps > 0) add("${fps}fps")
                 add(if (isHdr) "HDR" else "SDR")
             }
         }
+}
+
+fun resolutionBadgeLabel(height: Int): String? = when {
+    height >= 2000 -> "4K"
+    height >= 1040 -> "1080p"
+    height >= 700 -> "720p"
+    height > 0 -> "${height}p"
+    else -> null
+}
+
+/** Tallest video format listed in [tracks] (adaptive playlists expose every rung). */
+fun maxVideoHeightInTracks(tracks: Tracks): Int {
+    var maxH = 0
+    for (group in tracks.groups) {
+        if (group.type != C.TRACK_TYPE_VIDEO) continue
+        for (i in 0 until group.length) {
+            val h = group.getTrackFormat(i).height
+            if (h > maxH) maxH = h
+        }
+    }
+    return maxH
 }
 
 /**
@@ -458,15 +492,19 @@ fun rememberLiveVideoDetails(player: ExoPlayer, channelId: String?): LiveVideoDe
     var measuredFps by remember { mutableIntStateOf(0) }
     var measuredBps by remember { mutableIntStateOf(0) }
     var decoded by remember { mutableStateOf(DecodedVideoInfo()) }
+    var maxAvailableHeight by remember { mutableIntStateOf(0) }
 
     DisposableEffect(player, channelId) {
         format = player.videoFormat
         measuredFps = 0
         decoded = DecodedVideoInfo()
+        maxAvailableHeight = maxVideoHeightInTracks(player.currentTracks)
 
         val playerListener = object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) {
                 format = player.videoFormat ?: format
+                val listed = maxVideoHeightInTracks(tracks)
+                if (listed > 0) maxAvailableHeight = listed
             }
         }
         player.addListener(playerListener)
@@ -556,10 +594,12 @@ fun rememberLiveVideoDetails(player: ExoPlayer, channelId: String?): LiveVideoDe
     }
 
     val selected = format
+    val playingHeight = decoded.height.takeIf { it > 0 } ?: selected?.height?.takeIf { it > 0 } ?: 0
     val confirmed = decoded.height > 0 && measuredFps > 0
     return LiveVideoDetails(
         width = decoded.width.takeIf { it > 0 } ?: selected?.width?.takeIf { it > 0 } ?: 0,
-        height = decoded.height.takeIf { it > 0 } ?: selected?.height?.takeIf { it > 0 } ?: 0,
+        height = playingHeight,
+        maxHeight = max(maxAvailableHeight, playingHeight),
         fps = measuredFps.takeIf { it > 0 }
             ?: selected?.frameRate?.takeIf { it > 0f }?.roundToInt()
             ?: 0,
@@ -590,7 +630,7 @@ fun ChannelPreviewFrame(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
             .background(Color.Black)
-            .border(2.dp, CyanAccent.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+            .border(2.dp, LocalScreenChrome.current.accent.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
             .focusProperties { canFocus = false }
             .clickable(enabled = channel != null, onClick = onOpenFullscreen)
     ) {

@@ -64,7 +64,6 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.vizvag.shieldvideo.data.iptv.ChannelQuality
 import com.vizvag.shieldvideo.data.iptv.GroupChannelOrder
 import com.vizvag.shieldvideo.data.iptv.IptvChannel
 import com.vizvag.shieldvideo.data.iptv.IptvProgramme
@@ -74,7 +73,8 @@ import com.vizvag.shieldvideo.data.settings.IptvGuideSize
 import com.vizvag.shieldvideo.data.settings.metrics
 import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.theme.AccentWarm
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
+import com.vizvag.shieldvideo.ui.theme.LiveTvChrome
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextCream
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import java.text.SimpleDateFormat
@@ -447,9 +447,7 @@ fun ChannelWheelPicker(
         itemContent = { index, highlighted, onClick ->
             val row = rowsState.value.getOrNull(index)
             if (row != null) {
-                val quality = remember(row.badges, row.channel.name) {
-                    row.badges.ifEmpty { ChannelQuality.labelsFor(row.channel.name) }
-                }
+                val quality = row.badges
                 val active = row.channel.id == selectedChannelId
                 if (showEpg) {
                     val programmes = remember(row.channel.id, windowStartMs, windowMs, epgVersion) {
@@ -784,7 +782,7 @@ private fun CylinderWheel(
             } else {
                 Text(
                     text = title,
-                    color = CyanAccent,
+                    color = LocalScreenChrome.current.accent,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.4.sp
@@ -1013,7 +1011,7 @@ private fun WheelEpgTimeHeader(
                         .offset(x = stripW * nowFrac.coerceIn(0f, 1f))
                         .fillMaxHeight()
                         .width(3.dp)
-                        .background(CyanAccent)
+                        .background(LocalScreenChrome.current.accent)
                 )
             }
         }
@@ -1266,18 +1264,18 @@ private fun WheelRowEpgStrip(
                     .clip(RoundedCornerShape(4.dp))
                     .background(
                         when {
-                            focused -> CyanAccent.copy(alpha = 0.28f)
+                            focused -> LocalScreenChrome.current.accent.copy(alpha = 0.28f)
                             recording -> Color(0xFFFF5252).copy(alpha = 0.12f)
-                            airing -> CyanAccent.copy(alpha = 0.10f)
+                            airing -> LocalScreenChrome.current.accent.copy(alpha = 0.10f)
                             else -> Color.Transparent
                         }
                     )
                     .border(
                         width = if (focused) 2.dp else 0.5.dp,
                         color = when {
-                            focused -> CyanAccent
+                            focused -> LocalScreenChrome.current.accent
                             recording -> Color(0xFFFF5252).copy(alpha = 0.85f)
-                            airing -> CyanAccent.copy(alpha = 0.28f)
+                            airing -> LocalScreenChrome.current.accent.copy(alpha = 0.28f)
                             else -> Color.White.copy(alpha = 0.16f)
                         },
                         shape = RoundedCornerShape(4.dp)
@@ -1290,7 +1288,7 @@ private fun WheelRowEpgStrip(
                     color = when {
                         focused -> TextCream
                         recording -> Color(0xFFFF6E6E)
-                        airing -> CyanAccent.copy(alpha = 0.92f)
+                        airing -> LocalScreenChrome.current.accent.copy(alpha = 0.92f)
                         else -> Color.White.copy(alpha = 0.64f)
                     },
                     fontSize = titleSp,
@@ -1308,7 +1306,7 @@ private fun WheelRowEpgStrip(
                     .offset(x = totalW * nowFrac.coerceIn(0f, 1f))
                     .fillMaxHeight()
                     .width(1.dp)
-                    .background(CyanAccent.copy(alpha = 0.42f))
+                    .background(LocalScreenChrome.current.accent.copy(alpha = 0.42f))
             )
         }
         if (programmes.isEmpty()) {
@@ -1364,8 +1362,9 @@ private fun qualityBadgeColor(label: String): Color {
         upper.endsWith("FPS") -> Color(0xFFFFB74D)
         upper == "HDR" || upper == "SDR" || upper == "HLG" || upper == "DV" -> Color(0xFFCE93D8)
         upper == "HEVC" || upper == "H265" || upper == "AV1" || upper == "AVC" -> Color(0xFF81C784)
-        upper == "4K" || upper == "UHD" || upper == "FHD" || upper == "HD" || upper == "SD" -> CyanAccent
-        else -> CyanAccent
+        upper == "4K" || upper == "UHD" || upper == "FHD" || upper == "HD" || upper == "SD" ||
+            upper.endsWith("P") && upper.dropLast(1).all { it.isDigit() } -> LiveTvChrome.accent
+        else -> LiveTvChrome.accent
     }
 }
 
@@ -1434,7 +1433,7 @@ fun ChannelOptionsSheet(
                     if (moveMenu) moveMenu = false else run(onDismiss)
                 }
             ) {
-                Text(if (moveMenu) "Back" else "Close", color = CyanAccent)
+                Text(if (moveMenu) "Back" else "Close", color = LocalScreenChrome.current.accent)
             }
         },
         containerColor = Color(0xF022261E)
@@ -1505,7 +1504,7 @@ fun GroupOptionsSheet(
         },
         confirmButton = {
             androidx.compose.material3.TextButton(onClick = { run(onDismiss) }) {
-                Text("Close", color = CyanAccent)
+                Text("Close", color = LocalScreenChrome.current.accent)
             }
         },
         containerColor = Color(0xFF2E342A)

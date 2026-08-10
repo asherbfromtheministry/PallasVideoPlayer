@@ -103,6 +103,7 @@ import com.vizvag.shieldvideo.ui.browser.BrowserViewModelFactory
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.AppClockOverlay
 import com.vizvag.shieldvideo.ui.notice.AppNoticeHost
+import com.vizvag.shieldvideo.ui.components.AppBlackoutHost
 import com.vizvag.shieldvideo.ui.components.ForcedLandscape
 import com.vizvag.shieldvideo.ui.components.chromeForRoute
 import com.vizvag.shieldvideo.ui.home.HomeLandingScreen
@@ -119,11 +120,11 @@ import com.vizvag.shieldvideo.ui.iptv.MultiviewScreen
 import com.vizvag.shieldvideo.ui.settings.SettingsScreen
 import com.vizvag.shieldvideo.ui.settings.SettingsViewModel
 import com.vizvag.shieldvideo.ui.settings.SettingsViewModelFactory
-import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.ShieldVideoTheme
 import com.vizvag.shieldvideo.ui.theme.TextCream
 import com.vizvag.shieldvideo.ui.theme.TextMuted
+import com.vizvag.shieldvideo.ui.youtube.YoutubeNavRequests
 import com.vizvag.shieldvideo.ui.youtube.YoutubeScreen
 import com.vizvag.shieldvideo.ui.youtube.YoutubeViewModel
 import com.vizvag.shieldvideo.ui.youtube.YoutubeViewModelFactory
@@ -143,6 +144,8 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_REMOTE_ROUTE = "com.vizvag.shieldvideo.EXTRA_REMOTE_ROUTE"
+        /** Optional 11-char id — opens YouTube and starts in-app playback (not NAS browser). */
+        const val EXTRA_YOUTUBE_VIDEO_ID = "com.vizvag.shieldvideo.EXTRA_YOUTUBE_VIDEO_ID"
     }
 
     private lateinit var vlcLauncher: VlcLauncher
@@ -282,6 +285,10 @@ class MainActivity : ComponentActivity() {
         if (route.isNotEmpty()) {
             RemoteNavRequests.requestRoute(route)
             intent?.removeExtra(EXTRA_REMOTE_ROUTE)
+        }
+        intent?.getStringExtra(EXTRA_YOUTUBE_VIDEO_ID)?.trim()?.takeIf { it.isNotBlank() }?.let { id ->
+            YoutubeNavRequests.requestPlay(id)
+            intent.removeExtra(EXTRA_YOUTUBE_VIDEO_ID)
         }
     }
 
@@ -779,8 +786,15 @@ private fun ShieldVideoAppNav(
                         settingsRepository = settingsRepository,
                         repository = appContext.youtubeRepository,
                         historyStore = appContext.youtubeWatchHistory,
+                        resolutionCache = appContext.youtubeResolutionCache,
                     )
                 )
+                val pendingPlayId by YoutubeNavRequests.pendingVideoId.collectAsState()
+                LaunchedEffect(pendingPlayId) {
+                    val id = pendingPlayId ?: return@LaunchedEffect
+                    YoutubeNavRequests.consume(id)
+                    viewModel.playById(id)
+                }
                 fun openBrowser(share: String? = null, openSearch: Boolean = false) {
                     share?.let { BrowseNavRequests.requestShare(it) }
                     if (openSearch) BrowseNavRequests.requestOpenSearch()
@@ -954,7 +968,6 @@ private fun ShieldVideoAppNav(
                         ShieldVideoApp.instance.musicModule.musicIndex,
                         iptvParental,
                         ShieldVideoApp.instance.settingsBackupManager,
-                        ShieldVideoApp.instance.youtubeRepository,
                         ShieldVideoApp.instance.podcastRepository,
                     )
                 )
@@ -1005,7 +1018,7 @@ private fun ShieldVideoAppNav(
                         .wrapContentWidth()
                         .widthIn(max = 280.dp)
                         .background(CardSurface.copy(alpha = 0.92f), RoundedCornerShape(14.dp))
-                        .border(1.dp, Accent.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                        .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1032,7 +1045,7 @@ private fun ShieldVideoAppNav(
                             modifier = Modifier
                                 .size(22.dp)
                                 .clip(CircleShape)
-                                .background(Accent.copy(alpha = 0.35f))
+                                .background(LocalScreenChrome.current.accent.copy(alpha = 0.35f))
                                 .clickable {
                                     val device = remoteTarget ?: return@clickable
                                     remoteBannerScope.launch {
@@ -1063,7 +1076,7 @@ private fun ShieldVideoAppNav(
                     Icon(
                         imageVector = Icons.Filled.Close,
                         contentDescription = "Disconnect",
-                        tint = Accent,
+                        tint = LocalScreenChrome.current.accent,
                         modifier = Modifier
                             .size(20.dp)
                             .clickable {
@@ -1092,7 +1105,7 @@ private fun ShieldVideoAppNav(
                         .wrapContentWidth()
                         .widthIn(max = 420.dp)
                         .background(CardSurface.copy(alpha = 0.92f), RoundedCornerShape(14.dp))
-                        .border(1.dp, Accent.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+                        .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1100,7 +1113,7 @@ private fun ShieldVideoAppNav(
                     Icon(
                         imageVector = Icons.Filled.Phonelink,
                         contentDescription = null,
-                        tint = Accent,
+                        tint = LocalScreenChrome.current.accent,
                         modifier = Modifier.size(14.dp),
                     )
                     Text(
@@ -1146,6 +1159,7 @@ private fun ShieldVideoAppNav(
         AppNoticeHost(
             bottomInset = if (iptvFullscreen || youtubeFullscreen) 20.dp else 28.dp,
         )
+        AppBlackoutHost()
     }
     }
     }

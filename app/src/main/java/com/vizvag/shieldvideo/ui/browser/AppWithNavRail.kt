@@ -5,10 +5,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import com.vizvag.shieldvideo.ShieldVideoApp
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.settings.IptvRecordingStorage
+import com.vizvag.shieldvideo.ui.components.SleepTimerCustomDialog
 import com.vizvag.shieldvideo.ui.components.chromeFor
 import com.vizvag.shieldvideo.ui.theme.ScreenTheme
 
@@ -35,6 +41,9 @@ fun AppWithNavRail(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
+    val app = LocalContext.current.applicationContext as ShieldVideoApp
+    var showCustomSleep by remember { mutableStateOf(false) }
+
     ScreenTheme(chromeFor(destination)) {
         Row(modifier = modifier.fillMaxSize()) {
             if (showRail) {
@@ -51,15 +60,27 @@ fun AppWithNavRail(
                     sleepTimerActive = sleepTimerActive,
                     sleepTimerLabel = sleepTimerLabel,
                     onCycleSleepTimer = onCycleSleepTimer,
+                    onCustomSleepTimer = { showCustomSleep = true },
                     onSettings = onSettings,
                     destination = destination,
-                    focusEnabled = railFocusEnabled,
+                    focusEnabled = railFocusEnabled && !showCustomSleep,
                     players = players,
                 )
             }
             Box(modifier = Modifier.weight(1f).fillMaxHeight().fillMaxSize()) {
                 content()
             }
+        }
+        if (showCustomSleep) {
+            SleepTimerCustomDialog(
+                onConfirmMinutes = { mins ->
+                    app.settingsRepository.saveSleepTimerLastCustomMinutes(mins)
+                    app.sleepTimer.setMinutes(mins)
+                },
+                onClear = { app.sleepTimer.clear() },
+                onDismiss = { showCustomSleep = false },
+                initialMinutes = app.settingsRepository.loadSleepTimerLastCustomMinutes(),
+            )
         }
     }
 }

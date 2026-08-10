@@ -45,8 +45,9 @@ import com.vizvag.shieldvideo.playback.remote.RemoteStatusPoller
 import com.vizvag.shieldvideo.playback.remote.RemoteTargetStore
 import com.vizvag.shieldvideo.ui.components.IconActionButton
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextCream
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import kotlinx.coroutines.delay
 
@@ -159,7 +160,7 @@ fun RemoteScreen(
                 CircularProgressIndicator(
                     modifier = Modifier.size(14.dp),
                     strokeWidth = 2.dp,
-                    color = Accent,
+                    color = LocalScreenChrome.current.accent,
                 )
             }
         }
@@ -243,7 +244,7 @@ private fun DeviceRow(
                 playing -> "Playing"
                 else -> "Tap"
             },
-            color = if (selected || playing) Accent else TextMuted,
+            color = if (selected || playing) LocalScreenChrome.current.accent else TextMuted,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
         )

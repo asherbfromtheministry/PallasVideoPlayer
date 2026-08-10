@@ -2,6 +2,7 @@ package com.vizvag.shieldvideo.playback
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,50 +48,68 @@ fun sleepVolumeForRemaining(remainingMs: Long): Float =
     }
 
 /**
- * Single app-wide sleep timer shared by NAS/VLC, Live TV, and Radio so the
- * countdown survives screen changes. The foreground screen binds volume/stop
- * sinks; [onExpireFallback] always runs (stops external VLC via ResumeMonitor).
+ * Single app-wide sleep timer shared by NAS/VLC, Live TV, Radio, Music, Podcasts,
+ * and YouTube so the countdown survives screen changes. The foreground screen may
+ * bind volume/stop sinks; [onExpireFallback] always stops every in-app player.
+ *
+ * After expiry, [onStandby] tries HA power-off. If that fails, [blackout] stays up.
  */
 class SleepTimerController(
+    private val blackout: BlackoutController,
+    private val onApplyVolume: (Float) -> Unit,
+    private val onRestoreVolume: () -> Unit,
     private val onExpireFallback: () -> Unit,
-    private val onStandby: () -> Unit = {}
+    /**
+     * Attempt device standby. Invoke [onResult] on the main thread with true when
+     * the webhook succeeded, false when the app must stay in blackout.
+     */
+    private val onStandby: (onResult: (turnedOff: Boolean) -> Unit) -> Unit = { it(false) },
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val _state = MutableStateFlow(SleepTimerState())
     val state: StateFlow<SleepTimerState> = _state.asStateFlow()
 
-    @Volatile private var volumeSink: ((Float) -> Unit)? = null
     @Volatile private var stopSink: (() -> Unit)? = null
+
+    private fun applyVolume(volume: Float) {
+        onApplyVolume(volume)
+    }
+
+    private val expireAtUptime = object : Runnable {
+        override fun run() {
+            if (_state.value.endsAtMs == null) return
+            clearInternal()
+            expire()
+        }
+    }
 
     private val tick = object : Runnable {
         override fun run() {
             val endsAt = _state.value.endsAtMs ?: return
             val remaining = endsAt - System.currentTimeMillis()
             if (remaining <= 0L) {
+                handler.removeCallbacks(expireAtUptime)
                 clearInternal()
                 expire()
             } else {
                 _state.update { it.copy(remainingMs = remaining) }
-                volumeSink?.invoke(sleepVolumeForRemaining(remaining))
+                applyVolume(sleepVolumeForRemaining(remaining))
                 handler.postDelayed(this, 250L)
             }
         }
     }
 
-    /** Bind the currently visible in-app player; timer keeps running if unbound. */
+    /** Bind stop for the visible in-app player; volume fade is app-wide via [onApplyVolume]. */
     fun bindPlayback(
-        onVolume: ((Float) -> Unit)? = null,
         onStop: (() -> Unit)? = null
     ) {
-        volumeSink = onVolume
         stopSink = onStop
         if (_state.value.active) {
-            volumeSink?.invoke(sleepVolumeForRemaining(_state.value.remainingMs))
+            applyVolume(sleepVolumeForRemaining(_state.value.remainingMs))
         }
     }
 
     fun unbindPlayback() {
-        volumeSink = null
         stopSink = null
     }
 
@@ -98,34 +117,50 @@ class SleepTimerController(
         val next = nextSleepPresetMinutes(_state.value.presetMinutes)
         if (next == null) {
             clear()
-            volumeSink?.invoke(1f)
+            onRestoreVolume()
         } else {
-            val endsAt = System.currentTimeMillis() + next * 60_000L
-            handler.removeCallbacks(tick)
-            _state.value = SleepTimerState(
-                presetMinutes = next,
-                endsAtMs = endsAt,
-                remainingMs = next * 60_000L
-            )
-            volumeSink?.invoke(1f)
-            handler.post(tick)
+            setMinutes(next)
         }
+    }
+
+    /** Start (or replace) the timer for an exact duration in minutes (1–999). */
+    fun setMinutes(minutes: Int) {
+        val mins = minutes.coerceIn(1, 999)
+        val endsAt = System.currentTimeMillis() + mins * 60_000L
+        handler.removeCallbacks(tick)
+        handler.removeCallbacks(expireAtUptime)
+        _state.value = SleepTimerState(
+            presetMinutes = mins,
+            endsAtMs = endsAt,
+            remainingMs = mins * 60_000L
+        )
+        onRestoreVolume()
+        handler.post(tick)
+        handler.postAtTime(expireAtUptime, SystemClock.uptimeMillis() + mins * 60_000L)
     }
 
     fun clear() {
         clearInternal()
+        onRestoreVolume()
     }
 
     private fun expire() {
-        volumeSink?.invoke(0f)
+        applyVolume(0f)
         runCatching { stopSink?.invoke() }
         runCatching { onExpireFallback() }
-        runCatching { onStandby() }
-        volumeSink?.invoke(1f)
+        blackout.enter()
+        runCatching {
+            onStandby { turnedOff ->
+                if (!turnedOff) {
+                    blackout.enter()
+                }
+            }
+        }
     }
 
     private fun clearInternal() {
         handler.removeCallbacks(tick)
+        handler.removeCallbacks(expireAtUptime)
         _state.value = SleepTimerState()
     }
 }

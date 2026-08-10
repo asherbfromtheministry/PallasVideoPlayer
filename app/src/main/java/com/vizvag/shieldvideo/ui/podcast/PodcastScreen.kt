@@ -92,7 +92,6 @@ import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
@@ -128,10 +127,9 @@ fun PodcastScreen(
     val feedback = rememberTvFeedback()
 
     var showPicker by remember { mutableStateOf(false) }
-    var screenBlack by remember { mutableStateOf(false) }
+    val blackout by app.blackout.active.collectAsState()
     val playFocus = remember { FocusRequester() }
     val episodeListFocus = remember { FocusRequester() }
-    val blackFocus = remember { FocusRequester() }
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -148,9 +146,8 @@ fun PodcastScreen(
 
     DisposableEffect(viewModel.playback) {
         app.sleepTimer.bindPlayback(
-            onVolume = { viewModel.playback.player.volume = it },
             onStop = {
-                screenBlack = false
+                // Keep blackout up so HA standby can power off without flashing the UI.
                 if (!viewModel.isRemoteSession()) {
                     viewModel.stopPlayback()
                 }
@@ -188,9 +185,8 @@ fun PodcastScreen(
         }
     }
 
-    BackHandler(enabled = refreshOverlay == null) {
+    BackHandler(enabled = refreshOverlay == null && !blackout) {
         when {
-            screenBlack -> screenBlack = false
             showPicker -> showPicker = false
             else -> {
                 if (!viewModel.isRemoteSession()) {
@@ -201,10 +197,11 @@ fun PodcastScreen(
         }
     }
 
-    LaunchedEffect(screenBlack) {
-        delay(80)
-        if (screenBlack) runCatching { blackFocus.requestFocus() }
-        else runCatching { playFocus.requestFocus() }
+    LaunchedEffect(blackout) {
+        if (!blackout) {
+            delay(80)
+            runCatching { playFocus.requestFocus() }
+        }
     }
 
     AppWithNavRail(
@@ -234,8 +231,8 @@ fun PodcastScreen(
         sleepTimerLabel = sleep.label,
         onCycleSleepTimer = app.sleepTimer::cycle,
         onSettings = onOpenSettings,
-        showRail = !screenBlack,
-        railFocusEnabled = !showPicker && !screenBlack && refreshOverlay == null,
+        showRail = !blackout,
+        railFocusEnabled = !showPicker && !blackout && refreshOverlay == null,
         players = RailPlayerVisibility.from(appSettings),
     ) {
         Box(
@@ -292,7 +289,7 @@ fun PodcastScreen(
                         feedback = feedback,
                         onShows = { showPicker = true },
                         onRefresh = { viewModel.refreshAllFeeds() },
-                        onBlack = { screenBlack = true },
+                        onBlack = { app.blackout.enter() },
                         compact = compact,
                     )
 
@@ -348,6 +345,7 @@ fun PodcastScreen(
                             )
                             EpisodeListPane(
                                 episodes = ui.displayedEpisodes,
+                                hasMore = ui.hasMoreEpisodes,
                                 loading = ui.loadingEpisodes,
                                 playingGuid = playback.episodeGuid,
                                 playingTitle = playback.episodeTitle,
@@ -357,6 +355,7 @@ fun PodcastScreen(
                                 episodeSort = ui.episodeSort,
                                 onCycleSort = viewModel::cycleEpisodeSort,
                                 onPlay = viewModel::playEpisode,
+                                onLoadMore = viewModel::loadMoreEpisodes,
                                 playFocus = playFocus,
                                 listFocusRequester = episodeListFocus,
                                 feedback = feedback,
@@ -368,20 +367,6 @@ fun PodcastScreen(
                         }
                     }
                 }
-            }
-
-            if (screenBlack) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black)
-                        .zIndex(20f)
-                        .focusRequester(blackFocus)
-                        .clickable(
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() },
-                        ) { screenBlack = false },
-                )
             }
         }
     }
@@ -435,7 +420,7 @@ private fun PodcastTopBar(
         Icon(
             Icons.Filled.Podcasts,
             contentDescription = null,
-            tint = Accent,
+            tint = LocalScreenChrome.current.accent,
             modifier = Modifier.size(if (compact) 20.dp else 28.dp),
         )
         Column(modifier = Modifier.weight(1f)) {
@@ -513,7 +498,7 @@ private fun ChromeChip(
         Icon(
             icon,
             contentDescription = null,
-            tint = if (selected) Accent else Color.White,
+            tint = if (selected) LocalScreenChrome.current.accent else Color.White,
             modifier = Modifier.size(if (compact) 14.dp else 18.dp),
         )
         Text(
@@ -552,7 +537,7 @@ private fun PodcastRefreshOverlayDialog(overlay: PodcastRefreshOverlay) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 androidx.compose.material3.CircularProgressIndicator(
-                    color = Accent,
+                    color = LocalScreenChrome.current.accent,
                     strokeWidth = 3.dp,
                     modifier = Modifier.size(44.dp),
                 )
@@ -585,7 +570,7 @@ private fun PodcastRefreshOverlayDialog(overlay: PodcastRefreshOverlay) {
                             .fillMaxWidth()
                             .height(6.dp)
                             .clip(RoundedCornerShape(3.dp)),
-                        color = Accent,
+                        color = LocalScreenChrome.current.accent,
                         trackColor = Color.White.copy(alpha = 0.14f),
                     )
                 } else if (overlay.detail.isNotBlank() && overlay.total <= 0) {
@@ -674,7 +659,7 @@ private fun NowPlayingStage(
                 Icon(
                     Icons.Filled.Podcasts,
                     contentDescription = null,
-                    tint = Accent.copy(alpha = 0.7f),
+                    tint = LocalScreenChrome.current.accent.copy(alpha = 0.7f),
                     modifier = Modifier
                         .align(Alignment.Center)
                         .size(if (compact) 36.dp else 72.dp),
@@ -696,7 +681,7 @@ private fun NowPlayingStage(
         Spacer(Modifier.height(if (compact) 2.dp else 6.dp))
         Text(
             show?.title.orEmpty(),
-            color = Accent,
+            color = LocalScreenChrome.current.accent,
             fontSize = if (compact) 11.sp else 15.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -710,7 +695,7 @@ private fun NowPlayingStage(
                 .fillMaxWidth(0.85f)
                 .height(if (compact) 3.dp else 6.dp)
                 .clip(RoundedCornerShape(if (compact) 2.dp else 3.dp)),
-            color = Accent,
+            color = LocalScreenChrome.current.accent,
             trackColor = Color.White.copy(alpha = 0.15f),
         )
         Spacer(Modifier.height(if (compact) 3.dp else 6.dp))
@@ -792,7 +777,7 @@ private fun TransportButton(
         Icon(
             icon,
             contentDescription = label,
-            tint = if (large) Accent else Color.White,
+            tint = if (large) LocalScreenChrome.current.accent else Color.White,
             modifier = Modifier.size(iconSize),
         )
     }
@@ -801,6 +786,7 @@ private fun TransportButton(
 @Composable
 private fun EpisodeListPane(
     episodes: List<PodcastEpisode>,
+    hasMore: Boolean,
     loading: Boolean,
     playingGuid: String,
     playingTitle: String,
@@ -810,6 +796,7 @@ private fun EpisodeListPane(
     episodeSort: PodcastEpisodeSort,
     onCycleSort: () -> Unit,
     onPlay: (PodcastEpisode) -> Unit,
+    onLoadMore: () -> Unit,
     playFocus: FocusRequester,
     listFocusRequester: FocusRequester,
     feedback: TvFeedback,
@@ -856,7 +843,7 @@ private fun EpisodeListPane(
                     verticalArrangement = Arrangement.Center,
                 ) {
                     androidx.compose.material3.CircularProgressIndicator(
-                        color = Accent,
+                        color = LocalScreenChrome.current.accent,
                         strokeWidth = 2.dp,
                         modifier = Modifier.size(if (compact) 24.dp else 32.dp),
                     )
@@ -916,6 +903,11 @@ private fun EpisodeListPane(
                                 progressFrac = progress[ep.guid]?.progressFraction ?: 0f,
                                 completed = progress[ep.guid]?.completed == true,
                                 onPlay = { onPlay(ep) },
+                                onNearEnd = {
+                                    if (hasMore && index >= episodes.lastIndex - 1) {
+                                        onLoadMore()
+                                    }
+                                },
                                 feedback = feedback,
                                 compact = compact,
                                 focusRequester = if (index == 0) firstEpisodeFocus else null,
@@ -942,6 +934,7 @@ private fun EpisodeRow(
     compact: Boolean = false,
     focusRequester: FocusRequester? = null,
     leftFocus: FocusRequester? = null,
+    onNearEnd: (() -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     val artUrl = episode.imageUrl.ifBlank { showImageUrl.orEmpty() }
@@ -956,7 +949,10 @@ private fun EpisodeRow(
             )
             .onFocusChanged {
                 focused = it.isFocused
-                if (it.isFocused) feedback.focus()
+                if (it.isFocused) {
+                    feedback.focus()
+                    onNearEnd?.invoke()
+                }
             }
             .focusProperties {
                 if (leftFocus != null) left = leftFocus
@@ -990,7 +986,7 @@ private fun EpisodeRow(
                 playing -> Box(
                     modifier = Modifier
                         .matchParentSize()
-                        .background(Accent.copy(alpha = 0.22f)),
+                        .background(LocalScreenChrome.current.accent.copy(alpha = 0.22f)),
                 )
                 focused -> Box(
                     modifier = Modifier
@@ -1010,7 +1006,7 @@ private fun EpisodeRow(
             if (!showTitle.isNullOrBlank()) {
                 Text(
                     showTitle,
-                    color = Accent.copy(alpha = 0.95f),
+                    color = LocalScreenChrome.current.accent.copy(alpha = 0.95f),
                     fontSize = if (compact) 9.sp else 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -1023,7 +1019,7 @@ private fun EpisodeRow(
                 episode.title,
                 color = when {
                     completed -> TextMuted.copy(alpha = 0.85f)
-                    playing -> Accent
+                    playing -> LocalScreenChrome.current.accent
                     else -> Color.White
                 },
                 fontSize = if (compact) 12.sp else 14.sp,
@@ -1064,7 +1060,7 @@ private fun EpisodeRow(
                         .fillMaxWidth()
                         .height(if (compact) 2.dp else 3.dp)
                         .clip(RoundedCornerShape(2.dp)),
-                    color = Accent,
+                    color = LocalScreenChrome.current.accent,
                     trackColor = Color.White.copy(alpha = 0.22f),
                 )
             }
@@ -1147,7 +1143,7 @@ private fun ShowsPickerDialog(
                             ) {
                                 Text(
                                     genre,
-                                    color = Accent,
+                                    color = LocalScreenChrome.current.accent,
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     fontFamily = PallasFontFamily,
@@ -1227,13 +1223,13 @@ private fun AllShowsTile(
                 Icon(
                     Icons.AutoMirrored.Filled.Sort,
                     contentDescription = null,
-                    tint = Accent,
+                    tint = LocalScreenChrome.current.accent,
                     modifier = Modifier.size(40.dp),
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "RECENT",
-                    color = Accent,
+                    color = LocalScreenChrome.current.accent,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp,
@@ -1334,7 +1330,7 @@ private fun ShowTile(
                 Icon(
                     Icons.Filled.Podcasts,
                     contentDescription = null,
-                    tint = Accent,
+                    tint = LocalScreenChrome.current.accent,
                     modifier = Modifier
                         .align(Alignment.Center)
                         .size(48.dp),

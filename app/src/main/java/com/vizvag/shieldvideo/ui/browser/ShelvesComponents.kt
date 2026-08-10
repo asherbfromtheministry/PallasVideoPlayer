@@ -141,6 +141,7 @@ fun BrowserNavRail(
     sleepTimerActive: Boolean,
     sleepTimerLabel: String?,
     onCycleSleepTimer: () -> Unit,
+    onCustomSleepTimer: () -> Unit = {},
     onSettings: () -> Unit,
     destination: RailDestination = RailDestination.Browser,
     /** When false, rail icons stay visible but are removed from the D-pad focus tree. */
@@ -182,10 +183,10 @@ fun BrowserNavRail(
 
     val rotated = LocalForcedLandscapeRotated.current
     BoxWithConstraints(modifier = modifier.width(RailWidth).fillMaxHeight()) {
-        // Phone landscape stage is short — pack icons so Music/Settings stay reachable.
-        val compact = maxHeight < 480.dp
-        val itemGap = if (compact) 0.dp else 2.dp
-        val sectionGap = if (compact) 2.dp else 4.dp
+        // Pack icons vertically — Shields need every pixel when many shares + players are enabled.
+        val compact = maxHeight < 560.dp
+        val itemGap = 0.dp
+        val sectionGap = if (compact) 1.dp else 2.dp
         Row(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
@@ -200,8 +201,8 @@ fun BrowserNavRail(
                     .clipToBounds()
                     .touchFriendlyVerticalScroll(scroll, rotated)
                     .padding(
-                        top = if (compact) 6.dp else 12.dp,
-                        bottom = if (compact) 6.dp else 10.dp,
+                        top = if (compact) 4.dp else 8.dp,
+                        bottom = if (compact) 4.dp else 6.dp,
                     ),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(itemGap),
@@ -246,7 +247,6 @@ fun BrowserNavRail(
                         .height(1.dp)
                         .background(Color.White.copy(alpha = 0.12f)),
                 )
-                Spacer(Modifier.height(sectionGap))
 
                 if (showLiveTv) {
                     val livePreferred = destination == RailDestination.LiveTv
@@ -331,7 +331,6 @@ fun BrowserNavRail(
                         .height(1.dp)
                         .background(Color.White.copy(alpha = 0.12f)),
                 )
-                Spacer(Modifier.height(sectionGap))
 
                 run {
                     val (isFirst, isLast) = nextEdge()
@@ -339,6 +338,7 @@ fun BrowserNavRail(
                         label = sleepTimerLabel?.takeIf { it.isNotBlank() } ?: "Sleep",
                         selected = sleepTimerActive,
                         onClick = onCycleSleepTimer,
+                        onLongClick = onCustomSleepTimer,
                         icon = Icons.Filled.Timer,
                         focusEnabled = focusEnabled,
                         blockFocusUp = isFirst,
@@ -377,6 +377,7 @@ private fun RailItem(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     icon: ImageVector,
     focusRequester: FocusRequester? = null,
     focusEnabled: Boolean = true,
@@ -387,6 +388,10 @@ private fun RailItem(
     val chrome = LocalScreenChrome.current
     val feedback = rememberTvFeedback()
     var focused by remember { mutableStateOf(false) }
+    var longPressHandled by remember { mutableStateOf(false) }
+    var longPressJob by remember { mutableStateOf<Job?>(null) }
+    val interaction = remember { MutableInteractionSource() }
+    val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
     val tint = when {
         selected -> Color.White
         focused -> chrome.accent
@@ -394,9 +399,14 @@ private fun RailItem(
     }
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val scope = rememberCoroutineScope()
-    val iconSize = if (compact) 18.dp else 22.dp
-    val labelSize = if (compact) 8.sp else 9.sp
-    val vPad = if (compact) 2.dp else 5.dp
+    val iconSize = if (compact) 16.dp else 19.dp
+    val labelSize = if (compact) 7.sp else 8.sp
+    val vPad = if (compact) 1.dp else 2.dp
+
+    fun fireLongPress() {
+        if (onLongClick == null || longPressHandled) return
+        longPressHandled = true
+    }
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -404,7 +414,7 @@ private fun RailItem(
             .width(72.dp)
             .glassInteract(
                 focused = focused,
-                selected = selected,
+                selected = selected || longPressHandled,
                 idleSurface = Color.Transparent,
             )
             .bringIntoViewRequester(bringIntoViewRequester)
@@ -422,10 +432,63 @@ private fun RailItem(
                 if (blockFocusUp) up = FocusRequester.Cancel
                 if (blockFocusDown) down = FocusRequester.Cancel
             }
-            .clickable(enabled = focusEnabled, role = Role.Button, onClick = {
-                feedback.click()
-                onClick()
-            })
+            .onPreviewKeyEvent { event ->
+                val isSelect = event.key == Key.DirectionCenter ||
+                    event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter
+                val isMenu = event.key == Key.Menu
+                when {
+                    isMenu && event.type == KeyEventType.KeyUp && onLongClick != null -> {
+                        feedback.click()
+                        onLongClick()
+                        true
+                    }
+                    isSelect && onLongClick != null && event.type == KeyEventType.KeyDown -> {
+                        if (longPressJob == null) {
+                            longPressHandled = false
+                            longPressJob = scope.launch {
+                                delay(longPressTimeout)
+                                fireLongPress()
+                            }
+                        }
+                        true
+                    }
+                    isSelect && onLongClick != null && event.type == KeyEventType.KeyUp -> {
+                        longPressJob?.cancel()
+                        longPressJob = null
+                        if (longPressHandled) {
+                            longPressHandled = false
+                            feedback.click()
+                            onLongClick()
+                            true
+                        } else {
+                            feedback.click()
+                            onClick()
+                            true
+                        }
+                    }
+                    else -> false
+                }
+            }
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = focusEnabled,
+                role = Role.Button,
+                onClick = {
+                    if (onLongClick == null) {
+                        feedback.click()
+                        onClick()
+                    }
+                },
+                onLongClick = onLongClick?.let { handler ->
+                    {
+                        feedback.click()
+                        handler()
+                    }
+                },
+            )
+            .focusable(enabled = focusEnabled, interactionSource = interaction)
             .padding(vertical = vPad),
     ) {
         Icon(
@@ -441,7 +504,7 @@ private fun RailItem(
             fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = if (compact) 1.dp else 3.dp, start = 2.dp, end = 2.dp),
+            modifier = Modifier.padding(top = if (compact) 0.dp else 1.dp, start = 2.dp, end = 2.dp),
         )
     }
 }

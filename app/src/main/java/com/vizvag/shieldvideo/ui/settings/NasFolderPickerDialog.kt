@@ -46,8 +46,9 @@ import com.vizvag.shieldvideo.data.nas.NasRepository
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.smb.SmbEntry
 import com.vizvag.shieldvideo.ui.components.glassInteract
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -188,7 +189,7 @@ fun NasFolderPickerDialog(
                 .fillMaxHeight(0.9f)
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color(0xFF2E342A))
-                .border(1.dp, CyanAccent.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
                 .padding(20.dp)
         ) {
             Text(
@@ -216,7 +217,7 @@ fun NasFolderPickerDialog(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Selected: " + selected.sorted().joinToString(", ").ifBlank { "none" },
-                    color = CyanAccent.copy(alpha = 0.9f),
+                    color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                     fontSize = 13.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -226,7 +227,7 @@ fun NasFolderPickerDialog(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "OK on a folder to open it · OK on a .opml file to select it",
-                    color = CyanAccent.copy(alpha = 0.9f),
+                    color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                     fontSize = 13.sp,
                 )
             }
@@ -450,7 +451,7 @@ private fun PickerRow(
         if (onToggle != null) {
             Text(
                 text = if (selected) "✓" else "Select",
-                color = if (selected) CyanAccent else Color.White,
+                color = if (selected) LocalScreenChrome.current.accent else Color.White,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))

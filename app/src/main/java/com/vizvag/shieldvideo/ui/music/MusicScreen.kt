@@ -160,8 +160,6 @@ import com.vizvag.shieldvideo.ui.browser.rememberOrderedShares
 import com.vizvag.shieldvideo.ui.browser.recordingFolderForRail
 import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.data.settings.AppSettings
-import com.vizvag.shieldvideo.ui.theme.AudioAccent
-import com.vizvag.shieldvideo.ui.theme.AudioAccentWarm
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
@@ -182,7 +180,7 @@ private enum class BrowseMode(val label: String) {
 
 private enum class Panel { None, Browse, Queue }
 
-/** Playlist reorder highlight — soft secondary, never confused with now-playing accent fill. */
+/** Playlist reorder highlight — soft secondary, never confused with now-playing LocalScreenChrome.current.accent fill. */
 private val QueueMoveAccent = Color(0xFFB4A0FF)
 
 /** While >0, navigation BackHandlers stay off so one Back only dismisses the modal. */
@@ -280,13 +278,12 @@ private fun ImmersiveMusicScreen(
     var panel by remember { mutableStateOf(Panel.None) }
     var browseMode by remember { mutableStateOf(BrowseMode.Folders) }
     var folderPath by remember { mutableStateOf<String?>(null) }
-    var screenBlack by remember { mutableStateOf(false) }
+    val blackout by app.blackout.active.collectAsState()
     var searchOpen by remember { mutableStateOf(false) }
     var searchAddTarget by remember { mutableStateOf<BrowseAddTarget?>(null) }
     val browseFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
-    val blackFocus = remember { FocusRequester() }
     val searchQuery by viewModel.searchQuery.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
 
@@ -504,19 +501,14 @@ private fun ImmersiveMusicScreen(
 
     DisposableEffect(viewModel.playerController) {
         app.sleepTimer.bindPlayback(
-            onVolume = { viewModel.playerController.player.volume = it },
             onStop = {
-                screenBlack = false
+                // Keep blackout up so HA standby can power off without flashing the UI.
                 if (!viewModel.isRemoteSession()) {
                     viewModel.playerController.stop()
                 }
             },
         )
-        onDispose {
-            app.sleepTimer.unbindPlayback()
-            // Do not stopPlayback here — remounts (e.g. remote nav) were killing audio.
-            // ON_STOP / leave() enforce quit = silence.
-        }
+        onDispose { app.sleepTimer.unbindPlayback() }
     }
 
     // Keep screen on only while *this* device is playing music locally — never for remote control.
@@ -548,9 +540,8 @@ private fun ImmersiveMusicScreen(
         }
     }
 
-    BackHandler(enabled = !modalBlocksBack()) {
+    BackHandler(enabled = !modalBlocksBack() && !blackout) {
         when {
-            screenBlack -> screenBlack = false
             searchOpen -> {
                 if (searchAddTarget != null) {
                     searchAddTarget = null
@@ -581,11 +572,8 @@ private fun ImmersiveMusicScreen(
         }
     }
 
-    LaunchedEffect(screenBlack) {
-        if (screenBlack) {
-            delay(80)
-            runCatching { blackFocus.requestFocus() }
-        } else {
+    LaunchedEffect(blackout) {
+        if (!blackout) {
             delay(80)
             runCatching { playFocus.requestFocus() }
         }
@@ -642,8 +630,8 @@ private fun ImmersiveMusicScreen(
         sleepTimerLabel = sleepState.label,
         onCycleSleepTimer = app.sleepTimer::cycle,
         onSettings = onOpenSettings,
-        showRail = !screenBlack,
-        railFocusEnabled = panel == Panel.None && !screenBlack,
+        showRail = !blackout,
+        railFocusEnabled = panel == Panel.None && !blackout,
         players = RailPlayerVisibility.from(appSettings),
     ) {
     Box(modifier = Modifier.fillMaxSize().background(AppBackground)) {
@@ -1104,7 +1092,7 @@ private fun ImmersiveMusicScreen(
                             IconActionButton(
                                 selected = false,
                                 enabled = chromeFocusable,
-                                onClick = { screenBlack = true },
+                                onClick = { app.blackout.enter() },
                             ) {
                                 Icon(
                                     Icons.Filled.Brightness2,
@@ -1279,30 +1267,8 @@ private fun ImmersiveMusicScreen(
                 onDismiss = { confirmLeave = false },
             )
         }
-
-        if (screenBlack) {
-            MusicBlackScreenOverlay(
-                focusRequester = blackFocus,
-                onWake = { screenBlack = false },
-            )
-        }
     }
     }
-}
-
-@Composable
-private fun MusicBlackScreenOverlay(
-    focusRequester: FocusRequester,
-    onWake: () -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .zIndex(10f)
-            .background(Color.Black)
-            .focusRequester(focusRequester)
-            .clickable(role = Role.Button, onClick = onWake),
-    )
 }
 
 @Composable
@@ -1415,13 +1381,13 @@ private fun MusicSearchOverlay(
                                 fontFamily = PallasFontFamily,
                             ),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AudioAccent,
+                                focusedBorderColor = LocalScreenChrome.current.accent,
                                 unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
-                                focusedLabelColor = AudioAccent,
+                                focusedLabelColor = LocalScreenChrome.current.accent,
                                 unfocusedLabelColor = AudioTextMuted,
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White,
-                                cursorColor = AudioAccent,
+                                cursorColor = LocalScreenChrome.current.accent,
                             ),
                         )
                     } else {
@@ -1436,7 +1402,7 @@ private fun MusicSearchOverlay(
                         onClick = onClose,
                         modifier = Modifier.focusRequester(closeFocus),
                     ) {
-                        Text("Close", color = AudioAccent)
+                        Text("Close", color = LocalScreenChrome.current.accent)
                     }
                 }
                 Spacer(Modifier.height(14.dp))
@@ -1654,10 +1620,10 @@ private fun MusicSearchColumn(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
         ) {
-            Icon(icon, contentDescription = null, tint = AudioAccent, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = null, tint = LocalScreenChrome.current.accent, modifier = Modifier.size(18.dp))
             Text(
                 text = title,
-                color = AudioAccent,
+                color = LocalScreenChrome.current.accent,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
@@ -1792,7 +1758,7 @@ private fun SyncedLyricsPanel(
                     verticalArrangement = Arrangement.Center,
                 ) {
                     androidx.compose.material3.CircularProgressIndicator(
-                        color = AudioAccent,
+                        color = LocalScreenChrome.current.accent,
                         strokeWidth = 2.dp,
                         modifier = Modifier.size(28.dp),
                     )
@@ -1916,7 +1882,7 @@ private fun SyncedLyricsPanel(
                     Text(
                         text = line.text.ifBlank { " " },
                         color = when {
-                            isCurrent -> AudioAccent
+                            isCurrent -> LocalScreenChrome.current.accent
                             else -> Color.White.copy(
                                 alpha = when {
                                     kotlin.math.abs(i - index.coerceAtLeast(0)) <= 1 -> 0.55f
@@ -2302,7 +2268,7 @@ private fun TrackInfoSheet(
                     .graphicsLayer { alpha = 0.22f }
                     .background(
                         Brush.radialGradient(
-                            listOf(AudioAccent.copy(alpha = 0.35f), Color.Transparent),
+                            listOf(LocalScreenChrome.current.accent.copy(alpha = 0.35f), Color.Transparent),
                         ),
                     ),
             )
@@ -2317,7 +2283,7 @@ private fun TrackInfoSheet(
                 ) {
                     Text(
                         "TRACK INFO",
-                        color = AudioAccent,
+                        color = LocalScreenChrome.current.accent,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 2.sp,
@@ -2366,7 +2332,7 @@ private fun TrackInfoSheet(
                         Spacer(Modifier.height(4.dp))
                         Text(
                             artist,
-                            color = AudioAccent,
+                            color = LocalScreenChrome.current.accent,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.SemiBold,
                             fontFamily = PallasFontFamily,
@@ -2410,7 +2376,7 @@ private fun TrackInfoSheet(
                             ) {
                                 Text(
                                     label,
-                                    color = AudioAccent.copy(alpha = 0.75f),
+                                    color = LocalScreenChrome.current.accent.copy(alpha = 0.75f),
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     letterSpacing = 0.9.sp,
@@ -2461,7 +2427,7 @@ private fun TrackInfoSheet(
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "PATHS & ART",
-                    color = AudioAccent.copy(alpha = 0.85f),
+                    color = LocalScreenChrome.current.accent.copy(alpha = 0.85f),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.2.sp,
@@ -2504,7 +2470,7 @@ private fun TrackInfoColumn(
     Column(modifier = modifier.fillMaxHeight()) {
         Text(
             heading,
-            color = AudioAccent.copy(alpha = 0.85f),
+            color = LocalScreenChrome.current.accent.copy(alpha = 0.85f),
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.2.sp,
@@ -2587,7 +2553,7 @@ private fun LeaveMusicSheet(
         ) {
             Text(
                 "LEAVE MUSIC?",
-                color = AudioAccent.copy(alpha = 0.9f),
+                color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.4.sp,
@@ -2800,7 +2766,7 @@ private fun ImmersiveStage(
                     Icon(
                         Icons.Filled.PlayArrow,
                         null,
-                        tint = AudioAccent.copy(alpha = 0.5f),
+                        tint = LocalScreenChrome.current.accent.copy(alpha = 0.5f),
                         modifier = Modifier.size(artSize * 0.3f),
                     )
                 }
@@ -2816,7 +2782,7 @@ private fun ImmersiveStage(
                             .align(Alignment.BottomEnd)
                             .padding(8.dp)
                             .clip(RoundedCornerShape(4.dp))
-                            .background(AudioAccent.copy(alpha = 0.95f))
+                            .background(LocalScreenChrome.current.accent.copy(alpha = 0.95f))
                             .padding(horizontal = 7.dp, vertical = 3.dp),
                     )
                 }
@@ -2853,7 +2819,7 @@ private fun ImmersiveStage(
                         // Artist — gold; OK opens that artist's albums in Browse
                         MetaLink(
                             text = artist,
-                            color = AudioAccent,
+                            color = LocalScreenChrome.current.accent,
                             fontSize = artistSize,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 2,
@@ -2867,7 +2833,7 @@ private fun ImmersiveStage(
                             Spacer(Modifier.height((4.dp * scale).coerceAtLeast(2.dp)))
                             MetaLink(
                                 text = albumArtist,
-                                color = AudioAccent.copy(alpha = 0.72f),
+                                color = LocalScreenChrome.current.accent.copy(alpha = 0.72f),
                                 fontSize = metaSize,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 2,
@@ -2980,7 +2946,7 @@ private fun ImmersiveStage(
                             .fillMaxHeight()
                             .background(
                                 Brush.horizontalGradient(
-                                    listOf(AudioAccentWarm, AudioAccent, Color(0xFFFFE08A)),
+                                    listOf(LocalScreenChrome.current.accentWarm, LocalScreenChrome.current.accent, Color(0xFFFFE08A)),
                                 ),
                             ),
                     )
@@ -3428,7 +3394,7 @@ private fun BrowseDrawer(
                     albumTitleFilter != null -> "MATCHING ALBUMS"
                     else -> "BROWSE"
                 },
-                color = AudioAccent.copy(alpha = 0.85f),
+                color = LocalScreenChrome.current.accent.copy(alpha = 0.85f),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.6.sp,
@@ -3803,7 +3769,7 @@ private fun BrowseDrawer(
                     ) {
                         Text(
                             "Year $albumYearFilter",
-                            color = AudioAccent,
+                            color = LocalScreenChrome.current.accent,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             fontFamily = PallasFontFamily,
@@ -4550,7 +4516,7 @@ private fun ArtistAlbumsBrowse(
                     item(key = "__albums_header__") {
                         Text(
                             "ALBUMS",
-                            color = AudioAccent.copy(alpha = 0.85f),
+                            color = LocalScreenChrome.current.accent.copy(alpha = 0.85f),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.4.sp,
@@ -4576,7 +4542,7 @@ private fun ArtistAlbumsBrowse(
                     item(key = "__tracks_header__") {
                         Text(
                             "TRACKS",
-                            color = AudioAccent.copy(alpha = 0.85f),
+                            color = LocalScreenChrome.current.accent.copy(alpha = 0.85f),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.4.sp,
@@ -4656,7 +4622,7 @@ private fun EmptyBrowseHint(
         ) {
             if (waiting) {
                 androidx.compose.material3.CircularProgressIndicator(
-                    color = AudioAccent,
+                    color = LocalScreenChrome.current.accent,
                     strokeWidth = 3.dp,
                     modifier = Modifier.size(36.dp),
                 )
@@ -4677,13 +4643,13 @@ private fun EmptyBrowseHint(
                     androidx.compose.material3.LinearProgressIndicator(
                         progress = { progress.coerceIn(0f, 1f) },
                         modifier = barMod,
-                        color = AudioAccent,
+                        color = LocalScreenChrome.current.accent,
                         trackColor = Color.White.copy(alpha = 0.12f),
                     )
                 } else {
                     androidx.compose.material3.LinearProgressIndicator(
                         modifier = barMod,
-                        color = AudioAccent,
+                        color = LocalScreenChrome.current.accent,
                         trackColor = Color.White.copy(alpha = 0.12f),
                     )
                 }
@@ -4855,7 +4821,7 @@ private fun FolderBrowser(
                                 }
                             }
                         },
-                        color = AudioAccent.copy(alpha = 0.85f),
+                        color = LocalScreenChrome.current.accent.copy(alpha = 0.85f),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.sp,
@@ -5053,7 +5019,7 @@ private fun PlaylistAddSheet(
             Box(modifier = Modifier.fillMaxWidth()) {
                 Text(
                     "ADD TO PLAYLIST",
-                    color = AudioAccent.copy(alpha = 0.9f),
+                    color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.4.sp,

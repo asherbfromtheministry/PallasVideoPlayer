@@ -55,9 +55,8 @@ import com.vizvag.shieldvideo.ui.browser.nasShareIcon
 import com.vizvag.shieldvideo.ui.browser.orderedSharesForRail
 import com.vizvag.shieldvideo.ui.components.IconActionButton
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
-import com.vizvag.shieldvideo.ui.theme.LiveTvChrome
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
+import com.vizvag.shieldvideo.ui.theme.LiveTvChrome
 import com.vizvag.shieldvideo.ui.theme.MusicChrome
 import com.vizvag.shieldvideo.ui.theme.PodcastChrome
 import com.vizvag.shieldvideo.ui.theme.RadioChrome
@@ -268,6 +267,7 @@ fun HomeLandingScreen(
     var entered by remember { mutableStateOf(false) }
     val initialFocusKey = remember(hotspots) {
         when {
+            hotspots.any { it.key == "youtube" } -> "youtube"
             hotspots.any { it.key == "library" } -> "library"
             else -> hotspots.firstOrNull()?.key
         }
@@ -347,14 +347,6 @@ fun HomeLandingScreen(
                     fontWeight = FontWeight.Bold,
                     fontSize = titleSp,
                     letterSpacing = (-1.2).sp,
-                )
-                Text(
-                    text = "CHOOSE A DEVICE",
-                    color = Accent.copy(alpha = 0.92f),
-                    fontFamily = PallasFontFamily,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = if (compactChrome) 10.sp else 12.sp,
-                    letterSpacing = 3.sp,
                 )
             }
 

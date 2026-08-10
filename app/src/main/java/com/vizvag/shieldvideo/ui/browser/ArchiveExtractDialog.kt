@@ -43,10 +43,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.Accent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.AppBackground
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextCream
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.rememberTvFeedback
 import kotlinx.coroutines.delay
 
@@ -94,7 +97,7 @@ fun ArchiveExtractDialog(
                     LinearProgressIndicator(
                         progress = { state.progress.coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth(),
-                        color = Accent,
+                        color = LocalScreenChrome.current.accent,
                         trackColor = Color.White.copy(alpha = 0.12f),
                     )
                     Spacer(modifier = Modifier.height(4.dp))
@@ -160,7 +163,7 @@ fun ExtractMiniProgressBar(
             .background(Color.Black.copy(alpha = 0.72f))
             .border(
                 width = if (focused) 1.dp else 0.dp,
-                color = if (focused) Accent else Color.Transparent,
+                color = if (focused) LocalScreenChrome.current.accent else Color.Transparent,
             )
             .onFocusChanged {
                 val gained = it.isFocused && !focused
@@ -193,7 +196,7 @@ fun ExtractMiniProgressBar(
         ) {
             Text(
                 text = "Extracting ${item.entry.name}",
-                color = if (focused) Accent else TextCream.copy(alpha = 0.85f),
+                color = if (focused) LocalScreenChrome.current.accent else TextCream.copy(alpha = 0.85f),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
@@ -219,7 +222,7 @@ fun ExtractMiniProgressBar(
                 modifier = Modifier
                     .fillMaxWidth(state.progress.coerceIn(0.02f, 1f))
                     .height(3.dp)
-                    .background(Accent),
+                    .background(LocalScreenChrome.current.accent),
             )
         }
     }
@@ -269,7 +272,7 @@ private fun ArchiveActionRow(
             .focusable(interactionSource = interaction)
             .padding(horizontal = 14.dp, vertical = 12.dp),
     ) {
-        Text(title, color = if (focused) Accent else TextCream, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Text(title, color = if (focused) LocalScreenChrome.current.accent else TextCream, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
         if (!subtitle.isNullOrBlank()) {
             Text(subtitle, color = TextMuted, fontSize = 12.sp)
         }

@@ -104,7 +104,6 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import coil.compose.AsyncImage
-import com.vizvag.shieldvideo.data.iptv.ChannelQuality
 import com.vizvag.shieldvideo.data.iptv.EpgChannelEntry
 import com.vizvag.shieldvideo.data.iptv.GroupChannelOrder
 import com.vizvag.shieldvideo.data.iptv.IptvChannel
@@ -126,7 +125,6 @@ import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.notice.ForwardFlashNotice
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.Motion
 import com.vizvag.shieldvideo.ui.theme.PallasFontFamily
@@ -201,8 +199,7 @@ fun IptvScreen(
     val videoDetails = rememberLiveVideoDetails(exoPlayer, state.previewChannel?.id)
     val liveBadges = videoDetails.badges
     // Live measurement resets on every zap and needs ~1s of rendered frames; until it is
-    // confirmed, keep showing the badges measured the last time this channel played instead
-    // of reverting to name-derived hints (which made the resolution appear to change).
+    // confirmed, keep showing badges measured the last time this channel played (if any).
     val cachedBadges = remember(state.previewChannel?.id) {
         state.previewChannel
             ?.takeIf { viewModel.badgesConfirmedFor(it) }
@@ -218,7 +215,6 @@ fun IptvScreen(
             onDispose { }
         } else {
             app.sleepTimer.bindPlayback(
-                onVolume = { exoPlayer.volume = it },
                 onStop = {
                     exoPlayer.pause()
                     viewModel.closeFullscreen()
@@ -489,11 +485,11 @@ fun IptvScreen(
                     onValueChange = { pinInput = it.filter { c -> c.isDigit() }.take(8) },
                     label = { Text("PIN") },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = CyanAccent,
+                        focusedBorderColor = LocalScreenChrome.current.accent,
                         unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        cursorColor = CyanAccent
+                        cursorColor = LocalScreenChrome.current.accent
                     )
                 )
             },
@@ -501,7 +497,7 @@ fun IptvScreen(
                 TextButton(onClick = {
                     viewModel.submitPin(pinInput)
                     pinInput = ""
-                }) { Text("Unlock", color = CyanAccent) }
+                }) { Text("Unlock", color = LocalScreenChrome.current.accent) }
             },
             dismissButton = {
                 TextButton(onClick = {
@@ -519,7 +515,7 @@ fun IptvScreen(
             title = { Text("Player missing", color = Color.White) },
             text = { Text("Install VLC or pick another player in Settings.", color = TextMuted) },
             confirmButton = {
-                TextButton(onClick = viewModel::dismissVlcMissing) { Text("OK", color = CyanAccent) }
+                TextButton(onClick = viewModel::dismissVlcMissing) { Text("OK", color = LocalScreenChrome.current.accent) }
             },
             containerColor = CardSurface
         )
@@ -625,7 +621,7 @@ private fun EpgMatchProgressPanel(
             ) {
                 Text(
                     text = if (matching) "AI EPG MATCHING" else "AI EPG MATCH RESULTS",
-                    color = CyanAccent,
+                    color = LocalScreenChrome.current.accent,
                     fontFamily = PallasFontFamily,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
@@ -659,7 +655,7 @@ private fun EpgMatchProgressPanel(
                             modifier = Modifier
                                 .fillMaxWidth(fraction)
                                 .fillMaxHeight()
-                                .background(CyanAccent),
+                                .background(LocalScreenChrome.current.accent),
                         )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
@@ -699,7 +695,7 @@ private fun EpgMatchProgressPanel(
                             )
                             Text(
                                 text = if (line.matched) line.epgName.orEmpty() else "no match",
-                                color = if (line.matched) CyanAccent else TextMuted,
+                                color = if (line.matched) LocalScreenChrome.current.accent else TextMuted,
                                 fontFamily = PallasFontFamily,
                                 fontSize = 15.sp,
                                 fontWeight = if (line.matched) FontWeight.SemiBold else FontWeight.Normal,
@@ -849,12 +845,6 @@ private fun LiveTvStage(
         browseChromeAlpha = 1f
     }
 
-    val quality = remember(previewChannel?.name, state.rows) {
-        previewChannel?.let { ch ->
-            state.rows.firstOrNull { it.channel.id == ch.id }?.badges?.takeIf { it.isNotEmpty() }
-                ?: ChannelQuality.labelsFor(ch.name)
-        }.orEmpty()
-    }
     // Advance now/next while the browse stage stays open (was frozen at first composition).
     var epgClockMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -985,7 +975,7 @@ private fun LiveTvStage(
             Column {
                 Text(
                     text = "PLAYING",
-                    color = CyanAccent,
+                    color = LocalScreenChrome.current.accent,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.sp
@@ -1004,12 +994,12 @@ private fun LiveTvStage(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    // Real decoded-stream info once playing; name-derived hints until then.
-                    (streamBadges.ifEmpty { quality }).forEach {
+                    // Confirmed decoder badges only (live or cached from a prior watch).
+                    streamBadges.forEach {
                         QualityChip(
                             label = it,
                             compact = true,
-                            confirmed = streamBadges.isNotEmpty()
+                            confirmed = true
                         )
                     }
                 }
@@ -1073,7 +1063,7 @@ private fun LiveTvStage(
             Column {
                 Text(
                     text = "LIVE TV",
-                    color = CyanAccent,
+                    color = LocalScreenChrome.current.accent,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.sp
@@ -1208,12 +1198,12 @@ private fun LiveTvStage(
                     singleLine = true,
                     label = { Text("Display name") },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = CyanAccent,
+                        focusedBorderColor = LocalScreenChrome.current.accent,
                         unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        cursorColor = CyanAccent,
-                        focusedLabelColor = CyanAccent,
+                        cursorColor = LocalScreenChrome.current.accent,
+                        focusedLabelColor = LocalScreenChrome.current.accent,
                         unfocusedLabelColor = TextMuted
                     )
                 )
@@ -1225,7 +1215,7 @@ private fun LiveTvStage(
                         renameGroupKey = null
                     }
                 ) {
-                    Text("Save", color = CyanAccent, fontWeight = FontWeight.Bold)
+                    Text("Save", color = LocalScreenChrome.current.accent, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -1318,12 +1308,12 @@ private fun LiveTvStage(
                     singleLine = true,
                     label = { Text("Display name") },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = CyanAccent,
+                        focusedBorderColor = LocalScreenChrome.current.accent,
                         unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        cursorColor = CyanAccent,
-                        focusedLabelColor = CyanAccent,
+                        cursorColor = LocalScreenChrome.current.accent,
+                        focusedLabelColor = LocalScreenChrome.current.accent,
                         unfocusedLabelColor = TextMuted
                     )
                 )
@@ -1334,7 +1324,7 @@ private fun LiveTvStage(
                         onRenameChannel(row.channel.id, renameDraft)
                         renameRow = null
                     }
-                ) { Text("Save", color = CyanAccent) }
+                ) { Text("Save", color = LocalScreenChrome.current.accent) }
             },
             dismissButton = {
                 TextButton(onClick = { renameRow = null }) {
@@ -1743,7 +1733,7 @@ private fun FullscreenStreamInfoDialog(
                     .fillMaxHeight(0.84f)
                     .clip(RoundedCornerShape(16.dp))
                     .background(CardSurface)
-                    .border(1.dp, CyanAccent.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                    .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
                     .padding(20.dp)
             ) {
                 Row(
@@ -1754,7 +1744,7 @@ private fun FullscreenStreamInfoDialog(
                         Text("Stream information", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                         Text("${channel.name} · $groupName", color = TextMuted, fontSize = 13.sp)
                     }
-                    TextButton(onClick = onDismiss) { Text("Close", color = CyanAccent) }
+                    TextButton(onClick = onDismiss) { Text("Close", color = LocalScreenChrome.current.accent) }
                 }
                 LazyColumn(
                     modifier = Modifier
@@ -1767,7 +1757,12 @@ private fun FullscreenStreamInfoDialog(
                         StreamInfoRow(
                             "Resolution",
                             if (video.width > 0 && video.height > 0) {
-                                "${video.width} × ${video.height}"
+                                val playing = "${video.width} × ${video.height}"
+                                if (video.maxHeight > video.height) {
+                                    "$playing (max ${resolutionBadgeLabel(video.maxHeight) ?: "${video.maxHeight}p"})"
+                                } else {
+                                    playing
+                                }
                             } else {
                                 "Unknown"
                             }
@@ -1850,7 +1845,7 @@ private fun FullscreenStreamInfoDialog(
 private fun StreamInfoHeading(text: String) {
     Text(
         text = text,
-        color = CyanAccent,
+        color = LocalScreenChrome.current.accent,
         fontSize = 11.sp,
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.sp,
@@ -1958,7 +1953,7 @@ private fun FullscreenEpgTile(nowNext: IptvNowNext, recordingNow: Boolean) {
                 ) {
                     Text(
                         text = "NOW",
-                        color = CyanAccent,
+                        color = LocalScreenChrome.current.accent,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -2008,7 +2003,7 @@ private fun FullscreenEpgTile(nowNext: IptvNowNext, recordingNow: Boolean) {
                     modifier = Modifier
                         .fillMaxWidth(progress)
                         .fillMaxHeight()
-                        .background(if (recordingNow) Color(0xFFFF5252) else CyanAccent)
+                        .background(if (recordingNow) Color(0xFFFF5252) else LocalScreenChrome.current.accent)
                 )
             }
         }
@@ -2086,7 +2081,7 @@ private fun FullscreenHistoryDialog(
                     .fillMaxHeight(0.82f)
                     .clip(RoundedCornerShape(16.dp))
                     .background(CardSurface)
-                    .border(1.dp, CyanAccent.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                    .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
                     .padding(18.dp)
             ) {
                 Row(modifier = Modifier.fillMaxWidth()) {
@@ -2108,7 +2103,7 @@ private fun FullscreenHistoryDialog(
                             item {
                                 Text(
                                     "LIVE TV",
-                                    color = CyanAccent,
+                                    color = LocalScreenChrome.current.accent,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     letterSpacing = 1.sp
@@ -2131,7 +2126,7 @@ private fun FullscreenHistoryDialog(
                             if (recent.id == currentChannelId) {
                                 Text(
                                     text = "NOW PLAYING",
-                                    color = CyanAccent,
+                                    color = LocalScreenChrome.current.accent,
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(start = 10.dp)
@@ -2399,14 +2394,14 @@ private fun ChannelRowCard(
             Icon(
                 if (row.favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                 contentDescription = "Favorite",
-                tint = if (row.favorite) CyanAccent else Color.White,
+                tint = if (row.favorite) LocalScreenChrome.current.accent else Color.White,
                 modifier = Modifier.size(22.dp)
             )
         }
         Box(modifier = Modifier.width(6.dp))
         Text(
             text = "Guide",
-            color = CyanAccent,
+            color = LocalScreenChrome.current.accent,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier
                 .clip(RoundedCornerShape(10.dp))
@@ -2465,7 +2460,7 @@ private fun AssignEpgDialog(
                 if (!currentEpgId.isNullOrBlank()) {
                     Text(
                         text = "Current: $currentEpgId",
-                        color = CyanAccent.copy(alpha = 0.9f),
+                        color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                         fontSize = 13.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -2486,12 +2481,12 @@ private fun AssignEpgDialog(
                     singleLine = true,
                     label = { Text("Search EPG channels") },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = CyanAccent,
+                        focusedBorderColor = LocalScreenChrome.current.accent,
                         unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        cursorColor = CyanAccent,
-                        focusedLabelColor = CyanAccent,
+                        cursorColor = LocalScreenChrome.current.accent,
+                        focusedLabelColor = LocalScreenChrome.current.accent,
                         unfocusedLabelColor = TextMuted
                     )
                 )
@@ -2546,7 +2541,7 @@ private fun AssignEpgDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close", color = CyanAccent)
+                Text("Close", color = LocalScreenChrome.current.accent)
             }
         },
         dismissButton = {
@@ -2592,7 +2587,7 @@ private fun RecordChannelDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (upcoming.isNotEmpty()) {
-                    Text("PROGRAMME", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("PROGRAMME", color = LocalScreenChrome.current.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     upcoming.forEachIndexed { index, programme ->
                         val airing = programme.startMs <= now && programme.stopMs > now
                         val recording = isRecording(programme)
@@ -2620,7 +2615,7 @@ private fun RecordChannelDialog(
                 } else {
                     Text("No current or upcoming EPG programme found.", color = TextMuted, fontSize = 13.sp)
                 }
-                Text("TIME PERIOD", color = CyanAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("TIME PERIOD", color = LocalScreenChrome.current.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(30, 60, 120).forEach { minutes ->
                         TextButton(onClick = { onRecordMinutes(minutes) }) {
@@ -2642,9 +2637,9 @@ private fun RecordChannelDialog(
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White,
-                            focusedBorderColor = CyanAccent,
+                            focusedBorderColor = LocalScreenChrome.current.accent,
                             unfocusedBorderColor = TextMuted,
-                            focusedLabelColor = CyanAccent,
+                            focusedLabelColor = LocalScreenChrome.current.accent,
                             unfocusedLabelColor = TextMuted
                         ),
                         modifier = Modifier.weight(1f)
@@ -2656,7 +2651,7 @@ private fun RecordChannelDialog(
                                 ?.let(onRecordMinutes)
                         }
                     ) {
-                        Text("Record", color = CyanAccent, fontWeight = FontWeight.Bold)
+                        Text("Record", color = LocalScreenChrome.current.accent, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -2720,7 +2715,7 @@ private fun RecordingProgrammeRow(
             text = label,
             color = when {
                 recording -> Color(0xFFFF8A80)
-                airing -> CyanAccent
+                airing -> LocalScreenChrome.current.accent
                 else -> Color.White
             },
             fontSize = 14.sp,
@@ -2731,7 +2726,7 @@ private fun RecordingProgrammeRow(
         Icon(
             imageVector = if (recording) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
             contentDescription = if (recording) "Stop recording" else "Record",
-            tint = if (recording) Color(0xFFFF5252) else CyanAccent,
+            tint = if (recording) Color(0xFFFF5252) else LocalScreenChrome.current.accent,
             modifier = Modifier.size(22.dp)
         )
     }
@@ -2764,7 +2759,7 @@ private fun GuideDialog(
                     onClick = onPlayLive,
                     modifier = Modifier.focusRequester(firstFocus)
                 ) {
-                    Text("Preview / fullscreen", color = CyanAccent, fontWeight = FontWeight.Bold)
+                    Text("Preview / fullscreen", color = LocalScreenChrome.current.accent, fontWeight = FontWeight.Bold)
                 }
                 Box(modifier = Modifier.height(8.dp))
                 if (programmes.isEmpty()) {
@@ -2798,7 +2793,7 @@ private fun GuideDialog(
                                 ) {
                                     if (catchup) {
                                         TextButton(onClick = { onCatchup(p) }) {
-                                            Text("Catch-up", color = CyanAccent, fontSize = 13.sp)
+                                            Text("Catch-up", color = LocalScreenChrome.current.accent, fontSize = 13.sp)
                                         }
                                     } else if (!past) {
                                         TextButton(onClick = onPlayLive) {
@@ -2820,7 +2815,7 @@ private fun GuideDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close", color = CyanAccent) }
+            TextButton(onClick = onDismiss) { Text("Close", color = LocalScreenChrome.current.accent) }
         },
         containerColor = CardSurface
     )
@@ -2850,7 +2845,7 @@ private fun RecordingActionIcon(
         Icon(
             imageVector = if (recording) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
             contentDescription = null,
-            tint = if (recording) Color(0xFFFF5252) else CyanAccent,
+            tint = if (recording) Color(0xFFFF5252) else LocalScreenChrome.current.accent,
             modifier = Modifier.size(22.dp)
         )
     }
@@ -2866,7 +2861,7 @@ private fun RecordingsPane(
     Column(modifier = Modifier.fillMaxSize().padding(28.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Recordings", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            TextButton(onClick = onClose) { Text("Close", color = CyanAccent) }
+            TextButton(onClick = onClose) { Text("Close", color = LocalScreenChrome.current.accent) }
         }
         if (recordings.isEmpty()) {
             Text("No recordings yet. Use Rec on a channel or Record in the guide.", color = TextMuted)
@@ -2895,7 +2890,7 @@ private fun RecordingsPane(
                                 Text("Stop & save", color = Color(0xFFFF8A80), fontWeight = FontWeight.Bold)
                             }
                         } else if (r.status == IptvRecordingStatus.SAVING) {
-                            Text("Converting…", color = CyanAccent, fontSize = 13.sp)
+                            Text("Converting…", color = LocalScreenChrome.current.accent, fontSize = 13.sp)
                         } else {
                             TextButton(onClick = { onRemove(r.id) }) {
                                 Text("Remove", color = TextMuted)
@@ -2947,15 +2942,15 @@ private fun IptvSearchOverlay(
                         label = { Text("Search channels & shows") },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CyanAccent,
+                            focusedBorderColor = LocalScreenChrome.current.accent,
                             unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White,
-                            cursorColor = CyanAccent
+                            cursorColor = LocalScreenChrome.current.accent
                         )
                     )
                     Box(modifier = Modifier.width(12.dp))
-                    TextButton(onClick = onClose) { Text("Close", color = CyanAccent) }
+                    TextButton(onClick = onClose) { Text("Close", color = LocalScreenChrome.current.accent) }
                 }
                 Box(modifier = Modifier.height(12.dp))
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -3033,7 +3028,7 @@ private fun IptvSearchOverlay(
                 ) {
                     Text(
                         if (row.favorite) "Remove favorite" else "Add favorite",
-                        color = CyanAccent
+                        color = LocalScreenChrome.current.accent
                     )
                 }
             },
@@ -3059,7 +3054,7 @@ private fun SearchChannelRow(
     var longPressJob by remember { mutableStateOf<Job?>(null) }
     var longPressFired by remember { mutableStateOf(false) }
     val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
-    val quality = row.badges.ifEmpty { ChannelQuality.labelsFor(row.channel.name) }
+    val quality = row.badges
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -3130,7 +3125,7 @@ private fun SearchChannelRow(
             Icon(
                 Icons.Filled.Favorite,
                 contentDescription = "Favorite",
-                tint = CyanAccent,
+                tint = LocalScreenChrome.current.accent,
                 modifier = Modifier.size(18.dp)
             )
         }

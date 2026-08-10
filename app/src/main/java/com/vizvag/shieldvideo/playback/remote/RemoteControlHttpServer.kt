@@ -134,7 +134,8 @@ class RemoteControlHttpServer(
 
         when {
             method == "GET" && path == "/v1/status" -> {
-                writeResponse(s, 200, router.status().toJson().toString())
+                val json = runBlocking { router.statusJson() }
+                writeResponse(s, 200, json)
             }
             method == "POST" && path == "/v1/transport" -> {
                 val json = runCatching { JSONObject(body.ifBlank { "{}" }) }.getOrElse {
@@ -164,7 +165,7 @@ class RemoteControlHttpServer(
                     router.transport(action, json.optLong("positionMs"))
                 }
                 if (result.isSuccess) {
-                    writeResponse(s, 200, router.status().toJson().toString())
+                    writeResponse(s, 200, runBlocking { router.statusJson() })
                 } else {
                     writeResponse(
                         s,
@@ -193,7 +194,7 @@ class RemoteControlHttpServer(
                     router.play(request)
                 }
                 if (result.isSuccess) {
-                    writeResponse(s, 200, router.status().toJson().toString())
+                    writeResponse(s, 200, runBlocking { router.statusJson() })
                 } else {
                     writeResponse(
                         s,
@@ -249,7 +250,7 @@ class RemoteControlHttpServer(
                     )
                 }
                 if (result.isSuccess) {
-                    writeResponse(s, 200, router.status().toJson().toString())
+                    writeResponse(s, 200, runBlocking { router.statusJson() })
                 } else {
                     writeResponse(
                         s,
@@ -269,7 +270,7 @@ class RemoteControlHttpServer(
                 val route = json.optString("route").trim()
                 val result = runBlocking { router.navigate(route) }
                 if (result.isSuccess) {
-                    writeResponse(s, 200, router.status().toJson().toString())
+                    writeResponse(s, 200, runBlocking { router.statusJson() })
                 } else {
                     writeResponse(
                         s,

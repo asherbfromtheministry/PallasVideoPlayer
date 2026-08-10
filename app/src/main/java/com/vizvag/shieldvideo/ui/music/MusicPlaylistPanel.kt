@@ -81,7 +81,6 @@ import com.vizvag.shieldvideo.music.data.metadata.MetadataResolver
 import com.vizvag.shieldvideo.music.data.trackDiscNumber
 import com.vizvag.shieldvideo.music.ui.AlbumArt
 import com.vizvag.shieldvideo.ui.components.glassInteract
-import com.vizvag.shieldvideo.ui.theme.AudioAccent
 import com.vizvag.shieldvideo.ui.theme.AudioTextMuted
 import com.vizvag.shieldvideo.ui.theme.LocalLiteVisuals
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
@@ -301,7 +300,7 @@ private fun PlaylistHeader(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     "QUEUE",
-                    color = AudioAccent.copy(alpha = 0.9f),
+                    color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 2.sp,
@@ -346,7 +345,7 @@ private fun PlaylistProgressRail(progress: Float, moving: Boolean) {
         animationSpec = tween(420, easing = FastOutSlowInEasing),
         label = "queueProgress",
     )
-    val accent = if (moving) PlaylistMoveAccent else AudioAccent
+    val accent = if (moving) PlaylistMoveAccent else LocalScreenChrome.current.accent
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
@@ -498,15 +497,15 @@ private fun PlaylistEmptyState(
                 .clip(RoundedCornerShape(PallasShapes.control))
                 .background(
                     Brush.radialGradient(
-                        listOf(AudioAccent.copy(alpha = 0.22f), Color.Transparent),
+                        listOf(LocalScreenChrome.current.accent.copy(alpha = 0.22f), Color.Transparent),
                     ),
                 )
-                .border(1.dp, AudioAccent.copy(alpha = 0.35f), RoundedCornerShape(PallasShapes.control)),
+                .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.35f), RoundedCornerShape(PallasShapes.control)),
         ) {
             Icon(
                 Icons.AutoMirrored.Filled.QueueMusic,
                 contentDescription = null,
-                tint = AudioAccent,
+                tint = LocalScreenChrome.current.accent,
                 modifier = Modifier.size(34.dp),
             )
         }
@@ -548,7 +547,7 @@ private fun PlaylistDiscHeader(disc: Int, trackCount: Int) {
     ) {
         Text(
             "DISC $disc",
-            color = AudioAccent,
+            color = LocalScreenChrome.current.accent,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.8.sp,
@@ -559,7 +558,7 @@ private fun PlaylistDiscHeader(disc: Int, trackCount: Int) {
                 .padding(horizontal = 10.dp)
                 .weight(1f)
                 .height(1.dp)
-                .background(AudioAccent.copy(alpha = 0.35f)),
+                .background(LocalScreenChrome.current.accent.copy(alpha = 0.35f)),
         )
         Text(
             "$trackCount tracks",
@@ -574,7 +573,7 @@ private fun PlaylistDiscHeader(disc: Int, trackCount: Int) {
 private fun PlaylistSectionLabel(label: String) {
     Text(
         label,
-        color = AudioAccent.copy(alpha = 0.85f),
+        color = LocalScreenChrome.current.accent.copy(alpha = 0.85f),
         fontSize = 10.sp,
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.8.sp,
@@ -718,7 +717,7 @@ private fun PlaylistTrackRow(
                         width = 1.dp,
                         color = when {
                             moving -> PlaylistMoveAccent.copy(alpha = 0.7f)
-                            current -> AudioAccent.copy(alpha = 0.55f)
+                            current -> LocalScreenChrome.current.accent.copy(alpha = 0.55f)
                             else -> Color.White.copy(alpha = 0.10f)
                         },
                         shape = RoundedCornerShape(4.dp),
@@ -732,7 +731,7 @@ private fun PlaylistTrackRow(
                         .background(Color.Black.copy(alpha = 0.45f)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    MiniEqualizer(active = true, color = AudioAccent)
+                    MiniEqualizer(active = true, color = LocalScreenChrome.current.accent)
                 }
             }
         }
@@ -762,7 +761,7 @@ private fun PlaylistTrackRow(
                 },
                 color = when {
                     moving -> PlaylistMoveAccent.copy(alpha = 0.95f)
-                    current -> AudioAccent.copy(alpha = 0.85f)
+                    current -> LocalScreenChrome.current.accent.copy(alpha = 0.85f)
                     else -> AudioTextMuted
                 },
                 fontSize = 10.sp,
@@ -784,7 +783,7 @@ private fun PlaylistTrackRow(
             else -> Text(
                 if (trackDurationMs > 0) formatTrackTime(trackDurationMs) else "%02d".format(index + 1),
                 color = when {
-                    current -> AudioAccent.copy(alpha = 0.9f)
+                    current -> LocalScreenChrome.current.accent.copy(alpha = 0.9f)
                     focused -> Color.White.copy(alpha = 0.75f)
                     else -> AudioTextMuted.copy(alpha = 0.7f)
                 },

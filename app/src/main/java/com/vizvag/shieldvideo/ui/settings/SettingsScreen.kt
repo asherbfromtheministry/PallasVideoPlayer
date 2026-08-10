@@ -98,7 +98,6 @@ import com.vizvag.shieldvideo.playback.NotificationAccessHelper
 import com.vizvag.shieldvideo.ui.components.AmbientBackdrop
 import com.vizvag.shieldvideo.ui.components.glassInteract
 import com.vizvag.shieldvideo.ui.notice.AppNoticeBus
-import com.vizvag.shieldvideo.ui.theme.Accent
 import com.vizvag.shieldvideo.ui.theme.AppBackground
 import com.vizvag.shieldvideo.ui.theme.CardSurface
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
@@ -148,19 +147,6 @@ fun SettingsScreen(
                 )
             }
             viewModel.update { it.copy(iptvRecordingLocalTreeUri = uri.toString()) }
-        }
-    }
-    val youtubeSubsCsvLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-        }.onSuccess { text ->
-            if (text != null) viewModel.importSubscriptionsCsv(text)
-            else viewModel.setYoutubeAuthMessage("Could not read that file")
-        }.onFailure { e ->
-            viewModel.setYoutubeAuthMessage(e.message ?: "Could not read CSV")
         }
     }
     var showLeaveConfirm by remember { mutableStateOf(false) }
@@ -275,7 +261,7 @@ fun SettingsScreen(
                 if (state.isDirty) {
                     Text(
                         text = "Unsaved",
-                        color = Accent,
+                        color = LocalScreenChrome.current.accent,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 0.4.sp,
@@ -328,16 +314,9 @@ fun SettingsScreen(
                     ) {
                         // Entry target for D-pad Right from the tab rail. Immediately hops to the
                         // first real control so focus is never stuck on an invisible 1dp box.
-                        // YouTube attaches contentFocusRequester to its first field instead.
                         Box(
                             modifier = Modifier
-                                .then(
-                                    if (selectedTab != SettingsTab.YouTube) {
-                                        Modifier.focusRequester(contentFocusRequester)
-                                    } else {
-                                        Modifier
-                                    }
-                                )
+                                .focusRequester(contentFocusRequester)
                                 .onFocusChanged { focusState ->
                                     if (focusState.isFocused) {
                                         contentFocusScope.launch {
@@ -348,7 +327,7 @@ fun SettingsScreen(
                                         }
                                     }
                                 }
-                                .focusable(enabled = selectedTab != SettingsTab.YouTube)
+                                .focusable()
                                 .fillMaxWidth()
                                 .height(1.dp)
                                 .onPreviewKeyEvent { event ->
@@ -371,7 +350,7 @@ fun SettingsScreen(
                         )
                         Text(
                             text = selectedTab.label.uppercase(),
-                            color = Accent,
+                            color = LocalScreenChrome.current.accent,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 2.sp
@@ -420,23 +399,6 @@ fun SettingsScreen(
                                 state = state,
                                 fieldColors = fieldColors,
                                 viewModel = viewModel,
-                                contentFocusRequester = contentFocusRequester,
-                                onMoveFocusToTabs = ::focusTabs,
-                                onPickSubscriptionsCsv = {
-                                    youtubeSubsCsvLauncher.launch(
-                                        arrayOf("text/*", "text/csv", "application/csv", "*/*")
-                                    )
-                                },
-                                onImportFromDownloads = {
-                                    val text = readSubscriptionsCsvFromDevice(context)
-                                    if (text != null) {
-                                        viewModel.importSubscriptionsCsv(text)
-                                    } else {
-                                        viewModel.setYoutubeAuthMessage(
-                                            "No subscriptions.csv in Download/ — push it to the TV first"
-                                        )
-                                    }
-                                },
                             )
                             SettingsTab.Radio -> RadioSettingsTab(
                                 draft = draft,
@@ -688,7 +650,7 @@ private fun SettingsRailItem(
                 .clip(RoundedCornerShape(2.dp))
                 .background(
                     when {
-                        selected || focused -> Accent
+                        selected || focused -> LocalScreenChrome.current.accent
                         else -> Color.Transparent
                     }
                 )
@@ -1450,14 +1412,10 @@ private fun YouTubeSettingsTab(
     state: SettingsUiState,
     fieldColors: TextFieldColors,
     viewModel: SettingsViewModel,
-    contentFocusRequester: FocusRequester,
-    onMoveFocusToTabs: () -> Unit,
-    onPickSubscriptionsCsv: () -> Unit,
-    onImportFromDownloads: () -> Unit,
 ) {
     SectionHint(
-        "Link your real YouTube account with a TV code (same idea as SmartTube). " +
-            "Search still uses Piped as a public API."
+        "Link your YouTube account with a TV code (same idea as SmartTube). " +
+            "Search uses a public Piped API instance when needed."
     )
     Text(
         text = if (draft.isYoutubeTvLinked) {
@@ -1468,19 +1426,8 @@ private fun YouTubeSettingsTab(
         color = LocalScreenChrome.current.accent,
         fontWeight = FontWeight.Bold,
         fontSize = 11.sp,
-        modifier = Modifier
-            .focusRequester(contentFocusRequester)
-            .tvBringIntoView()
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft) {
-                    onMoveFocusToTabs()
-                    true
-                } else {
-                    false
-                }
-            },
     )
-    Spacer(Modifier.height(8.dp))
+    Spacer(modifier = Modifier.height(8.dp))
     if (state.youtubeUserCode != null) {
         Text(
             text = "Code: ${state.youtubeUserCode}",
@@ -1493,7 +1440,7 @@ private fun YouTubeSettingsTab(
             color = TextMuted,
             fontSize = 12.sp,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (draft.isYoutubeTvLinked) {
@@ -1518,113 +1465,16 @@ private fun YouTubeSettingsTab(
             }
         }
     }
-    Spacer(Modifier.height(18.dp))
-    Text("Search API (Piped)", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+    Spacer(modifier = Modifier.height(18.dp))
+    Text("Search API", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 11.sp)
     Spacer(Modifier.height(6.dp))
     TvSettingsField(
-        label = "Piped API base URL",
+        label = "Piped API base URL (search / stream fallback)",
         value = draft.youtubePipedApiUrl,
         colors = fieldColors,
         modifier = Modifier.tvBringIntoView(),
         onChange = { value -> viewModel.update { it.copy(youtubePipedApiUrl = value) } },
     )
-    Spacer(Modifier.height(10.dp))
-    Text(
-        text = if (draft.isYoutubePipedLoggedIn) {
-            "Optional Piped account · signed in (legacy feed)"
-        } else {
-            "Optional Piped account · for legacy feed / Takeout import only"
-        },
-        color = TextMuted,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 11.sp,
-    )
-    Spacer(Modifier.height(8.dp))
-    TvSettingsField(
-        label = "Piped username",
-        value = draft.youtubePipedUsername,
-        colors = fieldColors,
-        modifier = Modifier.tvBringIntoView(),
-        onChange = { value -> viewModel.update { it.copy(youtubePipedUsername = value) } },
-    )
-    TvSettingsField(
-        label = "Piped password",
-        value = state.youtubePassword,
-        colors = fieldColors,
-        isPassword = true,
-        passwordVisible = state.youtubePasswordVisible,
-        onTogglePasswordVisible = viewModel::toggleYoutubePasswordVisible,
-        modifier = Modifier.tvBringIntoView(),
-        onChange = { value -> viewModel.setYoutubePassword(value) },
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (draft.isYoutubePipedLoggedIn) {
-            TvFocusButton(
-                onClick = viewModel::logoutPiped,
-                compact = true,
-                modifier = Modifier.tvBringIntoView(),
-            ) {
-                Text("Log out Piped", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-            TvFocusButton(
-                onClick = onImportFromDownloads,
-                compact = true,
-                modifier = Modifier.tvBringIntoView(),
-            ) {
-                Text(
-                    text = if (state.youtubeAuthBusy) "…" else "Import Takeout CSV",
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            TvFocusButton(
-                onClick = onPickSubscriptionsCsv,
-                compact = true,
-                modifier = Modifier.tvBringIntoView(),
-            ) {
-                Text(
-                    text = "Pick CSV",
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        } else {
-            TvFocusButton(
-                onClick = viewModel::loginPiped,
-                compact = true,
-                modifier = Modifier.tvBringIntoView(),
-            ) {
-                Text(
-                    text = if (state.youtubeAuthBusy && !state.youtubeLinking) "…" else "Piped log in",
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            TvFocusButton(
-                onClick = viewModel::registerPiped,
-                compact = true,
-                modifier = Modifier.tvBringIntoView(),
-            ) {
-                Text("Piped register", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-        }
-    }
-}
-
-private fun readSubscriptionsCsvFromDevice(context: android.content.Context): String? {
-    val candidates = listOf(
-        java.io.File("/sdcard/Download/subscriptions.csv"),
-        java.io.File("/storage/emulated/0/Download/subscriptions.csv"),
-        java.io.File(context.getExternalFilesDir(null), "subscriptions.csv"),
-        java.io.File(context.filesDir, "subscriptions.csv"),
-    )
-    for (file in candidates) {
-        val text = runCatching {
-            if (file.isFile && file.canRead()) file.readText() else null
-        }.getOrNull()
-        if (!text.isNullOrBlank()) return text
-    }
-    return null
 }
 
 @Composable
@@ -1939,7 +1789,7 @@ private fun IntegrationsSettingsTab(
         Text("Sleep timer → HA standby", color = Color.White, fontWeight = FontWeight.SemiBold)
     }
     Text(
-        text = "When the sleep timer ends, POSTs to …/pallas_sleep with {\"device\":\"<device id>\",\"action\":\"standby\"} so HA can turn this TV off.",
+        text = "When the sleep timer ends: stop all playback, blackout the UI, then POST …/pallas_sleep {\"device\",\"action\":\"standby\",\"blackout\":true}. If HA is off/misconfigured/fails, blackout stays so the screen goes dark without power-off.",
         color = TextMuted,
         fontSize = 11.sp
     )
@@ -2144,7 +1994,7 @@ private fun BackupSettingsTab(
 
     Spacer(modifier = Modifier.height(12.dp))
     Text(
-        "The backup includes NAS credentials, API keys/tokens, IPTV playlists, YouTube Piped API URL, custom radio stations, favorites, channel order and names, EPG assignments, measured badges, and parental settings.",
+        "The backup includes NAS credentials, API keys/tokens, IPTV playlists, YouTube link + search API URL, custom radio stations, favorites, channel order and names, EPG assignments, measured badges, and parental settings.",
         color = TextMuted,
         fontSize = 11.sp
     )

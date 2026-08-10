@@ -64,23 +64,32 @@ class HaNowPlayingPublisher {
         }
     }
 
-    fun requestSleepStandby(sleepWebhookUrl: String, deviceId: String) {
+    /**
+     * POSTs sleep standby to HA. Returns true when the webhook accepted the request
+     * (HTTP 2xx); false when URL/device missing or the call failed.
+     */
+    fun requestSleepStandby(
+        sleepWebhookUrl: String,
+        deviceId: String,
+        blackout: Boolean = false,
+    ): Boolean {
         val url = sleepWebhookUrl.trim()
         val device = deviceId.trim().lowercase()
-        if (url.isBlank() || device.isBlank()) return
-        scope.launch {
-            runCatching {
-                val body = org.json.JSONObject()
-                    .put("device", device)
-                    .put("action", "standby")
-                    .toString()
-                val request = Request.Builder()
-                    .url(url)
-                    .post(body.toRequestBody(jsonType))
-                    .build()
-                client.newCall(request).execute().use { }
+        if (url.isBlank() || device.isBlank()) return false
+        return runCatching {
+            val body = org.json.JSONObject()
+                .put("device", device)
+                .put("action", "standby")
+                .put("blackout", blackout)
+                .toString()
+            val request = Request.Builder()
+                .url(url)
+                .post(body.toRequestBody(jsonType))
+                .build()
+            client.newCall(request).execute().use { response ->
+                response.isSuccessful
             }
-        }
+        }.getOrDefault(false)
     }
 
     fun clear(webhookUrl: String, deviceId: String) {

@@ -55,8 +55,9 @@ import com.vizvag.shieldvideo.data.iptv.IptvFavoritesStore
 import com.vizvag.shieldvideo.data.iptv.IptvRepository
 import com.vizvag.shieldvideo.data.settings.SettingsRepository
 import com.vizvag.shieldvideo.ui.components.IconActionButton
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.CardSurface
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
+import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 
 @Composable
@@ -103,7 +104,7 @@ fun MultiviewScreen(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
-                        .background(if (layout == n) CyanAccent.copy(alpha = 0.35f) else CardSurface)
+                        .background(if (layout == n) LocalScreenChrome.current.accent.copy(alpha = 0.35f) else CardSurface)
                         .clickable { layout = n }
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 )
@@ -294,7 +295,7 @@ private fun ChannelPicker(
             Text("Pick channel", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             Text(
                 "Cancel",
-                color = CyanAccent,
+                color = LocalScreenChrome.current.accent,
                 modifier = Modifier.clickable(onClick = onCancel).padding(8.dp)
             )
         }

@@ -54,6 +54,8 @@ data class PodcastUiState(
     /** null = all subscriptions (recent feed). */
     val selectedShow: PodcastShow? = null,
     val episodes: List<PodcastEpisode> = emptyList(),
+    /** How many sorted episodes to paint; grows via [PodcastViewModel.loadMoreEpisodes]. */
+    val visibleEpisodeCount: Int = PodcastViewModel.EPISODE_PAGE_SIZE,
     val loadingEpisodes: Boolean = false,
     val loadingCatalog: Boolean = false,
     val refreshing: Boolean = false,
@@ -82,8 +84,14 @@ data class PodcastUiState(
             else -> listOf("" to displayedShows)
         }
 
-    val displayedEpisodes: List<PodcastEpisode>
+    val sortedEpisodes: List<PodcastEpisode>
         get() = sortEpisodes(episodes, episodeSort, progress)
+
+    val displayedEpisodes: List<PodcastEpisode>
+        get() = sortedEpisodes.take(visibleEpisodeCount.coerceAtLeast(0))
+
+    val hasMoreEpisodes: Boolean
+        get() = visibleEpisodeCount < sortedEpisodes.size
 }
 
 fun sortShows(
@@ -466,16 +474,29 @@ class PodcastViewModel(
 
     private fun publishEpisodesForSelection() {
         val selected = _ui.value.selectedShow
-        val episodes = if (selected == null) {
-            cachedEpisodes
-        } else {
-            cachedEpisodes.filter { it.showId == selected.id }
+        if (selected != null) {
+            // Global catalog is recent-across-all; keep / refresh the full per-show feed.
+            refreshSelectedShowEpisodes(selected, resetVisible = false)
+            return
         }
         _ui.update {
             it.copy(
-                episodes = episodes,
+                episodes = cachedEpisodes,
+                visibleEpisodeCount = EPISODE_PAGE_SIZE,
                 loadingEpisodes = false,
                 loadingCatalog = false,
+            )
+        }
+    }
+
+    /** Reveal the next page of already-loaded episodes (scroll / focus near list end). */
+    fun loadMoreEpisodes() {
+        _ui.update { state ->
+            val total = sortEpisodes(state.episodes, state.episodeSort, state.progress).size
+            if (state.visibleEpisodeCount >= total) state
+            else state.copy(
+                visibleEpisodeCount = (state.visibleEpisodeCount + EPISODE_PAGE_SIZE)
+                    .coerceAtMost(total),
             )
         }
     }
@@ -494,11 +515,21 @@ class PodcastViewModel(
     fun cycleEpisodeSort() {
         val next = _ui.value.episodeSort.next()
         if (!isRemoteSession()) repository.episodeSort = next
-        _ui.update { it.copy(episodeSort = next) }
+        _ui.update {
+            it.copy(
+                episodeSort = next,
+                visibleEpisodeCount = EPISODE_PAGE_SIZE,
+            )
+        }
     }
 
     fun selectAllShows() {
-        _ui.update { it.copy(selectedShow = null) }
+        _ui.update {
+            it.copy(
+                selectedShow = null,
+                visibleEpisodeCount = EPISODE_PAGE_SIZE,
+            )
+        }
         val multiShow = cachedEpisodes.map { it.showId }.toSet().size > 1
         if (cachedEpisodes.isNotEmpty() && (multiShow || !isRemoteSession())) {
             publishEpisodesForSelection()
@@ -508,21 +539,91 @@ class PodcastViewModel(
     }
 
     fun selectShow(show: PodcastShow) {
-        _ui.update { it.copy(selectedShow = show) }
-        val fromCache = cachedEpisodes.filter { it.showId == show.id }
-        if (fromCache.isNotEmpty()) {
-            _ui.update { it.copy(episodes = fromCache) }
-            return
+        val preview = cachedEpisodes.filter { it.showId == show.id }
+        _ui.update {
+            it.copy(
+                selectedShow = show,
+                episodes = preview,
+                visibleEpisodeCount = EPISODE_PAGE_SIZE,
+                loadingEpisodes = preview.isEmpty(),
+            )
         }
+        refreshSelectedShowEpisodes(show, resetVisible = true)
+    }
+
+    private fun refreshSelectedShowEpisodes(show: PodcastShow, resetVisible: Boolean) {
         if (isRemoteSession()) {
-            startCatalogLoad(forceNetwork = false)
+            loadShowEpisodesRemote(show, resetVisible = resetVisible)
             return
         }
         viewModelScope.launch {
             val eps = runCatching {
                 repository.episodesForShow(show, forceRefresh = false)
             }.getOrDefault(emptyList())
-            _ui.update { it.copy(episodes = eps) }
+            // Only apply if this show is still selected (user may have switched).
+            if (_ui.value.selectedShow?.id != show.id) return@launch
+            _ui.update {
+                val nextVisible = if (resetVisible) {
+                    EPISODE_PAGE_SIZE
+                } else {
+                    it.visibleEpisodeCount
+                        .coerceAtLeast(EPISODE_PAGE_SIZE)
+                        .coerceAtMost(eps.size.coerceAtLeast(EPISODE_PAGE_SIZE))
+                }
+                it.copy(
+                    episodes = eps.ifEmpty { it.episodes },
+                    loadingEpisodes = false,
+                    loadingCatalog = false,
+                    visibleEpisodeCount = nextVisible,
+                )
+            }
+        }
+    }
+
+    private fun loadShowEpisodesRemote(show: PodcastShow, resetVisible: Boolean = true) {
+        val device = RemoteTargetStore.current() ?: return
+        viewModelScope.launch {
+            val result = ShieldVideoApp.instance.remoteClient.podcastEpisodes(device, showId = show.id)
+            if (_ui.value.selectedShow?.id != show.id) return@launch
+            result.onSuccess { objs ->
+                val episodes = objs.map { parseRemoteEpisode(it) }
+                val progress = _ui.value.progress.toMutableMap()
+                objs.forEach { o ->
+                    val guid = o.optString("guid")
+                    if (guid.isBlank()) return@forEach
+                    val pos = o.optLong("positionMs")
+                    val dur = o.optLong("durationMs")
+                    val done = o.optBoolean("completed", false)
+                    if (pos > 0L || done || dur > 0L) {
+                        progress[guid] = PodcastEpisodeProgress(
+                            guid = guid,
+                            showId = o.optString("showId", show.id),
+                            positionMs = pos,
+                            durationMs = dur,
+                            completed = done,
+                        )
+                    }
+                }
+                _ui.update {
+                    val nextVisible = if (resetVisible) {
+                        EPISODE_PAGE_SIZE
+                    } else {
+                        it.visibleEpisodeCount
+                            .coerceAtLeast(EPISODE_PAGE_SIZE)
+                            .coerceAtMost(episodes.size.coerceAtLeast(EPISODE_PAGE_SIZE))
+                    }
+                    it.copy(
+                        episodes = episodes.ifEmpty { it.episodes },
+                        progress = progress,
+                        loadingEpisodes = false,
+                        loadingCatalog = false,
+                        visibleEpisodeCount = nextVisible,
+                    )
+                }
+            }.onFailure {
+                _ui.update { it.copy(loadingEpisodes = false, loadingCatalog = false) }
+                flash(friendlyRemoteError(it), AppNoticeKind.Error)
+            }
         }
     }
 
@@ -599,7 +700,7 @@ class PodcastViewModel(
             return
         }
         val guid = playback.state.value.episodeGuid
-        val episodes = _ui.value.displayedEpisodes
+        val episodes = _ui.value.sortedEpisodes
         val idx = episodes.indexOfFirst { it.guid == guid }
         if (idx > 0) playEpisode(episodes[idx - 1])
     }
@@ -610,7 +711,7 @@ class PodcastViewModel(
             return
         }
         val guid = playback.state.value.episodeGuid
-        val episodes = _ui.value.displayedEpisodes
+        val episodes = _ui.value.sortedEpisodes
         val idx = episodes.indexOfFirst { it.guid == guid }
         if (idx in 0 until episodes.lastIndex) playEpisode(episodes[idx + 1])
     }
@@ -728,6 +829,8 @@ class PodcastViewModel(
 
     companion object {
         private const val ALL_EPISODES_CAP = 250
+        /** Initial / incremental episode window for the list pane. */
+        const val EPISODE_PAGE_SIZE = 8
     }
 }
 

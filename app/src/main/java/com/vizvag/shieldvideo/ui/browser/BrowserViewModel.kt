@@ -2703,10 +2703,11 @@ class BrowserViewModel(
     private fun formatRuntimeMinutes(minutes: Int): String {
         val h = minutes / 60
         val m = minutes % 60
+        fun minsLabel(n: Int) = if (n == 1) "1min" else "${n}mins"
         return when {
-            h > 0 && m > 0 -> "${h}h ${m}m"
+            h > 0 && m > 0 -> "${h}h ${minsLabel(m)}"
             h > 0 -> "${h}h"
-            else -> "${m}m"
+            else -> minsLabel(m)
         }
     }
 

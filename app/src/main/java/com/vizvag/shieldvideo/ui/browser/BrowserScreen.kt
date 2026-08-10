@@ -42,7 +42,6 @@ import com.vizvag.shieldvideo.data.nas.NasPaths
 import com.vizvag.shieldvideo.ui.components.IconActionButton
 import com.vizvag.shieldvideo.ui.components.StatusPane
 import com.vizvag.shieldvideo.ui.notice.ForwardFlashNotice
-import com.vizvag.shieldvideo.ui.theme.CyanAccent
 import com.vizvag.shieldvideo.ui.theme.LocalScreenChrome
 import com.vizvag.shieldvideo.ui.theme.TextMuted
 import kotlinx.coroutines.delay
@@ -88,9 +87,10 @@ fun BrowserScreen(
         viewModel.goUp()
     }
 
-    // Request focus after the list has scrolled so the focused row (not index 0) owns FocusRequester.
-    LaunchedEffect(browseLocation, state.loading, state.focusedPath) {
-        if (state.loading || state.searchOpen || state.items.isEmpty() || state.focusedPath == null) {
+    // Request focus after folder load / scroll — not on every focusedPath change (that
+    // steals D-pad focus from the Refresh/Search header within the delay window).
+    LaunchedEffect(browseLocation, state.loading, state.items.isNotEmpty()) {
+        if (state.loading || state.searchOpen || state.items.isEmpty()) {
             return@LaunchedEffect
         }
         delay(64)
@@ -148,7 +148,7 @@ fun BrowserScreen(
             if (showAccessHint) {
                 Text(
                     text = "Enable resume tracking (Settings → Playback) so Continue Watching updates after VLC.",
-                    color = CyanAccent.copy(alpha = 0.9f),
+                    color = LocalScreenChrome.current.accent.copy(alpha = 0.9f),
                     fontSize = 13.sp,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -177,7 +177,6 @@ fun BrowserScreen(
                                     IconActionButton(
                                         selected = state.indexBuilding,
                                         onClick = { viewModel.refreshLibrary() },
-                                        enabled = !state.indexBuilding,
                                     ) {
                                         Icon(
                                             imageVector = Icons.Filled.Refresh,
@@ -291,7 +290,7 @@ fun BrowserScreen(
             },
             confirmButton = {
                 TextButton(onClick = viewModel::dismissMessage) {
-                    Text("OK", color = CyanAccent)
+                    Text("OK", color = LocalScreenChrome.current.accent)
                 }
             },
             containerColor = Color(0xFF2E342A)
