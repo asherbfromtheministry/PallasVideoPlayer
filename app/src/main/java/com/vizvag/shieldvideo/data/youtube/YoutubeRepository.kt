@@ -196,7 +196,7 @@ class YoutubeRepository(
         // googleapis host + TV key matches SmartTube/Lincoln; www.youtube.com often
         // returns a sparse shelf for the same token.
         val request = Request.Builder()
-            .url("https://www.googleapis.com/youtubei/v1/browse?key=$TV_API_KEY&prettyPrint=false")
+            .url("https://www.googleapis.com/youtubei/v1/browse?key=${YoutubeClientKeys.tv}&prettyPrint=false")
             .header("User-Agent", TV_BROWSE_UA)
             .header("Authorization", "Bearer $accessToken")
             .header("X-YouTube-Client-Name", "7")
@@ -530,7 +530,7 @@ class YoutubeRepository(
             override val name = "TVHTML5"
             override val version = TV_CLIENT_VERSION
             override val clientId = "7"
-            override val apiKey = TV_API_KEY
+            override val apiKey = YoutubeClientKeys.tv
             override val userAgent = TV_BROWSE_UA
             override fun clientJson(): JSONObject = super.clientJson()
                 .put("platform", "TV")
@@ -547,7 +547,7 @@ class YoutubeRepository(
             override val name = "TVHTML5"
             override val version = TV_DOWNGRADED_CLIENT_VERSION
             override val clientId = "7"
-            override val apiKey = TV_API_KEY
+            override val apiKey = YoutubeClientKeys.tv
             override val userAgent = TV_DOWNGRADED_UA
             override fun clientJson(): JSONObject = super.clientJson()
                 .put("userAgent", userAgent)
@@ -557,7 +557,7 @@ class YoutubeRepository(
             override val name = "IOS"
             override val version = IOS_CLIENT_VERSION
             override val clientId = "5"
-            override val apiKey = IOS_API_KEY
+            override val apiKey = YoutubeClientKeys.ios
             override val userAgent =
                 "com.google.ios.youtube/$IOS_CLIENT_VERSION ($IOS_DEVICE_MODEL; U; CPU iOS $IOS_UA_VERSION like Mac OS X;)"
             override fun clientJson(): JSONObject = super.clientJson()
@@ -572,7 +572,7 @@ class YoutubeRepository(
             override val name = "ANDROID"
             override val version = INNERTUBE_CLIENT_VERSION
             override val clientId = "3"
-            override val apiKey = INNERTUBE_API_KEY
+            override val apiKey = YoutubeClientKeys.innertube
             override val userAgent =
                 "com.google.android.youtube/$INNERTUBE_CLIENT_VERSION (Linux; U; Android 11) gzip"
             override fun clientJson(): JSONObject = super.clientJson()
@@ -587,7 +587,7 @@ class YoutubeRepository(
             override val name = "ANDROID_VR"
             override val version = ANDROID_VR_CLIENT_VERSION
             override val clientId = "28"
-            override val apiKey = INNERTUBE_API_KEY
+            override val apiKey = YoutubeClientKeys.innertube
             override val userAgent =
                 "com.google.android.apps.youtube.vr.oculus/$ANDROID_VR_CLIENT_VERSION " +
                     "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
@@ -605,7 +605,7 @@ class YoutubeRepository(
             override val name = "WEB_EMBEDDED_PLAYER"
             override val version = WEB_EMBEDDED_CLIENT_VERSION
             override val clientId = "56"
-            override val apiKey = WEB_EMBEDDED_API_KEY
+            override val apiKey = YoutubeClientKeys.webEmbedded
             override val userAgent =
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -1900,14 +1900,10 @@ class YoutubeRepository(
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-        /** Public YouTube Android client key used by open clients (not a secret user credential). */
-        private const val INNERTUBE_API_KEY = "AIzaSyA8eiZmM1FaDVz_ad96G3ZBQJyl-YQRvAX"
+        /** Client version strings — not credentials; keys live in gitignored personal.defaults.properties. */
         private const val INNERTUBE_CLIENT_VERSION = "21.26.364"
         private const val ANDROID_VR_CLIENT_VERSION = "1.65.10"
         private const val WEB_EMBEDDED_CLIENT_VERSION = "2.20260708.00.00"
-        private const val WEB_EMBEDDED_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-        /** Public TVHTML5 InnerTube key (same family as SmartTube / Lincoln). */
-        private const val TV_API_KEY = "AIzaSyDCU8hByM-4DrUqRUYnGn-3llEO78bcxq8"
         private const val TV_CLIENT_VERSION = "7.20260707.07.00"
         private const val TV_DOWNGRADED_CLIENT_VERSION = "5.20260707"
         private const val TV_BROWSE_UA =
@@ -1916,7 +1912,6 @@ class YoutubeRepository(
         private const val TV_DOWNGRADED_UA =
             "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
         /** iOS client — SmartTube MediaServiceCore Aug 2026. */
-        private const val IOS_API_KEY = "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc"
         private const val IOS_CLIENT_VERSION = "21.26.4"
         private const val IOS_DEVICE_MODEL = "iPhone16,2"
         private const val IOS_OS_VERSION = "18.3.2.22D82"

@@ -153,7 +153,7 @@ APK path:
 
 A **clean** build is a shareable version with **zero personalization baked in** — no API keys (Trakt/TMDB), no IP addresses, no NAS host/user, no Home Assistant webhook, no accounts, and no IPTV playlist. A new user must enter all of their own data in the app's **Settings** on first run. **BBC radio stations are included** — they live in `RadioDefaults.kt` (not BuildConfig) and are seeded on first install like any other build.
 
-- Personalized defaults load from gitignored `personal.defaults.properties` into `buildConfigField` values in `app/build.gradle.kts`. Without that file, debug builds are blank like clean. The `clean` build type always forces `""`, `BuildConfig.CLEAN_BUILD = true`, and `BuildConfig.FEATURE_YOUTUBE = false` (YouTube viewer hidden in public APKs; code stays in the tree).
+- Personalized defaults load from gitignored `personal.defaults.properties` into `buildConfigField` values in `app/build.gradle.kts`. Without that file, debug builds are blank like clean. The `clean` build type always forces `""`, `BuildConfig.CLEAN_BUILD = true`, and `BuildConfig.FEATURE_YOUTUBE = false` (YouTube viewer hidden in public APKs; code stays in the tree). YouTube Innertube / BotGuard client keys follow the same pattern — never hard-coded in source.
 - Source never hard-codes personal values — `SettingsRepository`, `IptvDefaults`, and `NasPaths` read `BuildConfig`.
 - When adding a new personalized default, add it to `personal.defaults.properties.example`, load it in `defaultConfig`, blank it in the `clean` build type, and read it via `BuildConfig`.
 

@@ -1,5 +1,6 @@
 package com.vizvag.shieldvideo.data.youtube.potoken
 
+import com.vizvag.shieldvideo.data.youtube.YoutubeClientKeys
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -252,7 +253,7 @@ class PoTokenWebView private constructor(
             .header("User-Agent", USER_AGENT)
             .header("Accept", "application/json")
             .header("Content-Type", contentType)
-            .header("x-goog-api-key", GOOGLE_API_KEY)
+            .header("x-goog-api-key", YoutubeClientKeys.poToken)
             .header("x-user-agent", "grpc-web-javascript/0.1")
             .post(data.toRequestBody(contentType.toMediaType()))
             .build()
@@ -318,7 +319,6 @@ class PoTokenWebView private constructor(
 
     companion object {
         private val TAG = PoTokenWebView::class.java.simpleName
-        private const val GOOGLE_API_KEY = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw"
         private const val REQUEST_KEY = "O43z0dpjhgX20SCx4KAo"
         private const val WEB_CLIENT_VERSION = "2.20260708.00.00"
         // Match SmartTube PoTokenWebView4 BotGuard UA.

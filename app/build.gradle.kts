@@ -24,8 +24,8 @@ android {
         applicationId = "com.vizvag.shieldvideo"
         minSdk = 28
         targetSdk = 34
-        versionCode = 253
-        versionName = "2.5.37"
+        versionCode = 254
+        versionName = "2.5.38"
 
         // Personalized defaults from personal.defaults.properties when present.
         // The "clean" build type blanks every one so a distributable APK ships
@@ -47,6 +47,11 @@ android {
         buildConfigField("String", "DEFAULT_IPTV_EPG", "\"${personal("DEFAULT_IPTV_EPG")}\"")
         buildConfigField("String", "DEFAULT_IPTV_EPG_AI_KEY", "\"${personal("DEFAULT_IPTV_EPG_AI_KEY")}\"")
         buildConfigField("String", "DEFAULT_MUSIC_PATH", "\"${personal("DEFAULT_MUSIC_PATH", "/music")}\"")
+        buildConfigField("String", "DEFAULT_YOUTUBE_INNERTUBE_API_KEY", "\"${personal("DEFAULT_YOUTUBE_INNERTUBE_API_KEY")}\"")
+        buildConfigField("String", "DEFAULT_YOUTUBE_WEB_EMBEDDED_API_KEY", "\"${personal("DEFAULT_YOUTUBE_WEB_EMBEDDED_API_KEY")}\"")
+        buildConfigField("String", "DEFAULT_YOUTUBE_TV_API_KEY", "\"${personal("DEFAULT_YOUTUBE_TV_API_KEY")}\"")
+        buildConfigField("String", "DEFAULT_YOUTUBE_IOS_API_KEY", "\"${personal("DEFAULT_YOUTUBE_IOS_API_KEY")}\"")
+        buildConfigField("String", "DEFAULT_YOUTUBE_POTOKEN_API_KEY", "\"${personal("DEFAULT_YOUTUBE_POTOKEN_API_KEY")}\"")
     }
 
     buildTypes {
@@ -79,6 +84,11 @@ android {
             buildConfigField("String", "DEFAULT_IPTV_EPG", "\"\"")
             buildConfigField("String", "DEFAULT_IPTV_EPG_AI_KEY", "\"\"")
             buildConfigField("String", "DEFAULT_MUSIC_PATH", "\"\"")
+            buildConfigField("String", "DEFAULT_YOUTUBE_INNERTUBE_API_KEY", "\"\"")
+            buildConfigField("String", "DEFAULT_YOUTUBE_WEB_EMBEDDED_API_KEY", "\"\"")
+            buildConfigField("String", "DEFAULT_YOUTUBE_TV_API_KEY", "\"\"")
+            buildConfigField("String", "DEFAULT_YOUTUBE_IOS_API_KEY", "\"\"")
+            buildConfigField("String", "DEFAULT_YOUTUBE_POTOKEN_API_KEY", "\"\"")
         }
     }
 
