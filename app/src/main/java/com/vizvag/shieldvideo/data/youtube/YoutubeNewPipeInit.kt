@@ -21,7 +21,7 @@ object YoutubeNewPipeInit {
             if (initialized) return
             NewPipe.init(
                 NewPipeDownloader.init(),
-                Localization("en", "GB"),
+                Localization("en", "US"),
                 ContentCountry("US"),
             )
             poTokenProvider = YoutubePoTokenProvider(appContext.applicationContext)

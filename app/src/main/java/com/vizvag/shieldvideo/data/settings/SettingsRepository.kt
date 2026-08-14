@@ -92,6 +92,8 @@ data class AppSettings(
     val customRadioStations: List<CustomRadioStationConfig> = emptyList(),
     /** Piped API base URL for search / stream fallback. */
     val youtubePipedApiUrl: String = YoutubeDefaults.DEFAULT_PIPED_API_URL,
+    /** Cap YouTube video height; [YoutubePreferredResolution.Auto] = highest available. */
+    val youtubePreferredResolution: YoutubePreferredResolution = YoutubePreferredResolution.Auto,
     /** Stable device id for YouTube TV OAuth pairing. */
     val youtubeTvDeviceId: String = "",
     /** YouTube TV OAuth refresh token (real Google/YouTube account). */
@@ -264,6 +266,9 @@ class SettingsRepository(context: Context) {
                 }
                 normalized
             },
+            youtubePreferredResolution = YoutubePreferredResolution.fromStorage(
+                prefs.getString(KEY_YOUTUBE_PREFERRED_RESOLUTION, YoutubePreferredResolution.Auto.name)
+            ),
             youtubeTvDeviceId = prefs.getString(KEY_YOUTUBE_TV_DEVICE_ID, "") ?: "",
             youtubeRefreshToken = prefs.getString(KEY_YOUTUBE_REFRESH_TOKEN, "") ?: "",
             youtubeAccessToken = prefs.getString(KEY_YOUTUBE_ACCESS_TOKEN, "") ?: "",
@@ -357,6 +362,7 @@ class SettingsRepository(context: Context) {
                 KEY_YOUTUBE_PIPED_API,
                 YoutubeDefaults.normalizeApiUrl(settings.youtubePipedApiUrl),
             )
+            .putString(KEY_YOUTUBE_PREFERRED_RESOLUTION, settings.youtubePreferredResolution.name)
             // Drop legacy Piped account prefs (login/feed removed).
             .remove(KEY_YOUTUBE_PIPED_USER)
             .remove(KEY_YOUTUBE_PIPED_TOKEN)
@@ -428,6 +434,7 @@ class SettingsRepository(context: Context) {
                 "youtubePipedApiUrl",
                 YoutubeDefaults.normalizeApiUrl(settings.youtubePipedApiUrl),
             )
+            .put("youtubePreferredResolution", settings.youtubePreferredResolution.name)
             .put("youtubeTvDeviceId", settings.youtubeTvDeviceId)
             .put("youtubeRefreshToken", settings.youtubeRefreshToken)
             .put("youtubeAccessToken", settings.youtubeAccessToken)
@@ -542,6 +549,12 @@ class SettingsRepository(context: Context) {
             },
             youtubePipedApiUrl = YoutubeDefaults.normalizeApiUrl(
                 obj.optString("youtubePipedApiUrl", defaults.youtubePipedApiUrl)
+            ),
+            youtubePreferredResolution = YoutubePreferredResolution.fromStorage(
+                obj.optString(
+                    "youtubePreferredResolution",
+                    defaults.youtubePreferredResolution.name,
+                )
             ),
             youtubeTvDeviceId = obj.optString("youtubeTvDeviceId", defaults.youtubeTvDeviceId),
             youtubeRefreshToken = obj.optString(
@@ -800,6 +813,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_YOUTUBE_PIPED_API = "youtube_piped_api_url"
         private const val KEY_YOUTUBE_PIPED_USER = "youtube_piped_username"
         private const val KEY_YOUTUBE_PIPED_TOKEN = "youtube_piped_auth_token"
+        private const val KEY_YOUTUBE_PREFERRED_RESOLUTION = "youtube_preferred_resolution"
         private const val KEY_YOUTUBE_TV_DEVICE_ID = "youtube_tv_device_id"
         private const val KEY_YOUTUBE_REFRESH_TOKEN = "youtube_refresh_token"
         private const val KEY_YOUTUBE_ACCESS_TOKEN = "youtube_access_token"

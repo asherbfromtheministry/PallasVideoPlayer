@@ -82,8 +82,13 @@ class YoutubePoTokenProvider(
         }
     }
 
-    override fun getWebEmbedClientPoToken(videoId: String): PoTokenResult? = null
+    override fun getWebEmbedClientPoToken(videoId: String): PoTokenResult? =
+        getWebClientPoToken(videoId)
 
+    /**
+     * Keep null so NewPipe uses the Reel player (URL formats, no SABR-only).
+     * Web videoId pot is still applied afterward for GVS when needed.
+     */
     override fun getAndroidClientPoToken(videoId: String): PoTokenResult? = null
 
     override fun getIosClientPoToken(videoId: String): PoTokenResult? = null

@@ -91,6 +91,7 @@ import com.vizvag.shieldvideo.data.index.VideoIndexController
 import com.vizvag.shieldvideo.data.iptv.EpgAiProvider
 import com.vizvag.shieldvideo.data.settings.AppSettings
 import com.vizvag.shieldvideo.data.settings.ClockCorner
+import com.vizvag.shieldvideo.data.settings.YoutubePreferredResolution
 import com.vizvag.shieldvideo.data.settings.ConnectionMode
 import com.vizvag.shieldvideo.data.settings.IptvGuideSize
 import com.vizvag.shieldvideo.data.settings.IptvRecordingStorage
@@ -1466,8 +1467,34 @@ private fun YouTubeSettingsTab(
         }
     }
     Spacer(modifier = Modifier.height(18.dp))
+    Text("Preferred resolution", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(
+        text = "AUTO plays the highest available. Pick a cap (e.g. 1080p) to avoid higher rungs.",
+        color = TextMuted,
+        fontSize = 11.sp,
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        YoutubePreferredResolution.entries.forEach { option ->
+            TvFocusButton(
+                onClick = { viewModel.update { it.copy(youtubePreferredResolution = option) } },
+                selected = draft.youtubePreferredResolution == option,
+                compact = true,
+                modifier = Modifier.tvBringIntoView(),
+            ) {
+                Text(
+                    text = option.label,
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+    Spacer(modifier = Modifier.height(18.dp))
     Text("Search API", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-    Spacer(Modifier.height(6.dp))
+    Spacer(modifier = Modifier.height(6.dp))
     TvSettingsField(
         label = "Piped API base URL (search / stream fallback)",
         value = draft.youtubePipedApiUrl,

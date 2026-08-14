@@ -171,7 +171,7 @@ class ShieldVideoApp : Application() {
             appScope = appScope,
         )
         iptvPlayback = IptvPlaybackController(this)
-        youtubePlayback = YoutubePlaybackController(this)
+        youtubePlayback = YoutubePlaybackController(this, settingsRepository)
         blackout = BlackoutController()
         // After all players exist so expiry can silence every source (not only the bound screen).
         sleepTimer = SleepTimerController(

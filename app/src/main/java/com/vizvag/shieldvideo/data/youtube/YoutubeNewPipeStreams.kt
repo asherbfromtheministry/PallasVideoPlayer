@@ -2,10 +2,12 @@ package com.vizvag.shieldvideo.data.youtube
 
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.exceptions.ExtractionException
+import org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
 import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamType
 import org.schabi.newpipe.extractor.stream.VideoStream
-import org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
+import java.util.Locale
 
 object YoutubeNewPipeStreams {
     @Throws(YoutubeApiException::class)
@@ -34,7 +36,6 @@ object YoutubeNewPipeStreams {
         val options = buildPlaybackOptions(
             dashUrl = dashUrl,
             hlsUrl = hlsUrl,
-            livestream = livestream,
             videoOnly = videoOnly,
             audios = audios,
             muxed = muxed,
@@ -71,16 +72,12 @@ object YoutubeNewPipeStreams {
     private fun buildPlaybackOptions(
         dashUrl: String?,
         hlsUrl: String?,
-        livestream: Boolean,
         videoOnly: List<VideoStream>,
         audios: List<AudioStream>,
         muxed: List<VideoStream>,
     ): List<YoutubePlayback> {
         val options = mutableListOf<YoutubePlayback>()
 
-        val bestAudio = audios.maxWithOrNull(
-            compareBy<AudioStream> { if (isAac(it)) 1 else 0 }.thenBy { streamBitrate(it) },
-        )
         val bestVideo = videoOnly
             .filter { !isAv1(it) }
             .maxWithOrNull(
@@ -89,19 +86,44 @@ object YoutubeNewPipeStreams {
                     .thenBy { streamBitrate(it) },
             )
 
-        // SeparateTracks with pot= first — high-res and quality switchable.
-        if (bestVideo != null && bestAudio != null) {
-            options += YoutubePlayback.SeparateTracks(
-                videoUrl = bestVideo.content,
-                audioUrl = bestAudio.content,
-                videoMime = bestVideo.format?.mimeType,
-                audioMime = bestAudio.format?.mimeType,
-            )
+        val labeledAudios = audios.any { hasAudioLanguageHint(it) }
+
+        // When YouTube omits audioTrack metadata (common), SeparateTracks can't prefer English —
+        // put HLS/DASH first so ExoPlayer setPreferredAudioLanguage("en") can choose.
+        if (!labeledAudios) {
+            if (hlsUrl != null) options += YoutubePlayback.Hls(hlsUrl)
+            if (dashUrl != null) options += YoutubePlayback.Dash(dashUrl)
         }
 
-        // HLS often works without pot= (iOS/safari manifests).
-        if (hlsUrl != null) {
-            options += YoutubePlayback.Hls(hlsUrl)
+        // SeparateTracks with pot= — high-res and quality switchable.
+        if (bestVideo != null) {
+            val preferAac = isAvc(bestVideo) ||
+                bestVideo.format?.mimeType?.contains("mp4") == true
+            val audio = pickPreferredAudio(audios, preferAac = preferAac)
+            if (audio != null) {
+                android.util.Log.i(
+                    "YoutubeStreams",
+                    "audio pick lang=${audio.audioLocale?.language} " +
+                        "id=${audio.audioTrackId} type=${audio.audioTrackType} " +
+                        "name=${audio.audioTrackName} " +
+                        "hints=${audioLanguageHints(audio)} " +
+                        "labeled=$labeledAudios among=${audios.size} " +
+                        "all=[${audios.joinToString { a ->
+                            audioLanguageHints(a).ifBlank { "?" }
+                        }}]",
+                )
+                options += YoutubePlayback.SeparateTracks(
+                    videoUrl = bestVideo.content,
+                    audioUrl = audio.content,
+                    videoMime = bestVideo.format?.mimeType,
+                    audioMime = audio.format?.mimeType,
+                )
+            }
+        }
+
+        if (labeledAudios) {
+            if (hlsUrl != null) options += YoutubePlayback.Hls(hlsUrl)
+            if (dashUrl != null) options += YoutubePlayback.Dash(dashUrl)
         }
 
         // Progressive muxed — lower res, still useful fallback.
@@ -112,12 +134,13 @@ object YoutubeNewPipeStreams {
                 options += YoutubePlayback.Progressive(it.content, it.format?.mimeType)
             }
 
-        if (dashUrl != null) {
-            options += YoutubePlayback.Dash(dashUrl)
-        }
-
         return options.distinct()
     }
+
+    private fun hasAudioLanguageHint(stream: AudioStream): Boolean =
+        !stream.audioLocale?.language.isNullOrBlank() ||
+            !stream.audioTrackId.isNullOrBlank() ||
+            audioLanguageHints(stream).isNotBlank()
 
     private fun buildQualityOptions(
         videoOnly: List<VideoStream>,
@@ -156,15 +179,86 @@ object YoutubeNewPipeStreams {
 
     private fun audioForVideo(video: VideoStream, audios: List<AudioStream>): AudioStream? {
         val preferAac = isAvc(video) || video.format?.mimeType?.contains("mp4") == true
-        return audios.maxWithOrNull(
-            compareBy<AudioStream> {
-                when {
-                    preferAac && isAac(it) -> 2
-                    !preferAac && !isAac(it) -> 2
-                    else -> 1
+        return pickPreferredAudio(audios, preferAac = preferAac)
+    }
+
+    /**
+     * Prefer English + original tracks. On Spanish IPs YouTube often lists a Spanish
+     * dub first / at equal bitrate — picking max bitrate alone made English videos Spanish.
+     */
+    private fun pickPreferredAudio(
+        audios: List<AudioStream>,
+        preferAac: Boolean,
+    ): AudioStream? =
+        audios.maxWithOrNull(
+            compareBy<AudioStream> { audioLanguageScore(it) }
+                .thenBy { audioTrackTypeScore(it) }
+                .thenBy {
+                    when {
+                        preferAac && isAac(it) -> 2
+                        !preferAac && !isAac(it) -> 2
+                        else -> 1
+                    }
                 }
-            }.thenBy { streamBitrate(it) },
+                .thenBy { streamBitrate(it) },
         )
+
+    private fun audioLanguageScore(stream: AudioStream): Int {
+        val lang = stream.audioLocale?.language?.lowercase(Locale.ROOT).orEmpty()
+        val trackId = stream.audioTrackId.orEmpty().lowercase(Locale.ROOT)
+        val trackName = stream.audioTrackName.orEmpty().lowercase(Locale.ROOT)
+        val hints = audioLanguageHints(stream).lowercase(Locale.ROOT)
+        val blob = "$lang $trackId $trackName $hints"
+        return when {
+            lang == "en" || lang.startsWith("en") ||
+                trackId.startsWith("en") || blob.contains("english") ||
+                Regex("""(?:^|[^\w])en(?:[^\w]|$)""").containsMatchIn(hints) ||
+                hints.contains("lang=en") || hints.contains("lang%3den") -> 100
+            lang == "es" || lang.startsWith("es") ||
+                trackId.startsWith("es") || blob.contains("spanish") ||
+                blob.contains("español") || blob.contains("espanol") ||
+                hints.contains("lang=es") || hints.contains("lang%3des") -> 0
+            // Unlabeled — prefer original (acont=original) over dubbed
+            hints.contains("acont=original") || hints.contains("acont%3doriginal") -> 80
+            hints.contains("acont=dubbed") || hints.contains("acont%3ddubbed") -> 5
+            lang.isBlank() && trackId.isBlank() && hints.isBlank() -> 60
+            else -> 20
+        }
+    }
+
+    private fun audioTrackTypeScore(stream: AudioStream): Int {
+        when (stream.audioTrackType) {
+            AudioTrackType.ORIGINAL -> return 50
+            AudioTrackType.SECONDARY -> return 20
+            AudioTrackType.DESCRIPTIVE -> return 10
+            AudioTrackType.DUBBED -> return 0
+            null -> Unit
+        }
+        val hints = audioLanguageHints(stream).lowercase(Locale.ROOT)
+        return when {
+            hints.contains("acont=original") || hints.contains("acont%3doriginal") -> 50
+            hints.contains("acont=dubbed") || hints.contains("acont%3ddubbed") -> 0
+            hints.contains("acont=descriptive") || hints.contains("acont%3ddescriptive") -> 10
+            else -> 30
+        }
+    }
+
+    /** YouTube often puts lang/acont in googlevideo `xtags` or URL query when audioTrack JSON is absent. */
+    private fun audioLanguageHints(stream: AudioStream): String {
+        val xtags = stream.itagItem?.xtags.orEmpty()
+        val url = stream.content.orEmpty()
+        val fromUrl = buildString {
+            fun grab(key: String) {
+                val re = Regex("""[?&]$key=([^&]+)""", RegexOption.IGNORE_CASE)
+                re.find(url)?.groupValues?.getOrNull(1)?.let {
+                    append(key).append('=').append(it).append(' ')
+                }
+            }
+            grab("xtags")
+            grab("lang")
+            grab("acont")
+        }
+        return "$xtags $fromUrl".trim()
     }
 
     private fun streamBitrate(stream: VideoStream): Int = stream.bitrate

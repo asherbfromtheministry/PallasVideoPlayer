@@ -41,6 +41,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Pause
@@ -70,7 +71,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -79,6 +82,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
@@ -122,6 +126,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun YoutubeScreen(
     viewModel: YoutubeViewModel,
@@ -145,7 +150,10 @@ fun YoutubeScreen(
     val player = rememberYoutubeExoPlayer()
     val searchFocus = remember { FocusRequester() }
     val feedFocus = remember { FocusRequester() }
+    val topBarFocus = remember { FocusRequester() }
     var searchOpen by remember { mutableStateOf(false) }
+    // Bumped when leaving fullscreen so we re-attach feed focus once.
+    var browseFocusNonce by remember { mutableIntStateOf(0) }
 
     val feedFocusShelf = remember(
         state.loggedIn,
@@ -165,12 +173,29 @@ fun YoutubeScreen(
         }
     }
 
-    LaunchedEffect(feedFocusShelf, state.loadingBrowse, state.fullscreen, searchOpen) {
-        if (state.fullscreen || searchOpen || feedFocusShelf == null || state.loadingBrowse) {
-            return@LaunchedEffect
+    LaunchedEffect(state.fullscreen) {
+        onFullscreenChanged(state.fullscreen)
+        if (!state.fullscreen) {
+            browseFocusNonce += 1
         }
-        delay(200)
-        runCatching { feedFocus.requestFocus() }
+    }
+
+    LaunchedEffect(feedFocusShelf, state.loadingBrowse, state.fullscreen, searchOpen, browseFocusNonce) {
+        if (state.fullscreen || searchOpen || state.loadingBrowse) return@LaunchedEffect
+        // Wait a frame so LazyRow cards (and their FocusRequesters) are attached.
+        delay(250)
+        if (feedFocusShelf != null) {
+            val attached = runCatching {
+                feedFocus.requestFocus()
+                true
+            }.getOrDefault(false)
+            if (attached) return@LaunchedEffect
+            delay(200)
+            if (runCatching { feedFocus.requestFocus(); true }.getOrDefault(false)) {
+                return@LaunchedEffect
+            }
+        }
+        runCatching { topBarFocus.requestFocus() }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -194,14 +219,12 @@ fun YoutubeScreen(
         onDispose { app.sleepTimer.unbindPlayback() }
     }
 
-    LaunchedEffect(state.fullscreen) {
-        onFullscreenChanged(state.fullscreen)
-    }
-
     LaunchedEffect(searchOpen) {
         if (searchOpen) {
             delay(80)
             runCatching { searchFocus.requestFocus() }
+        } else {
+            browseFocusNonce += 1
         }
     }
 
@@ -257,26 +280,38 @@ fun YoutubeScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(AppBackground)) {
-        AppWithNavRail(
-            destination = RailDestination.YouTube,
-            shares = railShares,
-            selectedShare = appSettings.defaultShare,
-            onSelectShare = onSelectShare,
-            recordingFolder = recordingFolder,
-            onLiveTv = onOpenLiveTv,
-            onYouTube = {},
-            onRadio = onOpenRadio,
-            onMusic = onOpenMusic,
-            onPodcasts = onOpenPodcasts,
-            sleepTimerActive = sleepState.active,
-            sleepTimerLabel = sleepState.label,
-            onCycleSleepTimer = app.sleepTimer::cycle,
-            onSettings = onOpenSettings,
-            showRail = !state.fullscreen,
-            railFocusEnabled = !state.fullscreen,
-            players = RailPlayerVisibility.from(appSettings),
+        // Keep browse/rail out of the D-pad chain while the player covers the screen.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .focusProperties {
+                    enter = {
+                        if (state.fullscreen) FocusRequester.Cancel
+                        else FocusRequester.Default
+                    }
+                    canFocus = !state.fullscreen
+                },
         ) {
-            Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) {
+            AppWithNavRail(
+                destination = RailDestination.YouTube,
+                shares = railShares,
+                selectedShare = appSettings.defaultShare,
+                onSelectShare = onSelectShare,
+                recordingFolder = recordingFolder,
+                onLiveTv = onOpenLiveTv,
+                onYouTube = {},
+                onRadio = onOpenRadio,
+                onMusic = onOpenMusic,
+                onPodcasts = onOpenPodcasts,
+                sleepTimerActive = sleepState.active,
+                sleepTimerLabel = sleepState.label,
+                onCycleSleepTimer = app.sleepTimer::cycle,
+                onSettings = onOpenSettings,
+                showRail = !state.fullscreen,
+                railFocusEnabled = !state.fullscreen,
+                players = RailPlayerVisibility.from(appSettings),
+            ) {
+                Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) {
                 YoutubeTopBar(
                     onRefresh = viewModel::refreshHome,
                     onSearch = { searchOpen = true },
@@ -285,6 +320,7 @@ fun YoutubeScreen(
                     feedSort = state.feedSort,
                     onFeedSort = viewModel::setFeedSort,
                     showSort = state.searchQuery.isBlank() && state.loggedIn && !state.browsingChannel,
+                    firstFocusRequester = topBarFocus,
                 )
                 androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(12.dp))
                 if (searchOpen) {
@@ -435,12 +471,16 @@ fun YoutubeScreen(
                     }
                 }
             }
+            }
         }
 
         if (state.fullscreen && state.playing != null) {
             YoutubeFullscreenPlayer(
                 player = player,
                 info = state.playing!!,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f),
             )
         }
     }
@@ -455,6 +495,7 @@ private fun YoutubeTopBar(
     feedSort: YoutubeFeedSort,
     onFeedSort: (YoutubeFeedSort) -> Unit,
     showSort: Boolean,
+    firstFocusRequester: FocusRequester? = null,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -485,7 +526,15 @@ private fun YoutubeTopBar(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            IconActionButton(selected = false, onClick = onSearch) {
+            IconActionButton(
+                selected = false,
+                onClick = onSearch,
+                focusModifier = if (firstFocusRequester != null) {
+                    Modifier.focusRequester(firstFocusRequester)
+                } else {
+                    Modifier
+                },
+            ) {
                 Icon(Icons.Filled.Search, contentDescription = "Search", tint = Color.White, modifier = Modifier.size(24.dp))
             }
             Spacer(modifier = Modifier.width(6.dp))
@@ -762,7 +811,7 @@ private fun YoutubeVideoCard(
         }
         androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(8.dp))
         Text(
-            item.title,
+            displayYoutubeTitle(item),
             color = TextCream,
             fontWeight = FontWeight.SemiBold,
             fontSize = 13.sp,
@@ -771,7 +820,9 @@ private fun YoutubeVideoCard(
             minLines = 2,
         )
         Text(
-            item.uploader.takeIf { it.isNotBlank() } ?: "Unknown channel",
+            item.uploader
+                .takeIf { it.isNotBlank() && !it.matches(Regex("^[\\w-]{11}$")) }
+                ?: "Unknown channel",
             color = TextMuted,
             fontSize = 11.sp,
             maxLines = 1,
@@ -795,10 +846,12 @@ private fun YoutubeVideoCard(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun YoutubeFullscreenPlayer(
     player: androidx.media3.exoplayer.ExoPlayer,
     info: YoutubeStreamInfo,
+    modifier: Modifier = Modifier,
 ) {
     var showChrome by remember { mutableStateOf(true) }
     var chromeEpoch by remember { mutableStateOf(0) }
@@ -810,10 +863,16 @@ private fun YoutubeFullscreenPlayer(
     var videoCodec by remember { mutableStateOf<String?>(null) }
     var audioCodec by remember { mutableStateOf<String?>(null) }
     var audioChannels by remember { mutableIntStateOf(0) }
+    var videoFps by remember { mutableStateOf(0f) }
+    var videoBitrate by remember { mutableIntStateOf(0) }
+    var audioBitrate by remember { mutableIntStateOf(0) }
+    var audioSampleRate by remember { mutableIntStateOf(0) }
     var qualityPickerVisible by remember { mutableStateOf(false) }
+    var infoDialogVisible by remember { mutableStateOf(false) }
     val feedback = rememberTvFeedback()
     val playerFocus = remember { FocusRequester() }
     val qualityFocus = remember { FocusRequester() }
+    val infoFocus = remember { FocusRequester() }
 
     fun refreshFormats() {
         val vf = player.videoFormat
@@ -823,6 +882,10 @@ private fun YoutubeFullscreenPlayer(
         videoCodec = formatCodecLabel(vf?.codecs ?: vf?.sampleMimeType)
         audioCodec = formatCodecLabel(af?.codecs ?: af?.sampleMimeType)
         audioChannels = af?.channelCount?.takeIf { it > 0 } ?: 0
+        videoFps = vf?.frameRate?.takeIf { it > 0f } ?: 0f
+        videoBitrate = vf?.bitrate?.takeIf { it > 0 } ?: 0
+        audioBitrate = af?.bitrate?.takeIf { it > 0 } ?: 0
+        audioSampleRate = af?.sampleRate?.takeIf { it > 0 } ?: 0
     }
 
     LaunchedEffect(info.id) {
@@ -870,21 +933,15 @@ private fun YoutubeFullscreenPlayer(
         }
     }
 
-    LaunchedEffect(info.id, chromeEpoch, isPlaying) {
+    LaunchedEffect(info.id, chromeEpoch, isPlaying, qualityPickerVisible, infoDialogVisible) {
         showChrome = true
-        if (isPlaying) {
-            qualityPickerVisible = false
-            delay(3_000)
+        if (isPlaying && !qualityPickerVisible && !infoDialogVisible) {
+            delay(4_500)
             showChrome = false
+            delay(40)
+            runCatching { playerFocus.requestFocus() }
         }
-        // Stay visible while paused.
-    }
-
-    LaunchedEffect(isPlaying, qualityPickerVisible) {
-        if (!isPlaying && !qualityPickerVisible) {
-            delay(120)
-            runCatching { qualityFocus.requestFocus() }
-        }
+        // Stay visible while paused or a dialog is open.
     }
 
     fun bumpChrome() {
@@ -924,6 +981,7 @@ private fun YoutubeFullscreenPlayer(
     val canForceBetter = info.qualities.any { it.height > videoH + 16 } ||
         (info.maxHeight > 0 && videoH > 0 && info.maxHeight > videoH + 16)
     val forceLabel = maxResLabel ?: info.qualities.maxByOrNull { it.height }?.label
+    val dialogOpen = qualityPickerVisible || infoDialogVisible
 
     fun forceMaxQuality() {
         bumpChrome()
@@ -932,7 +990,6 @@ private fun YoutubeFullscreenPlayer(
         if (!switched) {
             app.youtubePlayback.forceHighestVideoQuality()
         }
-        // Refresh after ExoPlayer swaps tracks.
         refreshFormats()
     }
 
@@ -943,46 +1000,114 @@ private fun YoutubeFullscreenPlayer(
         refreshFormats()
     }
 
+    // Progress chrome while seeking / paused; transport buttons never shown.
+    val chromeVisible = showChrome || !isPlaying
+
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
             .focusRequester(playerFocus)
+            .focusProperties {
+                canFocus = !dialogOpen
+                // Don't trap exit — leaving fullscreen must return focus to the feed.
+            }
             .focusable()
             .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.MediaPlayPause -> {
+                        togglePlay()
+                        true
+                    }
+                    Key.MediaPlay -> {
+                        bumpChrome()
+                        feedback.click()
+                        player.play()
+                        true
+                    }
+                    Key.MediaPause -> {
+                        bumpChrome()
+                        feedback.click()
+                        player.pause()
+                        true
+                    }
+                    Key.MediaRewind -> {
+                        seekBy(-10_000L)
+                        true
+                    }
+                    Key.MediaFastForward -> {
+                        seekBy(10_000L)
+                        true
+                    }
+                    Key.DirectionLeft -> {
+                        if (dialogOpen) {
+                            false
+                        } else if (isPlaying) {
+                            seekBy(-10_000L)
+                            true
+                        } else {
+                            // Paused: let D-pad move between Info and Quality.
+                            false
+                        }
+                    }
+                    Key.DirectionRight -> {
+                        if (dialogOpen) {
+                            false
+                        } else if (isPlaying) {
+                            seekBy(10_000L)
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Key.DirectionUp -> {
+                        if (dialogOpen) {
+                            false
+                        } else if (!isPlaying) {
+                            runCatching { infoFocus.requestFocus() }
+                            true
+                        } else {
+                            if (!showChrome) bumpChrome()
+                            true
+                        }
+                    }
+                    Key.DirectionDown -> {
+                        if (dialogOpen) {
+                            false
+                        } else if (!isPlaying) {
+                            runCatching { playerFocus.requestFocus() }
+                            true
+                        } else {
+                            if (!showChrome) bumpChrome()
+                            true
+                        }
+                    }
+                    else -> false
+                }
+            }
+            .onKeyEvent { event ->
+                if (dialogOpen || event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 when (event.key) {
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                         togglePlay()
                         true
                     }
-                    Key.DirectionUp -> {
-                        if (!isPlaying && (info.qualities.isNotEmpty() || canForceBetter)) {
-                            qualityPickerVisible = true
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    Key.DirectionLeft -> {
-                        seekBy(-10_000L)
-                        true
-                    }
-                    Key.DirectionRight -> {
-                        seekBy(10_000L)
-                        true
-                    }
                     Key.Menu -> {
-                        if (!isPlaying && (info.qualities.isNotEmpty() || canForceBetter)) {
-                            qualityPickerVisible = true
-                            true
-                        } else {
-                            false
-                        }
+                        bumpChrome()
+                        true
                     }
                     else -> false
                 }
-            },
+            }
+            .clickable(
+                enabled = !dialogOpen,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {
+                    if (!showChrome && isPlaying) bumpChrome() else togglePlay()
+                },
+            ),
     ) {
         YoutubePlayerSurface(
             player = player,
@@ -996,84 +1121,83 @@ private fun YoutubeFullscreenPlayer(
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            0f to Color.Black.copy(alpha = 0.35f),
-                            0.45f to Color.Transparent,
-                            1f to Color.Black.copy(alpha = 0.82f),
+                            0f to Color.Black.copy(alpha = 0.28f),
+                            0.55f to Color.Transparent,
+                            1f to Color.Black.copy(alpha = 0.78f),
                         ),
                     ),
             )
         }
 
         androidx.compose.animation.AnimatedVisibility(
-            visible = showChrome || !isPlaying,
+            visible = chromeVisible,
             modifier = Modifier
-                .align(Alignment.BottomStart)
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
                 .zIndex(2f),
             enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 6 },
             exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 8 },
         ) {
-            if (!isPlaying) {
-                YoutubePauseInfoOverlay(
-                    title = info.title,
-                    uploader = info.uploader,
-                    videoWidth = videoW,
-                    videoHeight = videoH,
-                    currentRes = currentResLabel,
-                    maxRes = maxResLabel,
-                    videoCodec = videoCodec,
-                    audioCodec = audioCodec,
-                    audioLayout = audioLayoutLabel(audioChannels),
-                    livestream = info.livestream,
-                    qualityLabel = currentResLabel ?: maxResLabel ?: "Quality",
-                    hasQualityOptions = info.qualities.isNotEmpty() || canForceBetter,
-                    positionLabel = formatClock(positionMs),
-                    durationLabel = if (info.livestream && durationMs <= 0L) {
-                        "LIVE"
-                    } else {
-                        formatClock(durationMs)
-                    },
-                    progress = progress,
-                    qualityFocusRequester = qualityFocus,
-                    onOpenQualityPicker = { qualityPickerVisible = true },
-                    modifier = Modifier
-                        .padding(start = 22.dp, bottom = 18.dp, end = 22.dp)
-                        .widthIn(max = 520.dp),
-                )
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.78f)),
-                            ),
-                        )
-                        .padding(horizontal = 36.dp, vertical = 22.dp),
-                ) {
-                    Text(
-                        info.title,
-                        color = TextCream,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
-                        fontFamily = PallasFontFamily,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f)),
+                        ),
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    YoutubeProgressBar(progress = progress)
+                    .padding(horizontal = 36.dp, vertical = 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (!isPlaying) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(bottom = 12.dp),
                     ) {
-                        Text(formatClock(positionMs), color = TextMuted, fontSize = 12.sp)
-                        Text(
-                            if (info.livestream && durationMs <= 0L) "LIVE" else formatClock(durationMs),
-                            color = TextMuted,
-                            fontSize = 12.sp,
+                        YoutubeTransportButton(
+                            onClick = {
+                                bumpChrome()
+                                feedback.click()
+                                infoDialogVisible = true
+                            },
+                            focusRequester = infoFocus,
+                        ) {
+                            Icon(
+                                Icons.Filled.Info,
+                                contentDescription = "Video info",
+                                tint = Color.White,
+                                modifier = Modifier.size(28.dp),
+                            )
+                        }
+                        QualityPickerChip(
+                            label = currentResLabel ?: maxResLabel ?: "Quality",
+                            focusRequester = qualityFocus,
+                            onClick = {
+                                bumpChrome()
+                                feedback.click()
+                                qualityPickerVisible = true
+                            },
                         )
                     }
+                }
+                YoutubeProgressBar(progress = progress)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(formatClock(positionMs), color = TextMuted, fontSize = 12.sp)
+                    Text(
+                        if (info.livestream && durationMs <= 0L) {
+                            "LIVE"
+                        } else {
+                            formatClock(durationMs)
+                        },
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                    )
                 }
             }
         }
@@ -1084,19 +1208,73 @@ private fun YoutubeFullscreenPlayer(
                 currentHeight = videoH,
                 canForceMax = canForceBetter,
                 maxLabel = forceLabel,
-                onSelect = ::selectQuality,
+                onSelect = { option ->
+                    selectQuality(option)
+                    qualityPickerVisible = false
+                },
                 onForceMax = {
                     forceMaxQuality()
                     qualityPickerVisible = false
                 },
                 onDismiss = {
                     qualityPickerVisible = false
-                    if (!isPlaying) {
-                        runCatching { qualityFocus.requestFocus() }
-                    }
+                    runCatching { qualityFocus.requestFocus() }
                 },
             )
         }
+
+        if (infoDialogVisible) {
+            YoutubeVideoInfoDialog(
+                title = info.title,
+                uploader = info.uploader,
+                livestream = info.livestream,
+                videoWidth = videoW,
+                videoHeight = videoH,
+                currentRes = currentResLabel,
+                maxRes = maxResLabel,
+                videoCodec = videoCodec,
+                videoFps = videoFps,
+                videoBitrate = videoBitrate,
+                audioCodec = audioCodec,
+                audioLayout = audioLayoutLabel(audioChannels),
+                audioBitrate = audioBitrate,
+                audioSampleRate = audioSampleRate,
+                positionLabel = formatClock(positionMs),
+                durationLabel = if (info.livestream && durationMs <= 0L) {
+                    "LIVE"
+                } else {
+                    formatClock(durationMs)
+                },
+                onDismiss = {
+                    infoDialogVisible = false
+                    runCatching { infoFocus.requestFocus() }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun YoutubeTransportButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
+    large: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val size = if (large) 64.dp else 52.dp
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .size(size)
+            .glassInteract(focused = focused, selected = focused, scaleOnFocus = true, corner = size / 2)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick),
+    ) {
+        content()
     }
 }
 
@@ -1124,149 +1302,189 @@ private fun YoutubeProgressBar(progress: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun YoutubePauseInfoOverlay(
+private fun YoutubeVideoInfoDialog(
     title: String,
     uploader: String,
+    livestream: Boolean,
     videoWidth: Int,
     videoHeight: Int,
     currentRes: String?,
     maxRes: String?,
     videoCodec: String?,
+    videoFps: Float,
+    videoBitrate: Int,
     audioCodec: String?,
     audioLayout: String?,
-    livestream: Boolean,
-    qualityLabel: String,
-    hasQualityOptions: Boolean,
+    audioBitrate: Int,
+    audioSampleRate: Int,
     positionLabel: String,
     durationLabel: String,
-    progress: Float,
-    qualityFocusRequester: FocusRequester,
-    onOpenQualityPicker: () -> Unit,
-    modifier: Modifier = Modifier,
+    onDismiss: () -> Unit,
 ) {
-    val panelShape = RoundedCornerShape(12.dp)
-    val videoDetail = buildList {
-        when {
-            videoWidth > 0 && videoHeight > 0 -> add("${videoWidth}×${videoHeight}")
-            currentRes != null -> add(currentRes)
-            videoHeight > 0 -> add("${videoHeight}p")
-        }
-        videoCodec?.let { add(it) }
-        maxRes?.takeIf { it != currentRes && videoHeight > 0 && infoMaxBelowCurrent(maxRes, videoHeight) }
-            ?.let { add("max $it") }
-    }.joinToString(" · ")
-
-    val audioDetail = buildList {
-        audioCodec?.let { add(it) }
-        audioLayout?.let { add(it) }
-    }.joinToString(" · ")
-
-    Column(
-        modifier = modifier
-            .shadow(12.dp, panelShape, clip = false)
-            .clip(panelShape)
-            .background(Color(0xE6121218))
-            .border(1.dp, Color.White.copy(alpha = 0.10f), panelShape)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+    BackHandler { onDismiss() }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.72f)),
+            contentAlignment = Alignment.Center,
         ) {
-            Text(
-                "PAUSED",
-                color = LocalScreenChrome.current.accent,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.6.sp,
-                fontFamily = PallasFontFamily,
-            )
-            if (livestream) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.48f)
+                    .fillMaxHeight(0.78f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(CardSurface)
+                    .border(1.dp, LocalScreenChrome.current.accent.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                    .padding(16.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Video information",
+                        color = TextCream,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = PallasFontFamily,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onDismiss) {
+                        Text("Close", color = LocalScreenChrome.current.accent)
+                    }
+                }
                 Text(
-                    "LIVE",
-                    color = Color.White,
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(LocalScreenChrome.current.accentWarm.copy(alpha = 0.9f))
-                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                    title,
+                    color = TextCream,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
-            }
-            Text(
-                title,
-                color = TextCream,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp,
-                fontFamily = PallasFontFamily,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-        }
-
-        if (uploader.isNotBlank()) {
-            Text(
-                uploader,
-                color = TextMuted,
-                fontSize = 11.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                if (videoDetail.isNotBlank()) {
-                    StreamInfoLine(label = "Video", value = videoDetail)
+                if (uploader.isNotBlank()) {
+                    Text(
+                        uploader,
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
+                    )
+                } else {
+                    Spacer(modifier = Modifier.height(10.dp))
                 }
-                if (audioDetail.isNotBlank()) {
-                    StreamInfoLine(label = "Audio", value = audioDetail)
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    item { YoutubeInfoHeading("VIDEO") }
+                    item {
+                        YoutubeInfoRow(
+                            "Resolution",
+                            when {
+                                videoWidth > 0 && videoHeight > 0 -> {
+                                    val playing = "${videoWidth}×${videoHeight}"
+                                    val label = currentRes?.let { " ($it)" }.orEmpty()
+                                    if (!maxRes.isNullOrBlank() && maxRes != currentRes) {
+                                        "$playing$label · max $maxRes"
+                                    } else {
+                                        "$playing$label"
+                                    }
+                                }
+                                currentRes != null -> currentRes
+                                else -> "Unknown"
+                            },
+                        )
+                    }
+                    item {
+                        YoutubeInfoRow(
+                            "Frame rate",
+                            if (videoFps > 0f) {
+                                val rounded = if (videoFps % 1f < 0.05f) {
+                                    "${videoFps.toInt()} fps"
+                                } else {
+                                    "%.2f fps".format(videoFps)
+                                }
+                                rounded
+                            } else {
+                                "Unknown"
+                            },
+                        )
+                    }
+                    item { YoutubeInfoRow("Video codec", videoCodec ?: "Unknown") }
+                    item {
+                        YoutubeInfoRow(
+                            "Video bitrate",
+                            if (videoBitrate > 0) formatYoutubeBitrate(videoBitrate) else "Not declared",
+                        )
+                    }
+                    item { YoutubeInfoHeading("AUDIO") }
+                    item { YoutubeInfoRow("Layout", audioLayout ?: "Unknown") }
+                    item { YoutubeInfoRow("Audio codec", audioCodec ?: "Unknown") }
+                    item {
+                        YoutubeInfoRow(
+                            "Audio bitrate",
+                            if (audioBitrate > 0) formatYoutubeBitrate(audioBitrate) else "Not declared",
+                        )
+                    }
+                    item {
+                        YoutubeInfoRow(
+                            "Sample rate",
+                            if (audioSampleRate > 0) "$audioSampleRate Hz" else "Unknown",
+                        )
+                    }
+                    item { YoutubeInfoHeading("PLAYBACK") }
+                    item {
+                        YoutubeInfoRow(
+                            "Position",
+                            "$positionLabel / $durationLabel",
+                        )
+                    }
+                    if (livestream) {
+                        item { YoutubeInfoRow("Type", "Live stream") }
+                    }
                 }
             }
-            if (hasQualityOptions) {
-                QualityPickerChip(
-                    label = qualityLabel,
-                    focusRequester = qualityFocusRequester,
-                    onClick = onOpenQualityPicker,
-                )
-            }
-        }
-
-        YoutubeProgressBar(progress = progress, modifier = Modifier.height(3.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(positionLabel, color = TextCream.copy(alpha = 0.85f), fontSize = 10.sp)
-            Text(durationLabel, color = TextMuted, fontSize = 10.sp)
         }
     }
 }
 
 @Composable
-private fun StreamInfoLine(label: String, value: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun YoutubeInfoHeading(text: String) {
+    Text(
+        text,
+        color = LocalScreenChrome.current.accent,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.2.sp,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+@Composable
+private fun YoutubeInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
-            label.uppercase(),
+            label,
             color = TextMuted,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.8.sp,
-            modifier = Modifier.width(42.dp),
+            fontSize = 12.sp,
+            modifier = Modifier.width(118.dp),
         )
         Text(
             value,
-            color = TextCream.copy(alpha = 0.92f),
-            fontSize = 11.sp,
-            maxLines = 1,
+            color = TextCream,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -1283,22 +1501,33 @@ private fun QualityPickerChip(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         modifier = Modifier
             .focusRequester(focusRequester)
-            .glassInteract(focused = focused, selected = focused, scaleOnFocus = true, corner = 10.dp)
+            .height(52.dp)
+            .glassInteract(focused = focused, selected = focused, scaleOnFocus = true, corner = 12.dp)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                        onClick()
+                        true
+                    }
+                    else -> false
+                }
+            }
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Text(
             label,
             color = if (focused) Color.Black else TextCream,
-            fontSize = 11.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
         )
         Text(
             "▾",
             color = if (focused) Color.Black.copy(alpha = 0.7f) else TextMuted,
-            fontSize = 10.sp,
+            fontSize = 12.sp,
         )
     }
 }
@@ -1428,6 +1657,18 @@ private fun QualityPickerRow(
             )
         }
     }
+}
+
+private fun formatYoutubeBitrate(bps: Int): String = when {
+    bps >= 1_000_000 -> "%.1f Mbps".format(bps / 1_000_000.0)
+    bps >= 1_000 -> "%d kbps".format((bps + 500) / 1_000)
+    else -> "$bps bps"
+}
+
+private fun displayYoutubeTitle(item: YoutubeVideoItem): String {
+    val title = item.title.trim()
+    if (title.isNotBlank() && !title.matches(Regex("^[\\w-]{11}$"))) return title
+    return "YouTube video"
 }
 
 private fun infoMaxBelowCurrent(maxRes: String, currentHeight: Int): Boolean {

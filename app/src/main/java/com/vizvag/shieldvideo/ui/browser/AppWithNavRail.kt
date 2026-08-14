@@ -89,11 +89,10 @@ fun AppWithNavRail(
 fun orderedSharesForRail(settings: AppSettings): List<String> {
     val shares = settings.shares
     if (shares.isEmpty()) return shares
-    val configured = settings.defaultShare.trim().trimEnd('/').lowercase()
+    val configured = settings.defaultShare.trim().trim('/').lowercase()
     if (configured.isBlank()) return shares
     val default = shares.firstOrNull { share ->
-        val n = share.trim().trimEnd('/').lowercase()
-        n == configured || n.equals(settings.defaultShare, ignoreCase = true)
+        share.trim().trim('/').lowercase() == configured
     } ?: return shares
     return listOf(default) + shares.filterNot { it.equals(default, ignoreCase = true) }
 }

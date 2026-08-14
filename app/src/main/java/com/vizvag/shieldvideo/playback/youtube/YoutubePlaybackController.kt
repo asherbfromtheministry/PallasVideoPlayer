@@ -13,6 +13,8 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import com.vizvag.shieldvideo.data.settings.SettingsRepository
+import com.vizvag.shieldvideo.data.settings.YoutubePreferredResolution
 import com.vizvag.shieldvideo.data.youtube.YoutubeDefaults
 import com.vizvag.shieldvideo.data.youtube.YoutubePlayback
 import com.vizvag.shieldvideo.data.youtube.YoutubeQualityOption
@@ -35,7 +37,10 @@ data class YoutubePlaybackState(
  * App-scoped YouTube ExoPlayer for remote control.
  */
 @OptIn(UnstableApi::class)
-class YoutubePlaybackController(context: Context) {
+class YoutubePlaybackController(
+    context: Context,
+    private val settingsRepository: SettingsRepository? = null,
+) {
     private val appContext = context.applicationContext
 
     private var activeUserAgent: String = YoutubeDefaults.PLAYBACK_USER_AGENT
@@ -63,6 +68,7 @@ class YoutubePlaybackController(context: Context) {
 
     private val trackSelector = DefaultTrackSelector(appContext).apply {
         parameters = buildUponParameters()
+            .setPreferredAudioLanguage("en")
             .setForceHighestSupportedBitrate(true)
             .setMaxVideoBitrate(Int.MAX_VALUE)
             .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
@@ -76,33 +82,33 @@ class YoutubePlaybackController(context: Context) {
         ExoPlayer.Builder(appContext, renderersFactory)
             .setTrackSelector(trackSelector)
             .build()
-            .apply {
-                playWhenReady = true
-                addListener(object : Player.Listener {
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        _state.update { it.copy(isPlaying = isPlaying) }
-                    }
-
-                    override fun onPlayerError(error: PlaybackException) {
-                        val restore = pendingRestore ?: return
-                        pendingRestore = null
-                        switchingQuality = false
-                        suppressBinderErrorsUntilMs = System.currentTimeMillis() + 3_000L
-                        applyPlayback(restore.playback, restore.positionMs, restore.playWhenReady)
-                        // Always soft — never forward raw "Source error" (that kills the session).
-                        onQualitySwitchFailed?.invoke("Couldn't switch quality — kept previous")
-                    }
-
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        if (playbackState == Player.STATE_READY && switchingQuality) {
-                            switchingQuality = false
-                            pendingRestore = null
-                            currentPlayback = lastAppliedPlayback
-                        }
-                    }
-                })
-            }
     }
+        .apply {
+            playWhenReady = true
+            addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    _state.update { it.copy(isPlaying = isPlaying) }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    val restore = pendingRestore ?: return
+                    pendingRestore = null
+                    switchingQuality = false
+                    suppressBinderErrorsUntilMs = System.currentTimeMillis() + 3_000L
+                    applyPlayback(restore.playback, restore.positionMs, restore.playWhenReady)
+                    // Always soft — never forward raw "Source error" (that kills the session).
+                    onQualitySwitchFailed?.invoke("Couldn't switch quality — kept previous")
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY && switchingQuality) {
+                        switchingQuality = false
+                        pendingRestore = null
+                        currentPlayback = lastAppliedPlayback
+                    }
+                }
+            })
+        }
 
     private val _state = MutableStateFlow(YoutubePlaybackState())
     val state: StateFlow<YoutubePlaybackState> = _state.asStateFlow()
@@ -127,14 +133,18 @@ class YoutubePlaybackController(context: Context) {
         val playWhenReady: Boolean,
     )
 
+    private fun preferredMaxHeight(): Int =
+        settingsRepository?.load()?.youtubePreferredResolution?.maxHeight
+            ?: YoutubePreferredResolution.Auto.maxHeight
+
     fun playStream(info: YoutubeStreamInfo) {
         applyPlaybackUserAgent(info.playbackUserAgent)
         currentInfo = info
         switchingQuality = false
         pendingRestore = null
         suppressBinderErrorsUntilMs = 0L
-        // Prefer DASH/HLS when present — quality changes can use the track selector (no URL swap).
-        val preferred = preferredPlayback(info)
+        val maxH = preferredMaxHeight()
+        val preferred = preferredPlayback(info, maxH)
         currentPlayback = preferred
         usingAdaptiveManifest = preferred is YoutubePlayback.Dash || preferred is YoutubePlayback.Hls
         _state.value = YoutubePlaybackState(
@@ -144,17 +154,52 @@ class YoutubePlaybackController(context: Context) {
             isPlaying = true,
             durationMs = info.durationSec * 1000L,
         )
-        clearVideoSizeCap()
+        applyPreferredVideoCap(maxH, preferred)
         applyPlayback(preferred, positionMs = 0L, playWhenReady = true)
     }
 
-    private fun preferredPlayback(info: YoutubeStreamInfo): YoutubePlayback = info.playback
+    private fun preferredPlayback(info: YoutubeStreamInfo, maxHeight: Int): YoutubePlayback {
+        if (maxHeight > 0 &&
+            info.playback is YoutubePlayback.SeparateTracks &&
+            info.qualities.isNotEmpty()
+        ) {
+            val capped = info.qualities
+                .filter { it.height <= maxHeight }
+                .maxByOrNull { it.height }
+                ?: info.qualities.minByOrNull { it.height }
+            if (capped != null) return capped.playback
+        }
+        return info.playback
+    }
+
+    private fun applyPreferredVideoCap(maxHeight: Int, playback: YoutubePlayback) {
+        val adaptive = playback is YoutubePlayback.Dash || playback is YoutubePlayback.Hls
+        if (maxHeight > 0 && adaptive) {
+            setMaxVideoHeight(maxHeight)
+        } else {
+            clearVideoSizeCap()
+        }
+    }
+
+    /** Re-apply Settings → YouTube preferred resolution (AUTO = uncapped). */
+    fun applyPreferredResolutionFromSettings() {
+        val maxH = preferredMaxHeight()
+        val playback = currentPlayback ?: currentInfo?.playback
+        if (playback != null) {
+            applyPreferredVideoCap(maxH, playback)
+        } else if (maxH > 0) {
+            setMaxVideoHeight(maxH)
+        } else {
+            clearVideoSizeCap()
+        }
+    }
 
     fun playFallback(index: Int): Boolean {
         val info = currentInfo ?: return false
         val all = listOf(info.playback) + info.playbackFallbacks
         val playback = all.getOrNull(index) ?: return false
         usingAdaptiveManifest = playback is YoutubePlayback.Dash || playback is YoutubePlayback.Hls
+        applyPreferredVideoCap(preferredMaxHeight(), playback)
         applyPlayback(playback, player.currentPosition.coerceAtLeast(0L), player.playWhenReady)
         currentPlayback = playback
         return true
@@ -227,6 +272,7 @@ class YoutubePlaybackController(context: Context) {
         }
         // Cap height but still pick the best bitrate at/under that rung.
         trackSelector.parameters = trackSelector.buildUponParameters()
+            .setPreferredAudioLanguage("en")
             .setForceHighestSupportedBitrate(true)
             .setMaxVideoBitrate(Int.MAX_VALUE)
             .setMaxVideoSize(Int.MAX_VALUE, height)
@@ -236,6 +282,7 @@ class YoutubePlaybackController(context: Context) {
 
     fun clearVideoSizeCap() {
         trackSelector.parameters = trackSelector.buildUponParameters()
+            .setPreferredAudioLanguage("en")
             .setForceHighestSupportedBitrate(true)
             .setMaxVideoBitrate(Int.MAX_VALUE)
             .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)

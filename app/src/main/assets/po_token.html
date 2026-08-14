@@ -1,5 +1,103 @@
 <!DOCTYPE html>
 <html lang="en"><head><title></title><script>
+
+/**
+ * MOD: old webview support
+ */
+if (typeof Promise === "undefined") {
+  (function () {
+    function Promise(fn) {
+      var state = "pending",
+        value,
+        deferred = [];
+
+      function resolve(newValue) {
+        try {
+          if (
+            newValue &&
+            typeof newValue.then === "function"
+          ) {
+            newValue.then(resolve, reject);
+            return;
+          }
+          state = "resolved";
+          value = newValue;
+          setTimeout(function () {
+            deferred.forEach(function (handler) {
+              handler(value);
+            });
+          }, 0);
+        } catch (e) {
+          reject(e);
+        }
+      }
+
+      function reject(reason) {
+        state = "rejected";
+        value = reason;
+        setTimeout(function () {
+          deferred.forEach(function (handler) {
+            handler(value);
+          });
+        }, 0);
+      }
+
+      this.then = function (onResolved) {
+        return new Promise(function (resolve) {
+          deferred.push(function () {
+            resolve(onResolved(value));
+          });
+          if (state === "resolved") {
+            resolve(value);
+          }
+        });
+      };
+
+      fn(resolve, reject);
+    }
+
+    window.Promise = Promise;
+  })();
+}
+
+/**
+ * MOD: old webview support
+ */
+if (typeof window.Symbol !== "function") {
+  (function() {
+    var idCounter = 0;
+    var globalSymbolRegistry = {};
+
+    var SymbolPolyfill = function Symbol(description) {
+      description = description === undefined ? "" : String(description);
+
+      var symbol = "__@@symbol_" + description + "_" + (idCounter++) + "__";
+
+      // create a wrapper object so typeof === "symbol" can't be faked
+      return symbol;
+    };
+
+    SymbolPolyfill.for = function(key) {
+      key = String(key);
+      if (!globalSymbolRegistry[key]) {
+        globalSymbolRegistry[key] = SymbolPolyfill(key);
+      }
+      return globalSymbolRegistry[key];
+    };
+
+    SymbolPolyfill.keyFor = function(sym) {
+      for (var key in globalSymbolRegistry) {
+        if (globalSymbolRegistry[key] === sym) {
+          return key;
+        }
+      }
+      return undefined;
+    };
+
+    window.Symbol = SymbolPolyfill;
+  })();
+}
+
 /**
  * Factory method to create and load a BotGuardClient instance.
  * @param options - Configuration options for the BotGuardClient.
@@ -103,14 +201,7 @@ function runBotGuard(challengeData) {
   })
 }
 
-function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
-  const getMinter = webPoSignalOutput[0];
-
-  if (!getMinter)
-    throw new Error('PMD:Undefined');
-
-  const mintCallback = getMinter(integrityToken);
-
+function obtainPoToken(identifier) {
   if (!(mintCallback instanceof Function))
     throw new Error('APF:Failed');
 

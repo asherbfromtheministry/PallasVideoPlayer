@@ -123,9 +123,9 @@ fun HomeLandingScreen(
 ) {
     val shares = remember(settings.shares, settings.defaultShare) { orderedSharesForRail(settings) }
     val defaultShare = remember(shares, settings.defaultShare) {
-        val configured = settings.defaultShare.trim().trimEnd('/')
-        shares.firstOrNull { it.equals(configured, ignoreCase = true) }
-            ?: shares.firstOrNull { it.equals(settings.defaultShare, ignoreCase = true) }
+        val configured = settings.defaultShare.trim().trim('/').lowercase()
+        if (configured.isBlank()) return@remember shares.firstOrNull()
+        shares.firstOrNull { it.trim().trim('/').equals(configured, ignoreCase = true) }
             ?: shares.firstOrNull()
     }
     val otherShares = remember(shares, defaultShare) {
@@ -265,9 +265,9 @@ fun HomeLandingScreen(
     }
 
     var entered by remember { mutableStateOf(false) }
+    // Prefer the HOME THEATRE tile (settings "Default folder"); never YouTube/Live TV first.
     val initialFocusKey = remember(hotspots) {
         when {
-            hotspots.any { it.key == "youtube" } -> "youtube"
             hotspots.any { it.key == "library" } -> "library"
             else -> hotspots.firstOrNull()?.key
         }

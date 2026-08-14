@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
@@ -186,7 +187,8 @@ fun BrowserNavRail(
         // Pack icons vertically — Shields need every pixel when many shares + players are enabled.
         val compact = maxHeight < 560.dp
         val itemGap = 0.dp
-        val sectionGap = if (compact) 1.dp else 2.dp
+        // Extra air around section rules so groups read as separate blocks.
+        val sectionGap = if (compact) 6.dp else 10.dp
         Row(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
@@ -243,10 +245,11 @@ fun BrowserNavRail(
                 Spacer(Modifier.height(sectionGap))
                 Box(
                     Modifier
-                        .width(28.dp)
-                        .height(1.dp)
-                        .background(Color.White.copy(alpha = 0.12f)),
+                        .width(40.dp)
+                        .height(2.dp)
+                        .background(Color.White.copy(alpha = 0.38f), RoundedCornerShape(1.dp)),
                 )
+                Spacer(Modifier.height(sectionGap))
 
                 if (showLiveTv) {
                     val livePreferred = destination == RailDestination.LiveTv
@@ -327,10 +330,11 @@ fun BrowserNavRail(
                 Spacer(Modifier.height(sectionGap))
                 Box(
                     Modifier
-                        .width(28.dp)
-                        .height(1.dp)
-                        .background(Color.White.copy(alpha = 0.12f)),
+                        .width(40.dp)
+                        .height(2.dp)
+                        .background(Color.White.copy(alpha = 0.38f), RoundedCornerShape(1.dp)),
                 )
+                Spacer(Modifier.height(sectionGap))
 
                 run {
                     val (isFirst, isLast) = nextEdge()
@@ -495,7 +499,10 @@ private fun RailItem(
             imageVector = icon,
             contentDescription = label,
             tint = tint,
-            modifier = Modifier.size(iconSize),
+            // Glyph sits high in the Material viewport; offset does not move the label.
+            modifier = Modifier
+                .size(iconSize)
+                .offset(y = 6.dp),
         )
         Text(
             text = label,

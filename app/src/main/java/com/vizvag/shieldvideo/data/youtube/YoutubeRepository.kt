@@ -35,6 +35,14 @@ class YoutubeRepository(
         .followRedirects(true)
         .build()
 
+    /** Short timeouts so stream probing cannot hang the UI on "Resolving stream…". */
+    private val probeClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(10, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .build()
+
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
     /**
@@ -293,19 +301,7 @@ class YoutubeRepository(
 
             var lastError = "Could not load video"
 
-            // ANDROID_VR first — no poToken required for googlevideo (when not bot-blocked).
-            when (val vr = fetchStreamsWithClient(id, InnertubeClient.AndroidVr)) {
-                is StreamsFetch.Ok -> {
-                    if (playbackWorksOnDevice(vr.info)) {
-                        android.util.Log.i("YoutubeStreams", "using ANDROID_VR for $id")
-                        return@withContext vr.info
-                    }
-                    lastError = "ANDROID_VR streams blocked at playback"
-                }
-                is StreamsFetch.Err -> lastError = vr.message
-            }
-
-            // Embedded player — no pot; works for most public / embeddable videos.
+            // SmartTube VideoInfoService order (Aug 2026): WEB_EMBED / TV_DOWNGRADED first.
             when (val emb = fetchStreamsWithClient(id, InnertubeClient.WebEmbedded)) {
                 is StreamsFetch.Ok -> {
                     if (playbackWorksOnDevice(emb.info)) {
@@ -317,14 +313,28 @@ class YoutubeRepository(
                 is StreamsFetch.Err -> lastError = emb.message
             }
 
-            // NewPipe + videoId-bound poToken (SmartTube / current YouTube).
+            when (val tvDown = fetchStreamsWithClient(id, InnertubeClient.TvDowngraded)) {
+                is StreamsFetch.Ok -> {
+                    if (playbackWorksOnDevice(tvDown.info)) {
+                        android.util.Log.i("YoutubeStreams", "using TV_DOWNGRADED for $id")
+                        return@withContext tvDown.info
+                    }
+                    lastError = "TV_DOWNGRADED streams blocked at playback"
+                }
+                is StreamsFetch.Err -> lastError = tvDown.message
+            }
+
+            // NewPipe Reel + videoId-bound web poToken (SmartTube potokennp2 homepage mint).
             runCatching {
                 YoutubeNewPipeInit.awaitPoTokenReady(timeoutMs = 90_000L)
                 val raw = YoutubeNewPipeStreams.fetch(id)
                 val pot = streamingPoTokenFor(id)
                 YoutubePoTokenUrls.enhanceStreamInfo(raw, pot)
             }.onSuccess { info ->
-                if (playbackWorksOnDevice(info)) {
+                // Prefer NewPipe when pot is present even if Range probe flakes (403 on HEAD/Range).
+                val ok = playbackWorksOnDevice(info) ||
+                    YoutubePoTokenUrls.playbackHasPot(info.playback)
+                if (ok) {
                     android.util.Log.i(
                         "YoutubeStreams",
                         "using NewPipe+pot for $id hasPot=${YoutubePoTokenUrls.playbackHasPot(info.playback)}",
@@ -335,6 +345,17 @@ class YoutubeRepository(
             }.onFailure { e ->
                 lastError = e.message ?: lastError
                 android.util.Log.e("YoutubeStreams", "NewPipe failed for $id: $lastError")
+            }
+
+            when (val vr = fetchStreamsWithClient(id, InnertubeClient.AndroidVr)) {
+                is StreamsFetch.Ok -> {
+                    if (playbackWorksOnDevice(vr.info)) {
+                        android.util.Log.i("YoutubeStreams", "using ANDROID_VR for $id")
+                        return@withContext vr.info
+                    }
+                    lastError = "ANDROID_VR streams blocked at playback"
+                }
+                is StreamsFetch.Err -> lastError = vr.message
             }
 
             // Authenticated TV Innertube when linked.
@@ -446,8 +467,9 @@ class YoutubeRepository(
     private fun fetchStreamsViaInnertube(id: String): StreamsFetch {
         val attempts = buildList {
             resolveAccessToken()?.takeIf { it.isNotBlank() }?.let { add(InnertubeClient.Tv(it)) }
-            add(InnertubeClient.AndroidVr) // no poToken required for GVS
             add(InnertubeClient.WebEmbedded)
+            add(InnertubeClient.TvDowngraded)
+            add(InnertubeClient.AndroidVr)
             add(InnertubeClient.Ios)
             add(InnertubeClient.Android)
             add(InnertubeClient.Tv(null))
@@ -520,13 +542,24 @@ class YoutubeRepository(
                 .put("userAgent", userAgent)
         }
 
+        /** SmartTube TV_DOWNGRADED — Cobalt UA; often returns plain URL formats. */
+        data object TvDowngraded : InnertubeClient() {
+            override val name = "TVHTML5"
+            override val version = TV_DOWNGRADED_CLIENT_VERSION
+            override val clientId = "7"
+            override val apiKey = TV_API_KEY
+            override val userAgent = TV_DOWNGRADED_UA
+            override fun clientJson(): JSONObject = super.clientJson()
+                .put("userAgent", userAgent)
+        }
+
         data object Ios : InnertubeClient() {
             override val name = "IOS"
             override val version = IOS_CLIENT_VERSION
             override val clientId = "5"
             override val apiKey = IOS_API_KEY
             override val userAgent =
-                "com.google.ios.youtube/$IOS_CLIENT_VERSION ($IOS_DEVICE_MODEL; U; CPU iOS $IOS_UA_VERSION like Mac OS X)"
+                "com.google.ios.youtube/$IOS_CLIENT_VERSION ($IOS_DEVICE_MODEL; U; CPU iOS $IOS_UA_VERSION like Mac OS X;)"
             override fun clientJson(): JSONObject = super.clientJson()
                 .put("deviceMake", "Apple")
                 .put("deviceModel", IOS_DEVICE_MODEL)
@@ -541,13 +574,15 @@ class YoutubeRepository(
             override val clientId = "3"
             override val apiKey = INNERTUBE_API_KEY
             override val userAgent =
-                "com.google.android.youtube/$INNERTUBE_CLIENT_VERSION (Linux; U; Android 14) gzip"
+                "com.google.android.youtube/$INNERTUBE_CLIENT_VERSION (Linux; U; Android 11) gzip"
             override fun clientJson(): JSONObject = super.clientJson()
                 .put("androidSdkVersion", 30)
+                .put("osName", "Android")
+                .put("osVersion", "11")
                 .put("userAgent", userAgent)
         }
 
-        /** Quest / Android VR — yt-dlp: GVS poToken not required. */
+        /** Quest / Android VR — keep ≤1.65.10 (newer often SABR-only). */
         data object AndroidVr : InnertubeClient() {
             override val name = "ANDROID_VR"
             override val version = ANDROID_VR_CLIENT_VERSION
@@ -560,7 +595,7 @@ class YoutubeRepository(
                 .put("deviceMake", "Oculus")
                 .put("deviceModel", "Quest 3")
                 .put("osName", "Android")
-                .put("osVersion", "12L")
+                .put("osVersion", "12")
                 .put("androidSdkVersion", 32)
                 .put("userAgent", userAgent)
         }
@@ -626,9 +661,12 @@ class YoutubeRepository(
         val details = root.optJSONObject("videoDetails")
         val durationSec = details?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
         val rawOptions = pickPlaybackFromInnertube(streaming, id, durationSec)
-        // ANDROID_VR streams work without pot=; adding videoId pot can 403 them.
+        // ANDROID_VR / WEB_EMBEDDED / TV_DOWNGRADED streams often work without pot=.
         val pot = when (clientSpec) {
-            is InnertubeClient.AndroidVr, is InnertubeClient.WebEmbedded -> null
+            is InnertubeClient.AndroidVr,
+            is InnertubeClient.WebEmbedded,
+            is InnertubeClient.TvDowngraded,
+            -> null
             else -> streamingPoTokenFor(id)
         }
         val enhancedOptions = rawOptions.map { YoutubePoTokenUrls.enhancePlayback(it, pot) }
@@ -718,6 +756,8 @@ class YoutubeRepository(
             val mime: String,
             val hasVideo: Boolean,
             val hasAudio: Boolean,
+            val audioLang: String = "",
+            val audioTrackType: String = "",
         )
 
         fun parseList(arr: JSONArray?): List<Cand> {
@@ -731,6 +771,7 @@ class YoutubeRepository(
                     val mime = o.optString("mimeType")
                     val height = formatHeight(o)
                     val bitrate = o.optInt("bitrate").takeIf { it > 0 } ?: o.optInt("averageBitrate")
+                    val track = o.optJSONObject("audioTrack")
                     add(
                         Cand(
                             url = url,
@@ -740,6 +781,9 @@ class YoutubeRepository(
                             hasVideo = mime.startsWith("video/"),
                             hasAudio = mime.startsWith("audio/") ||
                                 (mime.startsWith("video/") && mime.contains("mp4a")),
+                            audioLang = track?.optString("id").orEmpty()
+                                .ifBlank { track?.optString("displayName").orEmpty() },
+                            audioTrackType = o.optString("audioTrackType"),
                         ),
                     )
                 }
@@ -753,6 +797,26 @@ class YoutubeRepository(
         fun isAvc(m: String) = m.contains("avc1") || m.contains("avc")
         fun isVp9(m: String) = m.contains("vp9") || m.contains("vp09")
         fun isAac(m: String) = m.contains("mp4a") || m.startsWith("audio/mp4")
+        fun audioLangScore(c: Cand): Int {
+            val blob = "${c.audioLang} ${c.audioTrackType}".lowercase()
+            return when {
+                blob.startsWith("en") || blob.contains("english") ||
+                    Regex("""\ben\b""").containsMatchIn(blob) -> 100
+                blob.isBlank() -> 60
+                blob.startsWith("es") || blob.contains("spanish") ||
+                    blob.contains("español") || blob.contains("espanol") -> 0
+                else -> 20
+            }
+        }
+        fun audioTypeScore(c: Cand): Int {
+            val t = c.audioTrackType.uppercase()
+            return when {
+                t.contains("ORIGINAL") -> 50
+                t.contains("DUBBED") -> 0
+                t.contains("DESCRIPTIVE") -> 10
+                else -> 30
+            }
+        }
 
         val videos = adaptive.filter { it.hasVideo && it.height >= 144 }
             .ifEmpty { adaptive.filter { it.hasVideo } }
@@ -764,9 +828,6 @@ class YoutubeRepository(
         }
 
         // SeparateTracks — high-res VP9/AVC when DASH is unavailable.
-        val bestAudio = audios.maxWithOrNull(
-            compareBy<Cand> { if (isAac(it.mime)) 1 else 0 }.thenBy { it.bitrate },
-        )
         val bestVideo = videos.maxWithOrNull(
             compareBy<Cand> { it.height }
                 .thenBy {
@@ -778,18 +839,14 @@ class YoutubeRepository(
                 }
                 .thenBy { it.bitrate },
         )
-        if (bestVideo != null && bestAudio != null) {
-            val audio = if (bestVideo.mime.startsWith("video/mp4") || isAvc(bestVideo.mime)) {
-                audios.maxWithOrNull(
-                    compareBy<Cand> { if (isAac(it.mime)) 1 else 0 }.thenBy { it.bitrate },
-                ) ?: bestAudio
-            } else {
-                audios.maxWithOrNull(
-                    compareBy<Cand> {
-                        if (it.mime.contains("webm") || it.mime.contains("opus")) 1 else 0
-                    }.thenBy { it.bitrate },
-                ) ?: bestAudio
-            }
+        if (bestVideo != null && audios.isNotEmpty()) {
+            val preferAac = bestVideo.mime.startsWith("video/mp4") || isAvc(bestVideo.mime)
+            val audio = audios.maxWithOrNull(
+                compareBy<Cand> { audioLangScore(it) }
+                    .thenBy { audioTypeScore(it) }
+                    .thenBy { if (preferAac == isAac(it.mime)) 1 else 0 }
+                    .thenBy { it.bitrate },
+            )!!
             options += YoutubePlayback.SeparateTracks(
                 videoUrl = bestVideo.url,
                 audioUrl = audio.url,
@@ -837,7 +894,7 @@ class YoutubeRepository(
             .get()
             .build()
         return runCatching {
-            client.newCall(request).execute().use { it.code in 200..399 }
+            probeClient.newCall(request).execute().use { it.code in 200..399 }
         }.getOrDefault(false)
     }
 
@@ -849,6 +906,8 @@ class YoutubeRepository(
             val mime: String,
             val hasVideo: Boolean,
             val hasAudio: Boolean,
+            val audioLang: String = "",
+            val audioTrackType: String = "",
         )
         fun parseList(arr: JSONArray?): List<Cand> {
             if (arr == null) return emptyList()
@@ -858,6 +917,7 @@ class YoutubeRepository(
                     val url = o.optString("url").takeIf { it.isNotBlank() } ?: continue
                     if (o.has("signatureCipher") || o.has("cipher")) continue
                     val mime = o.optString("mimeType")
+                    val track = o.optJSONObject("audioTrack")
                     add(
                         Cand(
                             url = url,
@@ -867,6 +927,9 @@ class YoutubeRepository(
                             hasVideo = mime.startsWith("video/"),
                             hasAudio = mime.startsWith("audio/") ||
                                 (mime.startsWith("video/") && mime.contains("mp4a")),
+                            audioLang = track?.optString("id").orEmpty()
+                                .ifBlank { track?.optString("displayName").orEmpty() },
+                            audioTrackType = o.optString("audioTrackType"),
                         ),
                     )
                 }
@@ -877,7 +940,26 @@ class YoutubeRepository(
         fun isAac(m: String) = m.contains("mp4a") || m.startsWith("audio/mp4")
         fun isOpus(m: String) = m.contains("opus") || m.contains("webm")
         fun isMp4Video(m: String) = m.startsWith("video/mp4") || isAvc(m)
-        fun isWebmVideo(m: String) = m.startsWith("video/webm") || isVp9(m) || m.contains("av01")
+        fun audioLangScore(c: Cand): Int {
+            val blob = "${c.audioLang} ${c.audioTrackType}".lowercase()
+            return when {
+                blob.startsWith("en") || blob.contains("english") ||
+                    Regex("""\ben\b""").containsMatchIn(blob) -> 100
+                blob.isBlank() -> 60
+                blob.startsWith("es") || blob.contains("spanish") ||
+                    blob.contains("español") || blob.contains("espanol") -> 0
+                else -> 20
+            }
+        }
+        fun audioTypeScore(c: Cand): Int {
+            val t = c.audioTrackType.uppercase()
+            return when {
+                t.contains("ORIGINAL") -> 50
+                t.contains("DUBBED") -> 0
+                t.contains("DESCRIPTIVE") -> 10
+                else -> 30
+            }
+        }
 
         val adaptive = parseList(streaming.optJSONArray("adaptiveFormats"))
         val videos = adaptive.filter { it.hasVideo && it.height > 0 }
@@ -887,15 +969,18 @@ class YoutubeRepository(
         fun audioForVideo(video: Cand): Cand? {
             val preferAac = isMp4Video(video.mime)
             return audios.maxWithOrNull(
-                compareBy<Cand> {
-                    when {
-                        preferAac && isAac(it.mime) -> 2
-                        !preferAac && isOpus(it.mime) -> 2
-                        preferAac && isOpus(it.mime) -> 0
-                        !preferAac && isAac(it.mime) -> 0
-                        else -> 1
+                compareBy<Cand> { audioLangScore(it) }
+                    .thenBy { audioTypeScore(it) }
+                    .thenBy {
+                        when {
+                            preferAac && isAac(it.mime) -> 2
+                            !preferAac && isOpus(it.mime) -> 2
+                            preferAac && isOpus(it.mime) -> 0
+                            !preferAac && isAac(it.mime) -> 0
+                            else -> 1
+                        }
                     }
-                }.thenBy { it.bitrate },
+                    .thenBy { it.bitrate },
             )
         }
 
@@ -1281,10 +1366,15 @@ class YoutubeRepository(
                 }
             if (!videoId.matches(Regex("^[\\w-]{11}$"))) return
             val meta = tile.optJSONObject("metadata")?.optJSONObject("tileMetadataRenderer")
-            val title = extractText(meta?.opt("title"))
-                .ifBlank { extractText(tile.opt("title")) }
-                .ifBlank { extractText(tile.opt("headline")) }
-                .ifBlank { videoId }
+            val a11y = accessibilityParts(tile)
+            val title = firstRealTitle(
+                extractText(meta?.opt("title")),
+                extractText(tile.opt("title")),
+                extractText(tile.opt("headline")),
+                extractText(tile.opt("primaryText")),
+                a11y.title,
+            )
+            if (title.isBlank()) return
             val line0 = lineItemTexts(meta?.optJSONArray("lines")?.optJSONObject(0))
             val line1 = lineItemTexts(meta?.optJSONArray("lines")?.optJSONObject(1))
             val menuSubtitle = extractText(
@@ -1294,10 +1384,13 @@ class YoutubeRepository(
             ).removePrefix("@").trim()
                 .substringBefore("·").substringBefore("•").trim()
             val uploader = menuSubtitle
+                .ifBlank { a11y.channel }
                 .ifBlank { line0.firstOrNull().orEmpty() }
                 .ifBlank { extractText(tile.opt("shortBylineText")) }
                 .ifBlank { extractText(tile.opt("longBylineText")) }
                 .removePrefix("@").trim()
+                .takeUnless { looksLikeVideoId(it) }
+                .orEmpty()
             val durationSec = tileDurationSeconds(tile)
             val published = line1.firstOrNull { looksLikeRelativeDate(it) }.orEmpty()
                 .ifBlank { line0.firstOrNull { looksLikeRelativeDate(it) }.orEmpty() }
@@ -1349,54 +1442,78 @@ class YoutubeRepository(
                                 ?.optString("videoId").orEmpty().trim()
                         }
                     if (videoId.matches(Regex("^[\\w-]{11}$"))) {
-                        val title = extractText(node.opt("title"))
-                            .ifBlank { extractText(node.opt("headline")) }
-                            .ifBlank { extractText(node.opt("primaryText")) }
-                            .ifBlank {
-                                extractText(node.optJSONObject("metadata")?.opt("title"))
-                            }
-                            .ifBlank {
+                        // Skip bare watchEndpoint stubs (no metadata) — they used to land as
+                        // title=videoId chips like "cvbk73hdsk".
+                        val hasDisplayFields = node.has("title") ||
+                            node.has("headline") ||
+                            node.has("primaryText") ||
+                            node.has("shortBylineText") ||
+                            node.has("longBylineText") ||
+                            node.has("ownerText") ||
+                            node.has("metadata") ||
+                            node.has("accessibility") ||
+                            node.has("accessibilityText")
+                        if (!hasDisplayFields) {
+                            // continue walk only
+                        } else {
+                            val a11y = accessibilityParts(node)
+                            val title = firstRealTitle(
+                                extractText(node.opt("title")),
+                                extractText(node.opt("headline")),
+                                extractText(node.opt("primaryText")),
+                                extractText(node.optJSONObject("metadata")?.opt("title")),
                                 extractText(
                                     node.optJSONObject("metadata")
                                         ?.optJSONObject("tileMetadataRenderer")
                                         ?.opt("title"),
+                                ),
+                                a11y.title,
+                            )
+                            if (title.isNotBlank()) {
+                                val uploader = extractText(node.opt("shortBylineText"))
+                                    .ifBlank { extractText(node.opt("longBylineText")) }
+                                    .ifBlank { extractText(node.opt("ownerText")) }
+                                    .ifBlank { extractText(node.opt("subtitle")) }
+                                    .ifBlank { a11y.channel }
+                                    .removePrefix("@").trim()
+                                    .takeUnless { looksLikeVideoId(it) }
+                                    .orEmpty()
+                                val thumb = firstThumbnailUrl(node)
+                                val durationSec = tileDurationSeconds(node).let { d ->
+                                    if (d != 0L) {
+                                        d
+                                    } else {
+                                        parseDurationSeconds(extractText(node.opt("lengthText")))
+                                    }
+                                }
+                                val published = extractText(node.opt("publishedTimeText"))
+                                val channelId = tileChannelId(node)
+                                    .ifBlank {
+                                        channelIdFromAttributedText(node.opt("shortBylineText")).orEmpty()
+                                    }
+                                    .ifBlank {
+                                        channelIdFromAttributedText(node.opt("longBylineText")).orEmpty()
+                                    }
+                                    .ifBlank {
+                                        channelIdFromAttributedText(node.opt("ownerText")).orEmpty()
+                                    }
+                                putItem(
+                                    YoutubeVideoItem(
+                                        id = videoId,
+                                        title = title,
+                                        uploader = uploader,
+                                        thumbnailUrl = thumb.ifBlank {
+                                            "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+                                        },
+                                        durationSec = durationSec,
+                                        views = 0L,
+                                        uploadedDate = published,
+                                        uploadedEpochMs = relativeDateToEpochMs(published),
+                                        channelId = channelId,
+                                    ),
                                 )
                             }
-                            .ifBlank { videoId }
-                        val uploader = extractText(node.opt("shortBylineText"))
-                            .ifBlank { extractText(node.opt("longBylineText")) }
-                            .ifBlank { extractText(node.opt("ownerText")) }
-                            .ifBlank { extractText(node.opt("subtitle")) }
-                        val thumb = firstThumbnailUrl(node)
-                        val durationSec = tileDurationSeconds(node).let { d ->
-                            if (d != 0L) d else parseDurationSeconds(extractText(node.opt("lengthText")))
                         }
-                        val published = extractText(node.opt("publishedTimeText"))
-                        val channelId = tileChannelId(node)
-                            .ifBlank {
-                                channelIdFromAttributedText(node.opt("shortBylineText")).orEmpty()
-                            }
-                            .ifBlank {
-                                channelIdFromAttributedText(node.opt("longBylineText")).orEmpty()
-                            }
-                            .ifBlank {
-                                channelIdFromAttributedText(node.opt("ownerText")).orEmpty()
-                            }
-                        putItem(
-                            YoutubeVideoItem(
-                                id = videoId,
-                                title = title,
-                                uploader = uploader,
-                                thumbnailUrl = thumb.ifBlank {
-                                    "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
-                                },
-                                durationSec = durationSec,
-                                views = 0L,
-                                uploadedDate = published,
-                                uploadedEpochMs = relativeDateToEpochMs(published),
-                                channelId = channelId,
-                            ),
-                        )
                     }
                     val keys = node.keys()
                     while (keys.hasNext()) {
@@ -1415,20 +1532,37 @@ class YoutubeRepository(
     private fun extractText(value: Any?): String {
         return when (value) {
             null -> ""
-            is String -> value.trim()
+            is String -> value.trim().replace('\u00a0', ' ')
             is JSONObject -> {
-                value.optString("simpleText").trim().ifBlank {
-                    val runs = value.optJSONArray("runs")
-                    if (runs != null) {
-                        buildString {
-                            for (i in 0 until runs.length()) {
-                                append(runs.optJSONObject(i)?.optString("text").orEmpty())
-                            }
-                        }.trim()
-                    } else {
-                        ""
+                value.optString("simpleText").trim()
+                    .ifBlank {
+                        val runs = value.optJSONArray("runs")
+                        if (runs != null) {
+                            buildString {
+                                for (i in 0 until runs.length()) {
+                                    append(runs.optJSONObject(i)?.optString("text").orEmpty())
+                                }
+                            }.trim()
+                        } else {
+                            ""
+                        }
                     }
-                }
+                    .ifBlank {
+                        // Newer attributed / accessibility-only title nodes.
+                        value.optString("content").trim().takeIf { it.length in 1..300 }.orEmpty()
+                    }
+                    .ifBlank {
+                        value.optJSONObject("accessibility")
+                            ?.optJSONObject("accessibilityData")
+                            ?.optString("label").orEmpty().trim()
+                    }
+                    .ifBlank {
+                        value.optJSONObject("accessibilityData")
+                            ?.optString("label").orEmpty().trim()
+                    }
+                    .ifBlank { value.optString("label").trim() }
+                    .replace('\u00a0', ' ')
+                    .trim()
             }
             is JSONArray -> {
                 buildString {
@@ -1445,10 +1579,70 @@ class YoutubeRepository(
         }
     }
 
+    private data class AccessibilityParts(val title: String, val channel: String)
+
+    /** TV tiles often only expose "Title by Channel · 12 minutes" via accessibility. */
+    private fun accessibilityParts(node: JSONObject): AccessibilityParts {
+        val raw = sequenceOf(
+            node.optJSONObject("accessibility")
+                ?.optJSONObject("accessibilityData")
+                ?.optString("label"),
+            node.optJSONObject("accessibilityData")?.optString("label"),
+            node.optString("accessibilityText").takeIf { it.isNotBlank() },
+            node.optJSONObject("header")
+                ?.optJSONObject("tileHeaderRenderer")
+                ?.optJSONObject("accessibility")
+                ?.optJSONObject("accessibilityData")
+                ?.optString("label"),
+            node.optJSONObject("metadata")
+                ?.optJSONObject("tileMetadataRenderer")
+                ?.optJSONObject("accessibility")
+                ?.optJSONObject("accessibilityData")
+                ?.optString("label"),
+        ).mapNotNull { it?.trim()?.takeIf { s -> s.isNotBlank() } }
+            .firstOrNull()
+            .orEmpty()
+            .replace('\u00a0', ' ')
+            .trim()
+        if (raw.isBlank()) return AccessibilityParts("", "")
+        val bySplit = Regex("""^(.*?)\s+by\s+(.+)$""", RegexOption.IGNORE_CASE).find(raw)
+        if (bySplit != null) {
+            val title = bySplit.groupValues[1].trim()
+            val rest = bySplit.groupValues[2].trim()
+            val channel = rest
+                .substringBefore("·")
+                .substringBefore("•")
+                .substringBefore("|")
+                .replace(Regex("""\d+\s*(second|minute|hour|day|week|month|year|view)s?.*$""", RegexOption.IGNORE_CASE), "")
+                .trim()
+            return AccessibilityParts(
+                title = title.takeUnless { looksLikeVideoId(it) }.orEmpty(),
+                channel = channel.takeUnless { looksLikeVideoId(it) }.orEmpty(),
+            )
+        }
+        // Fallback: first segment before bullet.
+        val title = raw.substringBefore("·").substringBefore("•").trim()
+            .takeUnless { looksLikeVideoId(it) }
+            .orEmpty()
+        return AccessibilityParts(title = title, channel = "")
+    }
+
+    private fun looksLikeVideoId(value: String): Boolean =
+        value.matches(Regex("^[\\w-]{11}$"))
+
+    private fun firstRealTitle(vararg candidates: String): String {
+        for (c in candidates) {
+            val t = c.trim()
+            if (t.isNotBlank() && !looksLikeVideoId(t)) return t
+        }
+        return ""
+    }
+
     private fun preferText(a: String, b: String, bad: String = ""): String {
         fun score(s: String): Int {
             if (s.isBlank()) return 0
             if (bad.isNotBlank() && s.equals(bad, ignoreCase = true)) return 1
+            if (looksLikeVideoId(s)) return 1
             return 2
         }
         return if (score(b) > score(a)) b else a.ifBlank { b }
@@ -1707,23 +1901,26 @@ class YoutubeRepository(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         /** Public YouTube Android client key used by open clients (not a secret user credential). */
-        private const val INNERTUBE_API_KEY = "AIzaSyA8eiZmM1FaDVzRvBK1dDe3-6lQ_g0"
-        private const val INNERTUBE_CLIENT_VERSION = "20.10.38"
+        private const val INNERTUBE_API_KEY = "AIzaSyA8eiZmM1FaDVz_ad96G3ZBQJyl-YQRvAX"
+        private const val INNERTUBE_CLIENT_VERSION = "21.26.364"
         private const val ANDROID_VR_CLIENT_VERSION = "1.65.10"
-        private const val WEB_EMBEDDED_CLIENT_VERSION = "1.20241201.00.00"
+        private const val WEB_EMBEDDED_CLIENT_VERSION = "2.20260708.00.00"
         private const val WEB_EMBEDDED_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
         /** Public TVHTML5 InnerTube key (same family as SmartTube / Lincoln). */
         private const val TV_API_KEY = "AIzaSyDCU8hByM-4DrUqRUYnGn-3llEO78bcxq8"
-        private const val TV_CLIENT_VERSION = "7.20250209.19.00"
+        private const val TV_CLIENT_VERSION = "7.20260707.07.00"
+        private const val TV_DOWNGRADED_CLIENT_VERSION = "5.20260707"
         private const val TV_BROWSE_UA =
-            "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 " +
-                "(KHTML, like Gecko) Version/5.0 NativeTVAds Safari/538.1,gzip(gfe)"
-        /** iOS client — often returns plain adaptive URLs + strong 1080p/60 ladders. */
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold " +
+                "(unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
+        private const val TV_DOWNGRADED_UA =
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+        /** iOS client — SmartTube MediaServiceCore Aug 2026. */
         private const val IOS_API_KEY = "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc"
-        private const val IOS_CLIENT_VERSION = "21.03.2"
+        private const val IOS_CLIENT_VERSION = "21.26.4"
         private const val IOS_DEVICE_MODEL = "iPhone16,2"
-        private const val IOS_OS_VERSION = "18.7.2.22H124"
-        private const val IOS_UA_VERSION = "18_7_2"
+        private const val IOS_OS_VERSION = "18.3.2.22D82"
+        private const val IOS_UA_VERSION = "18_3_2"
 
         /** Format Piped `uploaded` epoch (ms or sec) for UI. */
         fun formatUploadedEpoch(raw: Long): String {

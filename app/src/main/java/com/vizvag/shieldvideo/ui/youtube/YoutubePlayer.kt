@@ -105,7 +105,7 @@ fun BindYoutubeStream(
             return@LaunchedEffect
         }
         onError(null)
-        controller.forceHighestVideoQuality()
+        controller.applyPreferredResolutionFromSettings()
         controller.playStream(info)
     }
 }
@@ -129,6 +129,10 @@ fun YoutubePlayerSurface(
                     this.useController = useController
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     keepScreenOn = true
+                    // Compose owns D-pad focus for pause chrome / quality picker.
+                    isFocusable = false
+                    isFocusableInTouchMode = false
+                    descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -139,6 +143,8 @@ fun YoutubePlayerSurface(
                 view.player = player
                 view.useController = useController
                 view.keepScreenOn = true
+                view.isFocusable = false
+                view.isFocusableInTouchMode = false
             },
             modifier = Modifier.fillMaxSize(),
             onRelease = { view ->
